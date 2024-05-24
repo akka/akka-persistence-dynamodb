@@ -1,0 +1,3 @@
+# This file can be used for redirects like:
+# RedirectMatch 301 ^/docs/alpakka/([^/]+)/data-transformations/recordio.html https://doc.akka.io/docs/alpakka/$1/data-transformations/simple-codecs.html
+
