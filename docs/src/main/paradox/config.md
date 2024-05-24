@@ -1,5 +1,13 @@
 # Configuration
 
+## DynamoDB client configuration
+
+Configuration for how to connect to DynamoDB is located under `akka.persistence.dynamodb.connection-factory`.
+
+The following client settings be overridden in the `client` block:
+
+@@snip [reference.conf](/core/src/main/resources/reference.conf) {#client-settings}
+
 ## Journal configuration
 
 Journal configuration properties are by default defined under `akka.persistence.dynamodb.journal`.
