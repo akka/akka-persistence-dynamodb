@@ -71,10 +71,10 @@ def common: Seq[Setting[_]] =
     Global / excludeLintKeys += mimaPreviousArtifacts,
     mimaReportSignatureProblems := true,
     mimaPreviousArtifacts := Set.empty
-      // FIXME enable after first official release
-      // Set(
-      //  organization.value %% moduleName.value % previousStableVersion.value
-      //    .getOrElse(throw new Error("Unable to determine previous version")))
+    // FIXME enable after first official release
+    // Set(
+    //  organization.value %% moduleName.value % previousStableVersion.value
+    //    .getOrElse(throw new Error("Unable to determine previous version")))
   )
 
 lazy val dontPublish = Seq(publish / skip := true, Compile / publishArtifact := false)

@@ -12,7 +12,7 @@ object Dependencies {
   val AkkaVersion = System.getProperty("override.akka.version", "2.9.3")
   val AkkaVersionInDocs = AkkaVersion.take(3)
   val AkkaProjectionVersionInDocs = "current"
-  
+
   object Compile {
     val akkaActorTyped = "com.typesafe.akka" %% "akka-actor-typed" % AkkaVersion
     val akkaStream = "com.typesafe.akka" %% "akka-stream" % AkkaVersion
@@ -50,6 +50,5 @@ object Dependencies {
     TestDeps.scalaTest)
 
   val docs =
-    Seq(
-      TestDeps.akkaPersistenceTyped)
+    Seq(TestDeps.akkaPersistenceTyped)
 }
