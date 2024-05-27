@@ -12,12 +12,14 @@ object Dependencies {
   val AkkaVersion = System.getProperty("override.akka.version", "2.9.3")
   val AkkaVersionInDocs = VersionNumber(AkkaVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
   val AkkaProjectionVersionInDocs = "current"
+  val AwsSdkVersion = "2.25.59"
 
   object Compile {
     val akkaActorTyped = "com.typesafe.akka" %% "akka-actor-typed" % AkkaVersion
     val akkaStream = "com.typesafe.akka" %% "akka-stream" % AkkaVersion
     val akkaPersistence = "com.typesafe.akka" %% "akka-persistence-typed" % AkkaVersion
     val akkaPersistenceQuery = "com.typesafe.akka" %% "akka-persistence-query" % AkkaVersion
+    val dynamodbSdk = "software.amazon.awssdk" % "dynamodb" % AwsSdkVersion
 
   }
 
@@ -39,6 +41,7 @@ object Dependencies {
   import Compile._
 
   val core = Seq(
+    dynamodbSdk.exclude("software.amazon.awssdk", "apache-client"),
     akkaPersistence,
     akkaPersistenceQuery,
     TestDeps.akkaPersistenceTck,
