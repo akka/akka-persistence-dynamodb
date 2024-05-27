@@ -194,8 +194,9 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 
     def deleteBatch(from: Long, to: Long, lastBatch: Boolean): Future[Unit] = {
       val result = {
+        val toSeqNr = if (lastBatch && !resetSequenceNumber) to - 1 else to
         val deleteItems =
-          (from to to).map { seqNr =>
+          (from to toSeqNr).map { seqNr =>
             TransactWriteItem
               .builder()
               .delete(Delete.builder().tableName(settings.journalTable).key(pk(persistenceId, seqNr)).build())
@@ -204,6 +205,8 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 
         val writeItems =
           if (lastBatch && !resetSequenceNumber) {
+            // update last item instead of deleting, keeping it as a tombstone to keep track of latest seqNr even
+            // though all events have been deleted
             val deleteMarker =
               TransactWriteItem
                 .builder()
@@ -216,7 +219,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
                   .expressionAttributeValues(Map(":del" -> AttributeValue.fromBool(true)).asJava)
                   .build())
                 .build()
-            deleteItems.dropRight(1) :+ deleteMarker
+            deleteItems :+ deleteMarker
           } else
             deleteItems
 
