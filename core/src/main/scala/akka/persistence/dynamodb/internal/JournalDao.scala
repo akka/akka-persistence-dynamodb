@@ -64,10 +64,18 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       attributes.put(Pid, AttributeValue.fromS(persistenceId))
       attributes.put(SeqNr, AttributeValue.fromN(item.seqNr.toString))
       attributes.put(Slice, AttributeValue.fromN(slice.toString))
+      attributes.put(EntityType, AttributeValue.fromS(item.entityType))
       attributes.put(EventSerId, AttributeValue.fromN(item.serId.toString))
       attributes.put(EventSerManifest, AttributeValue.fromS(item.serManifest))
       attributes.put(EventPayload, AttributeValue.fromB(SdkBytes.fromByteArray(item.payload.get)))
       attributes.put(Writer, AttributeValue.fromS(item.writerUuid))
+
+      item.metadata.foreach { meta =>
+        attributes.put(MetaSerId, AttributeValue.fromN(meta.serId.toString))
+        attributes.put(MetaSerManifest, AttributeValue.fromS(meta.serManifest))
+        attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
+      }
+
       attributes
     }
 
@@ -197,15 +205,14 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             val deleteMarker =
               TransactWriteItem
                 .builder()
-                .update(
-                  Update
-                    .builder()
-                    .tableName(settings.journalTable)
-                    .key(pk(persistenceId, to))
-                    .updateExpression(
-                      s"SET $Deleted = :del REMOVE $EventPayload, $EventSerId, $EventSerManifest, $Writer")
-                    .expressionAttributeValues(Map(":del" -> AttributeValue.fromBool(true)).asJava)
-                    .build())
+                .update(Update
+                  .builder()
+                  .tableName(settings.journalTable)
+                  .key(pk(persistenceId, to))
+                  .updateExpression(
+                    s"SET $Deleted = :del REMOVE $EventPayload, $EventSerId, $EventSerManifest, $Writer, $MetaPayload, $MetaSerId, $MetaSerManifest")
+                  .expressionAttributeValues(Map(":del" -> AttributeValue.fromBool(true)).asJava)
+                  .build())
                 .build()
             deleteItems.dropRight(1) :+ deleteMarker
           } else

@@ -12,6 +12,7 @@ import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
 import akka.persistence.dynamodb.DynamoDBSettings
+import akka.persistence.typed.PersistenceId
 import akka.stream.scaladsl.Source
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
@@ -50,10 +51,16 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
       Source.fromPublisher(publisher).mapConcat { response =>
         response.items().iterator().asScala.map { item =>
-          // FIXME read all attributes
+          val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
+            SerializedEventMetadata(
+              serId = item.get(MetaSerId).n().toInt,
+              serManifest = item.get(MetaSerManifest).s(),
+              payload = metaPayload.b().asByteArray())
+          }
+
           SerializedJournalItem(
             slice = item.get(Slice).n().toInt,
-            entityType = "",
+            entityType = item.get(EntityType).s(),
             persistenceId = item.get(Pid).s(),
             seqNr = item.get(SeqNr).n().toLong,
             writeTimestamp = Instant.EPOCH,
@@ -61,8 +68,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
             serId = item.get(EventSerId).n().toInt,
             serManifest = item.get(EventSerManifest).s(),
             writerUuid = item.get(Writer).s(),
-            tags = Set.empty,
-            metadata = None)
+            tags = Set.empty, // FIXME
+            metadata = metadata)
         }
       }
     }
