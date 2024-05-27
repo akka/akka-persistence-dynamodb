@@ -5,6 +5,7 @@
 package akka.persistence.dynamodb
 
 import java.net.URI
+import java.util.concurrent.CompletionException
 
 import scala.concurrent.Await
 import scala.concurrent.ExecutionContext
@@ -89,6 +90,11 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
     existingTable.transformWith {
       case Success(_)                            => delete().flatMap(_ => create())
       case Failure(_: ResourceNotFoundException) => create()
+      case Failure(exception: CompletionException) =>
+        exception.getCause match {
+          case _: ResourceNotFoundException => create()
+          case failure                      => Future.failed[Done](failure)
+        }
       case Failure(exc) =>
         Future.failed[Done](exc)
     }

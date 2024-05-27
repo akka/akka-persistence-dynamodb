@@ -216,17 +216,9 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
       case None => Future.successful(Done)
     }
     pendingWrite.flatMap { _ =>
-      // FIXME very inefficient implementation, can we get rid of the separate ReadHighestSequenceNr query
-      // altogether and rely on latest event in the replay? Requires some changes in Akka, but would
-      // be good performance improvement.
-
-      query
-        .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, Long.MaxValue)
-        .runWith(Sink.lastOption)
-        .map {
-          case Some(item) => item.seqNr
-          case None       => 0L
-        }
+      // FIXME Can we get rid of the separate ReadHighestSequenceNr query altogether and rely on latest event in the
+      //  replay? Requires some changes in Akka, but would be good performance improvement.
+      journalDao.readHighestSequenceNr(persistenceId)
     }
   }
 }

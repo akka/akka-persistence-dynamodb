@@ -24,6 +24,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.Put
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
@@ -119,6 +120,31 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
       result.map(_ => Done)(ExecutionContexts.parasitic)
     }
 
+  }
+
+  def readHighestSequenceNr(persistenceId: String): Future[Long] = {
+    import JournalAttributes._
+
+    val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId)).asJava
+
+    val request = QueryRequest.builder
+      .tableName(settings.journalTable)
+      .keyConditionExpression(s"$Pid = :pid")
+      .expressionAttributeValues(attributeValues)
+      .scanIndexForward(false) // get last item (highest sequence nr)
+      .limit(1)
+      .build()
+
+    val result = client.query(request).asScala.map { response =>
+      response.items().asScala.headOption.fold(0L) { item =>
+        item.get(SeqNr).n().toLong
+      }
+    }
+
+    if (log.isDebugEnabled)
+      result.foreach(seqNr => log.debug("Highest sequence nr for persistenceId [{}]: [{}]", persistenceId, seqNr))
+
+    result
   }
 
 }
