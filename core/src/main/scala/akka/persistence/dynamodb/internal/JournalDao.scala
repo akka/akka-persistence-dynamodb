@@ -22,12 +22,14 @@ import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.Delete
 import software.amazon.awssdk.services.dynamodb.model.Put
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
+import software.amazon.awssdk.services.dynamodb.model.Update
 
 /**
  * INTERNAL API
@@ -73,9 +75,9 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
     if (totalEvents == 1) {
       val req = PutItemRequest
         .builder()
+        .tableName(settings.journalTable)
         .item(putItemAttributes(events.head))
         .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-        .tableName(settings.journalTable)
         .build()
       val result = client.putItem(req).asScala
 
@@ -94,7 +96,7 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
         events.map { item =>
           TransactWriteItem
             .builder()
-            .put(Put.builder().item(putItemAttributes(item)).tableName(settings.journalTable).build())
+            .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build())
             .build()
         }.asJava
 
@@ -105,8 +107,6 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
         .build()
 
       val result = client.transactWriteItems(req).asScala
-
-      result.failed.foreach { exc => println(exc) }
 
       if (log.isDebugEnabled()) {
         result.foreach { response =>
@@ -145,6 +145,116 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
       result.foreach(seqNr => log.debug("Highest sequence nr for persistenceId [{}]: [{}]", persistenceId, seqNr))
 
     result
+  }
+
+  def readLowestSequenceNr(persistenceId: String): Future[Long] = {
+    import JournalAttributes._
+
+    val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId)).asJava
+
+    val request = QueryRequest.builder
+      .tableName(settings.journalTable)
+      .keyConditionExpression(s"$Pid = :pid")
+      .expressionAttributeValues(attributeValues)
+      .scanIndexForward(true) // get first item (lowest sequence nr)
+      .limit(1)
+      .build()
+
+    val result = client.query(request).asScala.map { response =>
+      response.items().asScala.headOption.fold(0L) { item =>
+        item.get(SeqNr).n().toLong
+      }
+    }
+
+    if (log.isDebugEnabled)
+      result.foreach(seqNr => log.debug("Lowest sequence nr for persistenceId [{}]: [{}]", persistenceId, seqNr))
+
+    result
+  }
+
+  def deleteEventsTo(persistenceId: String, toSequenceNr: Long, resetSequenceNumber: Boolean): Future[Unit] = {
+    import JournalAttributes._
+
+    def pk(pid: String, seqNr: Long): JHashMap[String, AttributeValue] = {
+      val m = new JHashMap[String, AttributeValue]
+      m.put(Pid, AttributeValue.fromS(pid))
+      m.put(SeqNr, AttributeValue.fromN(seqNr.toString))
+      m
+    }
+
+    def deleteBatch(from: Long, to: Long, lastBatch: Boolean): Future[Unit] = {
+      val result = {
+        val deleteItems =
+          (from to to).map { seqNr =>
+            TransactWriteItem
+              .builder()
+              .delete(Delete.builder().tableName(settings.journalTable).key(pk(persistenceId, seqNr)).build())
+              .build()
+          }
+
+        val writeItems =
+          if (lastBatch && !resetSequenceNumber) {
+            val deleteMarker =
+              TransactWriteItem
+                .builder()
+                .update(
+                  Update
+                    .builder()
+                    .tableName(settings.journalTable)
+                    .key(pk(persistenceId, to))
+                    .updateExpression(
+                      s"SET $Deleted = :del REMOVE $EventPayload, $EventSerId, $EventSerManifest, $Writer")
+                    .expressionAttributeValues(Map(":del" -> AttributeValue.fromBool(true)).asJava)
+                    .build())
+                .build()
+            deleteItems.dropRight(1) :+ deleteMarker
+          } else
+            deleteItems
+
+        val req = TransactWriteItemsRequest
+          .builder()
+          .transactItems(writeItems.asJava)
+          .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+          .build()
+
+        client.transactWriteItems(req).asScala
+      }
+
+      if (log.isDebugEnabled()) {
+        result.foreach { response =>
+          log.debug(
+            "Deleted events from [{}] to [{}] for persistenceId [{}], consumed [{}] WCU",
+            from,
+            to,
+            persistenceId,
+            response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
+        }
+      }
+      result.map(_ => ())(ExecutionContexts.parasitic)
+    }
+
+    // TransactWriteItems has a limit of 100
+    val batchSize = 100
+
+    def deleteInBatches(from: Long, maxTo: Long): Future[Unit] = {
+      if (from + batchSize > maxTo) {
+        deleteBatch(from, maxTo, lastBatch = true)
+      } else {
+        val to = from + batchSize - 1
+        deleteBatch(from, to, lastBatch = false).flatMap(_ => deleteInBatches(to + 1, maxTo))
+      }
+    }
+
+    val lowestSequenceNrForDelete = readLowestSequenceNr(persistenceId)
+    val highestSeqNrForDelete =
+      if (toSequenceNr == Long.MaxValue) readHighestSequenceNr(persistenceId)
+      else Future.successful(toSequenceNr)
+
+    for {
+      fromSeqNr <- lowestSequenceNrForDelete
+      toSeqNr <- highestSeqNrForDelete
+      _ <- deleteInBatches(fromSeqNr, toSeqNr)
+    } yield ()
   }
 
 }

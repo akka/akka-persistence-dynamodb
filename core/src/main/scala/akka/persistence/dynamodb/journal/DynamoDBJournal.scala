@@ -187,8 +187,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
 
   override def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = {
     log.debug("asyncDeleteMessagesTo persistenceId [{}], toSequenceNr [{}]", persistenceId, toSequenceNr)
-    //FIXME journalDao.deleteEventsTo(persistenceId, toSequenceNr, resetSequenceNumber = false)
-    Future.successful(())
+    journalDao.deleteEventsTo(persistenceId, toSequenceNr, resetSequenceNumber = false)
   }
 
   override def asyncReplayMessages(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long, max: Long)(
