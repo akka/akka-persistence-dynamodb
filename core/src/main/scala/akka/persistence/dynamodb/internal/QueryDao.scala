@@ -42,6 +42,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       import JournalAttributes._
       val req = QueryRequest.builder
         .tableName(settings.journalTable)
+        .consistentRead(true)
         .keyConditionExpression(s"$Pid = :pid AND $SeqNr BETWEEN :from AND :to")
         .filterExpression(s"attribute_not_exists($Deleted)")
         .expressionAttributeValues(expressionAttributeValues)

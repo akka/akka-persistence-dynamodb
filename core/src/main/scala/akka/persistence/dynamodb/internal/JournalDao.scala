@@ -137,6 +137,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 
     val request = QueryRequest.builder
       .tableName(settings.journalTable)
+      .consistentRead(true)
       .keyConditionExpression(s"$Pid = :pid")
       .expressionAttributeValues(attributeValues)
       .scanIndexForward(false) // get last item (highest sequence nr)
@@ -162,6 +163,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 
     val request = QueryRequest.builder
       .tableName(settings.journalTable)
+      .consistentRead(true)
       .keyConditionExpression(s"$Pid = :pid")
       .expressionAttributeValues(attributeValues)
       .scanIndexForward(true) // get first item (lowest sequence nr)
