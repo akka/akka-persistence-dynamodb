@@ -16,14 +16,14 @@ class InstantFactorySpec extends AnyWordSpec with TestSuite with Matchers {
       InstantFactory.now().getNano % 1000 shouldBe 0
     }
 
-    "always increasing or equal now" in {
+    "always increasing now" in {
       val now1 = InstantFactory.now()
       val now2 = InstantFactory.now()
       Thread.sleep(1)
       val now3 = InstantFactory.now()
-      now2.isBefore(now1) shouldBe false
-      now3.isBefore(now2) shouldBe false
-      now3.isBefore(now1) shouldBe false
+      now2.isAfter(now1) shouldBe true
+      now3.isAfter(now2) shouldBe true
+      now3.isAfter(now1) shouldBe true
     }
 
     "convert to/from micros since epoch" in {

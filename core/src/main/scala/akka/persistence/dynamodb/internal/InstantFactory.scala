@@ -23,7 +23,8 @@ import akka.annotation.InternalApi
   def now(): Instant = {
     val n = Instant.now().truncatedTo(ChronoUnit.MICROS)
     previousNow.updateAndGet { prev =>
-      if (prev.isAfter(n)) prev.plus(1, ChronoUnit.MICROS)
+      // monotonically increasing, at least 1 microsecond more than previous timestamp
+      if (!n.isAfter(prev)) prev.plus(1, ChronoUnit.MICROS)
       else n
     }
   }

@@ -68,7 +68,7 @@ class PersistTimestampSpec
 
   "Persist timestamp" should {
 
-    "be the same for events stored in same transaction" in {
+    "be increasing for events stored in same transaction" in {
       val numberOfEntities = 20
       val entityType = nextEntityType()
 
@@ -99,14 +99,21 @@ class PersistTimestampSpec
 
       rows.groupBy(_.event).foreach { case (_, rowsByUniqueEvent) =>
         withClue(s"pid [${rowsByUniqueEvent.head.pid}]: ") {
-          rowsByUniqueEvent.map(_.timestamp).toSet shouldBe Set(rowsByUniqueEvent.head.timestamp)
+          rowsByUniqueEvent.map(_.timestamp).sliding(2).foreach {
+            case Seq(a, b) => a.isBefore(b) shouldBe true
+            case _         => ()
+          }
         }
       }
 
       val rowOrdering: Ordering[Item] = Ordering.fromLessThan[Item] { (a, b) =>
         if (a eq b) false
         else if (a.timestamp != b.timestamp) a.timestamp.compareTo(b.timestamp) < 0
-        else a.seqNr.compareTo(b.seqNr) < 0
+        else {
+          if (a.pid == b.pid && a.seqNr != b.seqNr)
+            throw new IllegalStateException(s"Unexpected same timestamp for several events of [$a.pid]")
+          a.pid.compareTo(b.pid) < 0
+        }
       }
 
       rows.groupBy(_.pid).foreach { case (_, rowsByPid) =>
