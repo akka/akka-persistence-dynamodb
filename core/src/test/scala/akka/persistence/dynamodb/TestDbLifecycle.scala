@@ -22,6 +22,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.scalatest.Suite
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
+import software.amazon.awssdk.services.dynamodb.model.CreateGlobalSecondaryIndexAction
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest
@@ -33,6 +34,7 @@ import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughput
 import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
+import software.amazon.awssdk.services.dynamodb.model.UpdateTableRequest
 
 trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
 
@@ -67,7 +69,7 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
     def create(): Future[Done] = {
       val sliceIndex = GlobalSecondaryIndex
         .builder()
-        .indexName(settings.journalTable + "_slice_idx")
+        .indexName(settings.journalBySliceGsi)
         .keySchema(
           KeySchemaElement.builder().attributeName(EntityTypeSlice).keyType(KeyType.HASH).build(),
           KeySchemaElement.builder().attributeName(Timestamp).keyType(KeyType.RANGE).build())

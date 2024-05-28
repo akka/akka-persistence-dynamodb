@@ -4,6 +4,11 @@
 
 package akka.persistence.dynamodb
 
+import scala.jdk.CollectionConverters._
+import scala.jdk.FutureConverters._
+import scala.jdk.DurationConverters._
+import scala.concurrent.duration.FiniteDuration
+
 import akka.annotation.InternalStableApi
 import com.typesafe.config.Config
 
@@ -15,7 +20,10 @@ object DynamoDBSettings {
 
   def apply(config: Config): DynamoDBSettings = {
     val journalTable: String = config.getString("journal.table")
-    new DynamoDBSettings(journalTable)
+
+    val querySettings = new QuerySettings(config.getConfig("query"))
+
+    new DynamoDBSettings(journalTable, querySettings)
   }
 
 }
@@ -24,10 +32,25 @@ object DynamoDBSettings {
  * INTERNAL API
  */
 @InternalStableApi
-final class DynamoDBSettings private (val journalTable: String) {
+final class DynamoDBSettings private (val journalTable: String, val querySettings: QuerySettings) {
+
+  val journalBySliceGsi: String = journalTable + "_slice_idx"
 
   override def toString =
-    s"DynamoDBSettings($journalTable)"
+    s"DynamoDBSettings($journalTable, $querySettings)"
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalStableApi
+final class QuerySettings(config: Config) {
+  val refreshInterval: FiniteDuration = config.getDuration("refresh-interval").toScala
+  val behindCurrentTime: FiniteDuration = config.getDuration("behind-current-time").toScala
+  val backtrackingEnabled: Boolean = config.getBoolean("backtracking.enabled")
+  val backtrackingWindow: FiniteDuration = config.getDuration("backtracking.window").toScala
+  val backtrackingBehindCurrentTime: FiniteDuration = config.getDuration("backtracking.behind-current-time").toScala
+  val bufferSize: Int = config.getInt("buffer-size")
 }
 
 object ClientSettings {

@@ -10,8 +10,12 @@ import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.ActorContext
 import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.scaladsl.LoggerOps
+import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.typed.PersistenceId
+import akka.persistence.typed.ReplicaId
+import akka.persistence.typed.ReplicationId
 import akka.persistence.typed.scaladsl.EventSourcedBehavior
+import akka.persistence.typed.scaladsl.ReplicatedEventSourcing
 
 object TestActors {
   object Persister {
@@ -99,6 +103,17 @@ object TestActors {
           }
         },
         (state, event) => if (state == "") event.toString else s"$state|$event")
+    }
+  }
+
+  def replicatedEventSourcedPersister(entityType: String, entityId: String): Behavior[Persister.Command] = {
+    Behaviors.setup[Persister.Command] { context =>
+      ReplicatedEventSourcing.commonJournalConfig(
+        ReplicationId(entityType, entityId, ReplicaId("dc-1")),
+        Set(ReplicaId("dc-1")),
+        DynamoDBReadJournal.Identifier) { _ =>
+        Persister.eventSourcedBehavior(PersistenceId(entityType, entityId), context)
+      }
     }
   }
 }

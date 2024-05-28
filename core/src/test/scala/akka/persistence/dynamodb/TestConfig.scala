@@ -21,4 +21,7 @@ object TestConfig {
       .withFallback(defaultConfig)
   }
 
+  val backtrackingDisabledConfig: Config =
+    ConfigFactory.parseString("akka.persistence.dynamodb.query.backtracking.enabled = off")
+
 }
