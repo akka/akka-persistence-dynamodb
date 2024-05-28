@@ -17,6 +17,7 @@ import akka.annotation.InternalApi
 import akka.dispatch.ExecutionContexts
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.DynamoDBSettings
+import akka.persistence.typed.PersistenceId
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.SdkBytes
@@ -56,6 +57,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 
     // it's always the same persistenceId for all events
     val persistenceId = events.head.persistenceId
+    val entityType = PersistenceId.extractEntityType(persistenceId)
     val slice = persistenceExt.sliceForPersistenceId(persistenceId)
 
     def putItemAttributes(item: SerializedJournalItem) = {
@@ -63,8 +65,9 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       val attributes = new JHashMap[String, AttributeValue]
       attributes.put(Pid, AttributeValue.fromS(persistenceId))
       attributes.put(SeqNr, AttributeValue.fromN(item.seqNr.toString))
-      attributes.put(Slice, AttributeValue.fromN(slice.toString))
-      attributes.put(EntityType, AttributeValue.fromS(item.entityType))
+      attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
+      val timestampMicros = InstantFactory.toEpochMicros(item.writeTimestamp)
+      attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
       attributes.put(EventSerId, AttributeValue.fromN(item.serId.toString))
       attributes.put(EventSerManifest, AttributeValue.fromS(item.serManifest))
       attributes.put(EventPayload, AttributeValue.fromB(SdkBytes.fromByteArray(item.payload.get)))

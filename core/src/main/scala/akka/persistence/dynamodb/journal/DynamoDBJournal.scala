@@ -115,9 +115,6 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
               (other.asInstanceOf[AnyRef], Set.empty[String])
           }
 
-          val entityType = PersistenceId.extractEntityType(pr.persistenceId)
-          val slice = persistenceExt.sliceForPersistenceId(pr.persistenceId)
-
           val serializedEvent = event match {
             case s: SerializedEvent => s // already serialized
             case _ =>
@@ -137,8 +134,6 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
           }
 
           SerializedJournalItem(
-            slice,
-            entityType,
             pr.persistenceId,
             pr.sequenceNr,
             timestamp,
