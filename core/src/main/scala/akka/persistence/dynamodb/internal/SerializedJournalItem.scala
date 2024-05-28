@@ -31,8 +31,14 @@ final case class SerializedEventMetadata(serId: Int, serManifest: String, payloa
   val Pid = "pid"
   val SeqNr = "seq_nr"
   val Slice = "slice"
+  // redundant to store entity type, but needed for the bySlices GSI
+  val EntityType = "entity_type"
   val EventSerId = "event_ser_id"
   val EventSerManifest = "event_ser_manifest"
   val EventPayload = "event_payload"
   val Writer = "writer"
+  val MetaSerId = "meta_ser_id"
+  val MetaSerManifest = "meta_ser_manifest"
+  val MetaPayload = "meta_payload"
+  val Deleted = "del"
 }
