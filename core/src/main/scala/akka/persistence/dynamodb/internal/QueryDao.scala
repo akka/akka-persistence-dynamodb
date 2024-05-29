@@ -89,6 +89,13 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
     val entityTypeSlice = s"$entityType-$slice"
 
+    // FIXME we could look into using response.lastEvaluatedKey and use that as exclusiveStartKey in query,
+    // instead of the timestamp for subsequent queries. Not sure how that works with GSI where the
+    // sort key isn't unique (same timestamp). If DynamoDB can keep track of the exact offset and
+    // not emit duplicates would not need the seen Map and that filter.
+    // Well, we still need it for the first query because we want the external offset to be TimestampOffset
+    // and that can include seen Map.
+
     val expressionAttributeValues =
       Map(
         ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
@@ -102,6 +109,10 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $Timestamp BETWEEN :from AND :to")
       .filterExpression(s"attribute_not_exists($Deleted)")
       .expressionAttributeValues(expressionAttributeValues)
+      // Limit won't limit the number of results you get with the paginator.
+      // It only limits the number of results in each page
+      // Limit is ignored by local DynamoDB.
+      .limit(settings.querySettings.bufferSize)
       .build()
 
     // FIXME for backtracking we don't need all attributes, can be filtered with builder.attributesToGet

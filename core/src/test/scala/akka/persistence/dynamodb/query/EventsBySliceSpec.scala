@@ -4,6 +4,8 @@
 
 package akka.persistence.dynamodb.query
 
+import java.time.temporal.ChronoUnit
+
 import akka.Done
 import akka.NotUsed
 import akka.actor.testkit.typed.scaladsl.LogCapturing
@@ -14,6 +16,7 @@ import akka.persistence.dynamodb.TestActors.Persister
 import akka.persistence.dynamodb.TestConfig
 import akka.persistence.dynamodb.TestData
 import akka.persistence.dynamodb.TestDbLifecycle
+import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.query.NoOffset
 import akka.persistence.query.Offset
@@ -343,6 +346,64 @@ class EventsBySliceSpec
       }
 
       allEnvelopes.futureValue.size should be(numberOfPersisters * numberOfEvents)
+    }
+
+    "not emit duplicates from subsequent queries" in {
+      val entityType = nextEntityType()
+      val pid1 = nextPersistenceId(entityType)
+      val slice = query.sliceForPersistenceId(pid1.id)
+      val pid2 = randomPersistenceIdForSlice(entityType, slice)
+      val pid3 = randomPersistenceIdForSlice(entityType, slice)
+      val sinkProbe = TestSink[EventEnvelope[String]]()(system.classicSystem)
+
+      // use times in the past well outside behind-current-time
+      val timeZero = InstantFactory.now().truncatedTo(ChronoUnit.SECONDS).minusSeconds(10 * 60)
+
+      var numberOfEvents = 0
+
+      for (n <- 1 to 6) {
+        writeEvent(slice, pid1, n, timeZero.plusMillis(n), s"event-${pid1.id}-$n")
+        numberOfEvents += 1
+      }
+
+      for (n <- 7 to 10) {
+        for (pid <- List(pid1, pid2)) {
+          // same timestamp
+          writeEvent(slice, pid, n, timeZero.plusMillis(n), s"event-${pid.id}-$n")
+          numberOfEvents += 1
+        }
+      }
+
+      val result: TestSubscriber.Probe[EventEnvelope[String]] =
+        query
+          .eventsBySlices[String](entityType, slice, slice, NoOffset)
+          .runWith(sinkProbe)
+          .request(100)
+
+      val envelopes1 = result.expectNextN(numberOfEvents)
+      result.expectNoMessage()
+
+      envelopes1.collect { case env if env.persistenceId == pid1.id => env.sequenceNr } shouldBe (1 to 10)
+      envelopes1.collect { case env if env.persistenceId == pid2.id => env.sequenceNr } shouldBe (7 to 10)
+
+      numberOfEvents = 0
+
+      // then write with same timestamp
+      val sameTimestamp = timeZero.plusMillis(10)
+      writeEvent(slice, pid3, 11, sameTimestamp, s"event-${pid3.id}-11")
+      numberOfEvents += 1
+
+      for (n <- 11 to 15) {
+        writeEvent(slice, pid1, n, timeZero.plusMillis(n), s"event-${pid1.id}-$n")
+        numberOfEvents += 1
+      }
+
+      val envelopes = result.expectNextN(numberOfEvents)
+      result.expectNoMessage() // no duplicates
+
+      envelopes.collect { case env if env.persistenceId == pid1.id => env.sequenceNr } shouldBe (11 to 15)
+      envelopes.collect { case env if env.persistenceId == pid3.id => env.sequenceNr } shouldBe (11 to 11)
+
     }
   }
 

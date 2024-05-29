@@ -4,7 +4,6 @@
 
 package akka.persistence.dynamodb.internal
 
-import java.time.Instant
 import java.util.{ HashMap => JHashMap }
 
 import scala.concurrent.ExecutionContext
