@@ -4,8 +4,6 @@
 
 package akka.persistence.dynamodb.journal
 
-import java.time.Instant
-
 import scala.collection.immutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
@@ -34,7 +32,6 @@ import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.journal.AsyncWriteJournal
 import akka.persistence.journal.Tagged
 import akka.persistence.query.PersistenceQuery
-import akka.persistence.typed.PersistenceId
 import akka.serialization.Serialization
 import akka.serialization.SerializationExtension
 import akka.serialization.Serializers
@@ -104,8 +101,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
   }
 
   override def asyncWriteMessages(messages: immutable.Seq[AtomicWrite]): Future[immutable.Seq[Try[Unit]]] = {
-    def atomicWrite(atomicWrite: AtomicWrite): Future[Instant] = {
-      val timestamp = InstantFactory.now()
+    def atomicWrite(atomicWrite: AtomicWrite): Future[Done] = {
       val serialized: Try[Seq[SerializedJournalItem]] = Try {
         atomicWrite.payload.map { pr =>
           val (event, tags) = pr.payload match {
@@ -114,9 +110,6 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
             case other =>
               (other.asInstanceOf[AnyRef], Set.empty[String])
           }
-
-          val entityType = PersistenceId.extractEntityType(pr.persistenceId)
-          val slice = persistenceExt.sliceForPersistenceId(pr.persistenceId)
 
           val serializedEvent = event match {
             case s: SerializedEvent => s // already serialized
@@ -136,9 +129,10 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
             SerializedEventMetadata(id, metaManifest, serializedMeta)
           }
 
+          // monotonically increasing, at least 1 microsecond more than previous timestamp
+          val timestamp = InstantFactory.now()
+
           SerializedJournalItem(
-            slice,
-            entityType,
             pr.persistenceId,
             pr.sequenceNr,
             timestamp,
@@ -153,14 +147,14 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
 
       serialized match {
         case Success(writes) =>
-          journalDao.writeEvents(writes).map(_ => timestamp)(ExecutionContexts.parasitic)
+          journalDao.writeEvents(writes)
         case Failure(exc) =>
           Future.failed(exc)
       }
     }
 
     val persistenceId = messages.head.persistenceId
-    val writeResult: Future[Instant] =
+    val writeResult: Future[Done] =
       if (messages.size == 1)
         atomicWrite(messages.head)
       else {
@@ -170,19 +164,15 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
         atomicWrite(batch)
       }
 
+    // FiXME pubSub not added yet
     val writeAndPublishResult: Future[Done] =
-      publish(messages, writeResult)
+      writeResult
 
     writesInProgress.put(persistenceId, writeAndPublishResult)
     writeAndPublishResult.onComplete { _ =>
       self ! WriteFinished(persistenceId, writeAndPublishResult)
     }
     writeAndPublishResult.map(_ => Nil)(ExecutionContexts.parasitic)
-  }
-
-  private def publish(messages: immutable.Seq[AtomicWrite], timestamp: Future[Instant]): Future[Done] = {
-    // FiXME pubSub not added yet
-    Future.successful(Done)
   }
 
   override def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = {

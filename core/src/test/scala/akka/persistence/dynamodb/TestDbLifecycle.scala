@@ -4,7 +4,6 @@
 
 package akka.persistence.dynamodb
 
-import java.net.URI
 import java.util.concurrent.CompletionException
 
 import scala.concurrent.Await
@@ -21,17 +20,16 @@ import akka.actor.typed.ActorSystem
 import akka.persistence.Persistence
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.Suite
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
-import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient
-import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest
+import software.amazon.awssdk.services.dynamodb.model.GlobalSecondaryIndex
 import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
 import software.amazon.awssdk.services.dynamodb.model.KeyType
+import software.amazon.awssdk.services.dynamodb.model.Projection
+import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughput
 import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
@@ -47,7 +45,7 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
 
   lazy val persistenceExt: Persistence = Persistence(typedSystem)
 
-  private lazy val client = ClientProvider(typedSystem).clientFor(testConfigPath + ".client")
+  lazy val client: DynamoDbAsyncClient = ClientProvider(typedSystem).clientFor(testConfigPath + ".client")
 
   override protected def beforeAll(): Unit = {
     try {
@@ -67,6 +65,18 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
       client.describeTable(DescribeTableRequest.builder().tableName(settings.journalTable).build()).asScala
 
     def create(): Future[Done] = {
+      val sliceIndex = GlobalSecondaryIndex
+        .builder()
+        .indexName(settings.journalTable + "_slice_idx")
+        .keySchema(
+          KeySchemaElement.builder().attributeName(EntityTypeSlice).keyType(KeyType.HASH).build(),
+          KeySchemaElement.builder().attributeName(Timestamp).keyType(KeyType.RANGE).build())
+        .projection(
+          Projection.builder().projectionType(ProjectionType.ALL).build()
+        ) // FIXME we could skip a few attributes
+        .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(10L).writeCapacityUnits(10L).build())
+        .build()
+
       val req = CreateTableRequest
         .builder()
         .tableName(settings.journalTable)
@@ -75,8 +85,11 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
           KeySchemaElement.builder().attributeName(SeqNr).keyType(KeyType.RANGE).build())
         .attributeDefinitions(
           AttributeDefinition.builder().attributeName(Pid).attributeType(ScalarAttributeType.S).build(),
-          AttributeDefinition.builder().attributeName(SeqNr).attributeType(ScalarAttributeType.N).build())
+          AttributeDefinition.builder().attributeName(SeqNr).attributeType(ScalarAttributeType.N).build(),
+          AttributeDefinition.builder().attributeName(EntityTypeSlice).attributeType(ScalarAttributeType.S).build(),
+          AttributeDefinition.builder().attributeName(Timestamp).attributeType(ScalarAttributeType.N).build())
         .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
+        .globalSecondaryIndexes(sliceIndex)
         .build()
 
       client.createTable(req).asScala.map(_ => Done)(typedSystem.executionContext)

@@ -9,8 +9,6 @@ import java.time.Instant
 import akka.annotation.InternalApi
 
 final case class SerializedJournalItem(
-    slice: Int,
-    entityType: String,
     persistenceId: String,
     seqNr: Long,
     writeTimestamp: Instant,
@@ -30,9 +28,9 @@ final case class SerializedEventMetadata(serId: Int, serManifest: String, payloa
   // FIXME should attribute names be shorter?
   val Pid = "pid"
   val SeqNr = "seq_nr"
-  val Slice = "slice"
-  // redundant to store entity type, but needed for the bySlices GSI
-  val EntityType = "entity_type"
+  // needed for the bySlices GSI
+  val EntityTypeSlice = "entity_type_slice"
+  val Timestamp = "timestamp"
   val EventSerId = "event_ser_id"
   val EventSerManifest = "event_ser_manifest"
   val EventPayload = "event_payload"
