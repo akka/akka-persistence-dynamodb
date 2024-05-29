@@ -109,7 +109,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       maxSlice: Int,
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-      bySlice[Event].currentBySlices("currentEventsBySlices", entityType, slice, slice, offset)
+      bySlice[Event].currentBySlice("currentEventsBySlices", entityType, slice, offset)
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
     bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
@@ -148,7 +148,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
 
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-      bySlice[Event].liveBySlices("eventsBySlices", entityType, slice, slice, offset)
+      bySlice[Event].liveBySlice("eventsBySlices", entityType, slice, offset)
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
 

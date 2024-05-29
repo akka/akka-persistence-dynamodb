@@ -67,10 +67,9 @@ import org.slf4j.Logger
   }
 
   trait Dao[SerializedItem] {
-    def itemsBySlices(
+    def itemsBySlice(
         entityType: String,
-        minSlice: Int,
-        maxSlice: Int,
+        slice: Int,
         fromTimestamp: Instant,
         toTimestamp: Option[Instant],
         behindCurrentTime: FiniteDuration,
@@ -96,11 +95,10 @@ import org.slf4j.Logger
   private val firstBacktrackingQueryWindow =
     backtrackingWindow.plus(JDuration.ofMillis(settings.querySettings.backtrackingBehindCurrentTime.toMillis))
 
-  def currentBySlices(
+  def currentBySlice(
       logPrefix: String,
       entityType: String,
-      minSlice: Int,
-      maxSlice: Int,
+      slice: Int,
       offset: Offset,
       filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true): Source[Envelope, NotUsed] = {
     val initialOffset = toTimestampOffset(offset)
@@ -124,21 +122,19 @@ import org.slf4j.Logger
 
         if (state.queryCount != 0 && log.isDebugEnabled())
           log.debugN(
-            "{} next query [{}] from slices [{} - {}], between time [{} - {}]. Found [{}] items in previous query.",
+            "{} next query [{}] from slice [{}], between time [{} - {}]. Found [{}] items in previous query.",
             logPrefix,
             state.queryCount,
-            minSlice,
-            maxSlice,
+            slice,
             state.latest.timestamp,
             toTimestamp,
             state.itemCount)
 
         newState -> Some(
           dao
-            .itemsBySlices(
+            .itemsBySlice(
               entityType,
-              minSlice,
-              maxSlice,
+              slice,
               state.latest.timestamp,
               toTimestamp = Some(toTimestamp),
               behindCurrentTime = Duration.Zero,
@@ -150,11 +146,10 @@ import org.slf4j.Logger
       } else {
         if (log.isDebugEnabled)
           log.debugN(
-            "{} query [{}] from slices [{} - {}] completed. Found [{}] items in previous query.",
+            "{} query [{}] from slice [{}] completed. Found [{}] items in previous query.",
             logPrefix,
             state.queryCount,
-            minSlice,
-            maxSlice,
+            slice,
             state.itemCount)
 
         state -> None
@@ -164,10 +159,9 @@ import org.slf4j.Logger
     val currentTimestamp = InstantFactory.now()
     if (log.isDebugEnabled())
       log.debugN(
-        "{} query slices [{} - {}], from time [{}] until now [{}].",
+        "{} query slice [{}], from time [{}] until now [{}].",
         logPrefix,
-        minSlice,
-        maxSlice,
+        slice,
         initialOffset.timestamp,
         currentTimestamp)
 
@@ -180,22 +174,16 @@ import org.slf4j.Logger
 
   }
 
-  def liveBySlices(
+  def liveBySlice(
       logPrefix: String,
       entityType: String,
-      minSlice: Int,
-      maxSlice: Int,
+      slice: Int,
       offset: Offset,
       filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true): Source[Envelope, NotUsed] = {
     val initialOffset = toTimestampOffset(offset)
 
     if (log.isDebugEnabled())
-      log.debugN(
-        "Starting {} query from slices [{} - {}], from time [{}].",
-        logPrefix,
-        minSlice,
-        maxSlice,
-        initialOffset.timestamp)
+      log.debugN("Starting {} query from slice [{}], from time [{}].", logPrefix, slice, initialOffset.timestamp)
 
     def nextOffset(state: QueryState, envelope: Envelope): QueryState = {
       val offset = extractOffset(envelope)
@@ -243,11 +231,10 @@ import org.slf4j.Logger
         if (log.isDebugEnabled)
           delay.foreach { d =>
             log.debugN(
-              "{} query [{}] from slices [{} - {}] delay next [{}] ms.",
+              "{} query [{}] from slice [{}] delay next [{}] ms.",
               logPrefix,
               state.queryCount,
-              minSlice,
-              maxSlice,
+              slice,
               d.toMillis)
           }
 
@@ -326,12 +313,11 @@ import org.slf4j.Logger
           else
             ""
         log.debugN(
-          "{} next query [{}]{} from slices [{} - {}], between time [{} - {}]. {}",
+          "{} next query [{}]{} from slice [{}], between time [{} - {}]. {}",
           logPrefix,
           newState.queryCount,
           backtrackingInfo,
-          minSlice,
-          maxSlice,
+          slice,
           fromTimestamp,
           toTimestamp.getOrElse("None"),
           if (newIdleCount >= 3) s"Idle in [$newIdleCount] queries."
@@ -342,10 +328,9 @@ import org.slf4j.Logger
       newState ->
       Some(
         dao
-          .itemsBySlices(
+          .itemsBySlice(
             entityType,
-            minSlice,
-            maxSlice,
+            slice,
             fromTimestamp,
             toTimestamp,
             behindCurrentTime,

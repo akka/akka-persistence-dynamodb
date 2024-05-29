@@ -79,10 +79,10 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
     }
   }
 
-  override def itemsBySlices(
+  // implements BySliceQuery.Dao
+  override def itemsBySlice(
       entityType: String,
-      minSlice: Int,
-      maxSlice: Int,
+      slice: Int,
       fromTimestamp: Instant,
       toTimestamp: Option[Instant],
       behindCurrentTime: FiniteDuration,
@@ -92,7 +92,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
     val toAttributeValue =
       AttributeValue.fromN(toTimestamp.map(InstantFactory.toEpochMicros).getOrElse(Long.MaxValue).toString)
 
-    val entityTypeSlice = s"$entityType-$minSlice"
+    val entityTypeSlice = s"$entityType-$slice"
 
     val expressionAttributeValues =
       Map(
