@@ -84,21 +84,16 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       entityType: String,
       slice: Int,
       fromTimestamp: Instant,
-      toTimestamp: Option[Instant],
-      behindCurrentTime: FiniteDuration,
+      toTimestamp: Instant,
       backtracking: Boolean): Source[SerializedJournalItem, NotUsed] = {
-
-    val fromAttributeValue = AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString)
-    val toAttributeValue =
-      AttributeValue.fromN(toTimestamp.map(InstantFactory.toEpochMicros).getOrElse(Long.MaxValue).toString)
 
     val entityTypeSlice = s"$entityType-$slice"
 
     val expressionAttributeValues =
       Map(
         ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
-        ":from" -> fromAttributeValue,
-        ":to" -> toAttributeValue).asJava
+        ":from" -> AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString),
+        ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString)).asJava
 
     import JournalAttributes._
     val req = QueryRequest.builder

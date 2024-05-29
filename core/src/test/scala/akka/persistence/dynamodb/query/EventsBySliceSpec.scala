@@ -40,12 +40,15 @@ object EventsBySliceSpec {
       .withFallback(ConfigFactory.parseString(s"""
     # This test is not using backtracking, so increase behind-current-time to
     # reduce risk of missing events
-    akka.persistence.dynamodb.query.behind-current-time = 500 millis
-    akka.persistence.dynamodb-small-buffer = $${akka.persistence.dynamodb}
+    akka.persistence.dynamodb.query {
+      behind-current-time = 500 millis
+      refresh-interval = 1s
+    }
 
     akka.persistence.dynamodb.journal.publish-events = off
 
     # this is used by the "read in chunks" test
+    akka.persistence.dynamodb-small-buffer = $${akka.persistence.dynamodb}
     akka.persistence.dynamodb-small-buffer.query {
       buffer-size = 4
       # for this extreme scenario it will add delay between each query for the live case

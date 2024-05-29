@@ -71,8 +71,7 @@ import org.slf4j.Logger
         entityType: String,
         slice: Int,
         fromTimestamp: Instant,
-        toTimestamp: Option[Instant],
-        behindCurrentTime: FiniteDuration,
+        toTimestamp: Instant,
         backtracking: Boolean): Source[SerializedItem, NotUsed]
 
   }
@@ -132,13 +131,7 @@ import org.slf4j.Logger
 
         newState -> Some(
           dao
-            .itemsBySlice(
-              entityType,
-              slice,
-              state.latest.timestamp,
-              toTimestamp = Some(toTimestamp),
-              behindCurrentTime = Duration.Zero,
-              backtracking = false)
+            .itemsBySlice(entityType, slice, state.latest.timestamp, toTimestamp, backtracking = false)
             .filter { item =>
               filterEventsBeforeSnapshots(item.persistenceId, item.seqNr, item.source)
             }
@@ -295,12 +288,17 @@ import org.slf4j.Logger
             backtrackingExpectFiltered = state.latestBacktrackingSeenCount)
         }
 
-      val behindCurrentTime =
-        if (newState.backtracking) settings.querySettings.backtrackingBehindCurrentTime
-        else settings.querySettings.behindCurrentTime
-
       val fromTimestamp = newState.nextQueryFromTimestamp
-      val toTimestamp = newState.nextQueryToTimestamp
+      val toTimestamp = {
+        val behindCurrentTime =
+          if (newState.backtracking) settings.querySettings.backtrackingBehindCurrentTime
+          else settings.querySettings.behindCurrentTime
+        val behindTimestamp = InstantFactory.now().minusMillis(behindCurrentTime.toMillis)
+        newState.nextQueryToTimestamp match {
+          case Some(t) => if (behindTimestamp.isBefore(t)) behindTimestamp else t
+          case None    => behindTimestamp
+        }
+      }
 
       if (log.isDebugEnabled()) {
         val backtrackingInfo =
@@ -319,7 +317,7 @@ import org.slf4j.Logger
           backtrackingInfo,
           slice,
           fromTimestamp,
-          toTimestamp.getOrElse("None"),
+          toTimestamp,
           if (newIdleCount >= 3) s"Idle in [$newIdleCount] queries."
           else if (state.backtracking) s"Found [${state.itemCount}] items in previous backtracking query."
           else s"Found [${state.itemCount}] items in previous query.")
@@ -328,13 +326,7 @@ import org.slf4j.Logger
       newState ->
       Some(
         dao
-          .itemsBySlice(
-            entityType,
-            slice,
-            fromTimestamp,
-            toTimestamp,
-            behindCurrentTime,
-            backtracking = newState.backtracking)
+          .itemsBySlice(entityType, slice, fromTimestamp, toTimestamp, backtracking = newState.backtracking)
           .filter { item =>
             filterEventsBeforeSnapshots(item.persistenceId, item.seqNr, item.source)
           }
