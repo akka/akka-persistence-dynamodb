@@ -25,7 +25,6 @@ import org.slf4j.Logger
  * INTERNAL API
  */
 @InternalApi private[dynamodb] object BySliceQuery {
-  val EmptyDbTimestamp: Instant = Instant.EPOCH
 
   object QueryState {
     val empty: QueryState =
@@ -34,8 +33,8 @@ import org.slf4j.Logger
 
   final case class QueryState(
       latest: TimestampOffset,
-      rowCount: Int,
-      rowCountSinceBacktracking: Long,
+      itemCount: Int,
+      itemCountSinceBacktracking: Long,
       queryCount: Long,
       idleCount: Long,
       backtrackingCount: Int,
@@ -59,7 +58,7 @@ import org.slf4j.Logger
     }
   }
 
-  trait SerializedRow {
+  trait SerializedItem {
     def persistenceId: String
     def seqNr: Long
     def writeTimestamp: Instant
@@ -67,15 +66,15 @@ import org.slf4j.Logger
     def source: String
   }
 
-  trait Dao[SerializedRow] {
-    def rowsBySlices(
+  trait Dao[SerializedItem] {
+    def itemsBySlices(
         entityType: String,
         minSlice: Int,
         maxSlice: Int,
         fromTimestamp: Instant,
         toTimestamp: Option[Instant],
         behindCurrentTime: FiniteDuration,
-        backtracking: Boolean): Source[SerializedRow, NotUsed]
+        backtracking: Boolean): Source[SerializedItem, NotUsed]
 
   }
 }
@@ -83,9 +82,9 @@ import org.slf4j.Logger
 /**
  * INTERNAL API
  */
-@InternalApi private[dynamodb] class BySliceQuery[Row <: BySliceQuery.SerializedRow, Envelope](
-    dao: BySliceQuery.Dao[Row],
-    createEnvelope: (TimestampOffset, Row) => Envelope,
+@InternalApi private[dynamodb] class BySliceQuery[Item <: BySliceQuery.SerializedItem, Envelope](
+    dao: BySliceQuery.Dao[Item],
+    createEnvelope: (TimestampOffset, Item) => Envelope,
     extractOffset: Envelope => TimestampOffset,
     settings: DynamoDBSettings,
     log: Logger)(implicit val ec: ExecutionContext) {
@@ -107,14 +106,14 @@ import org.slf4j.Logger
     val initialOffset = toTimestampOffset(offset)
 
     def nextOffset(state: QueryState, envelope: Envelope): QueryState =
-      state.copy(latest = extractOffset(envelope), rowCount = state.rowCount + 1)
+      state.copy(latest = extractOffset(envelope), itemCount = state.itemCount + 1)
 
     def nextQuery(state: QueryState, endTimestamp: Instant): (QueryState, Option[Source[Envelope, NotUsed]]) = {
       // Note that we can't know how many events with the same timestamp that are filtered out
-      // so continue until rowCount is 0. That means an extra query at the end to make sure there are no
+      // so continue until itemCount is 0. That means an extra query at the end to make sure there are no
       // more to fetch.
-      if (state.queryCount == 0L || state.rowCount > 0) {
-        val newState = state.copy(rowCount = 0, queryCount = state.queryCount + 1)
+      if (state.queryCount == 0L || state.itemCount > 0) {
+        val newState = state.copy(itemCount = 0, queryCount = state.queryCount + 1)
 
         val toTimestamp = newState.nextQueryToTimestamp match {
           case Some(t) =>
@@ -125,18 +124,18 @@ import org.slf4j.Logger
 
         if (state.queryCount != 0 && log.isDebugEnabled())
           log.debugN(
-            "{} next query [{}] from slices [{} - {}], between time [{} - {}]. Found [{}] rows in previous query.",
+            "{} next query [{}] from slices [{} - {}], between time [{} - {}]. Found [{}] items in previous query.",
             logPrefix,
             state.queryCount,
             minSlice,
             maxSlice,
             state.latest.timestamp,
             toTimestamp,
-            state.rowCount)
+            state.itemCount)
 
         newState -> Some(
           dao
-            .rowsBySlices(
+            .itemsBySlices(
               entityType,
               minSlice,
               maxSlice,
@@ -144,19 +143,19 @@ import org.slf4j.Logger
               toTimestamp = Some(toTimestamp),
               behindCurrentTime = Duration.Zero,
               backtracking = false)
-            .filter { row =>
-              filterEventsBeforeSnapshots(row.persistenceId, row.seqNr, row.source)
+            .filter { item =>
+              filterEventsBeforeSnapshots(item.persistenceId, item.seqNr, item.source)
             }
             .via(deserializeAndAddOffset(state.latest)))
       } else {
         if (log.isDebugEnabled)
           log.debugN(
-            "{} query [{}] from slices [{} - {}] completed. Found [{}] rows in previous query.",
+            "{} query [{}] from slices [{} - {}] completed. Found [{}] items in previous query.",
             logPrefix,
             state.queryCount,
             minSlice,
             maxSlice,
-            state.rowCount)
+            state.itemCount)
 
         state -> None
       }
@@ -211,7 +210,7 @@ import org.slf4j.Logger
         state.copy(
           latestBacktracking = offset,
           latestBacktrackingSeenCount = newSeenCount,
-          rowCount = state.rowCount + 1)
+          itemCount = state.itemCount + 1)
 
       } else {
         if (offset.timestamp.isBefore(state.latest.timestamp))
@@ -227,7 +226,7 @@ import org.slf4j.Logger
               offset)
         }
 
-        state.copy(latest = offset, rowCount = state.rowCount + 1)
+        state.copy(latest = offset, itemCount = state.itemCount + 1)
       }
     }
 
@@ -237,7 +236,7 @@ import org.slf4j.Logger
         None
       } else {
         val delay = ContinuousQuery.adjustNextDelay(
-          state.rowCount,
+          state.itemCount,
           settings.querySettings.bufferSize,
           settings.querySettings.refreshInterval)
 
@@ -257,15 +256,15 @@ import org.slf4j.Logger
     }
 
     def switchFromBacktracking(state: QueryState): Boolean = {
-      state.backtracking && state.rowCount < settings.querySettings.bufferSize - state.backtrackingExpectFiltered
+      state.backtracking && state.itemCount < settings.querySettings.bufferSize - state.backtrackingExpectFiltered
     }
 
     def nextQuery(state: QueryState): (QueryState, Option[Source[Envelope, NotUsed]]) = {
-      val newIdleCount = if (state.rowCount == 0) state.idleCount + 1 else 0
+      val newIdleCount = if (state.itemCount == 0) state.idleCount + 1 else 0
       val newState =
         if (settings.querySettings.backtrackingEnabled && !state.backtracking && state.latest != TimestampOffset.Zero &&
           (newIdleCount >= 5 ||
-          state.rowCountSinceBacktracking + state.rowCount >= settings.querySettings.bufferSize * 3 ||
+          state.itemCountSinceBacktracking + state.itemCount >= settings.querySettings.bufferSize * 3 ||
           JDuration
             .between(state.latestBacktracking.timestamp, state.latest.timestamp)
             .compareTo(halfBacktrackingWindow) > 0)) {
@@ -282,8 +281,8 @@ import org.slf4j.Logger
               state.latestBacktracking
 
           state.copy(
-            rowCount = 0,
-            rowCountSinceBacktracking = 0,
+            itemCount = 0,
+            itemCountSinceBacktracking = 0,
             queryCount = state.queryCount + 1,
             idleCount = newIdleCount,
             backtrackingCount = 1,
@@ -292,8 +291,8 @@ import org.slf4j.Logger
         } else if (switchFromBacktracking(state)) {
           // switch from backtracking
           state.copy(
-            rowCount = 0,
-            rowCountSinceBacktracking = 0,
+            itemCount = 0,
+            itemCountSinceBacktracking = 0,
             queryCount = state.queryCount + 1,
             idleCount = newIdleCount,
             backtrackingCount = 0)
@@ -301,8 +300,8 @@ import org.slf4j.Logger
           // continue
           val newBacktrackingCount = if (state.backtracking) state.backtrackingCount + 1 else 0
           state.copy(
-            rowCount = 0,
-            rowCountSinceBacktracking = state.rowCountSinceBacktracking + state.rowCount,
+            itemCount = 0,
+            itemCountSinceBacktracking = state.itemCountSinceBacktracking + state.itemCount,
             queryCount = state.queryCount + 1,
             idleCount = newIdleCount,
             backtrackingCount = newBacktrackingCount,
@@ -319,7 +318,7 @@ import org.slf4j.Logger
       if (log.isDebugEnabled()) {
         val backtrackingInfo =
           if (newState.backtracking && !state.backtracking)
-            s" switching to backtracking mode, [${state.rowCountSinceBacktracking + state.rowCount}] events behind,"
+            s" switching to backtracking mode, [${state.itemCountSinceBacktracking + state.itemCount}] events behind,"
           else if (!newState.backtracking && state.backtracking)
             " switching from backtracking mode,"
           else if (newState.backtracking && state.backtracking)
@@ -336,14 +335,14 @@ import org.slf4j.Logger
           fromTimestamp,
           toTimestamp.getOrElse("None"),
           if (newIdleCount >= 3) s"Idle in [$newIdleCount] queries."
-          else if (state.backtracking) s"Found [${state.rowCount}] rows in previous backtracking query."
-          else s"Found [${state.rowCount}] rows in previous query.")
+          else if (state.backtracking) s"Found [${state.itemCount}] items in previous backtracking query."
+          else s"Found [${state.itemCount}] items in previous query.")
       }
 
       newState ->
       Some(
         dao
-          .rowsBySlices(
+          .itemsBySlices(
             entityType,
             minSlice,
             maxSlice,
@@ -351,8 +350,8 @@ import org.slf4j.Logger
             toTimestamp,
             behindCurrentTime,
             backtracking = newState.backtracking)
-          .filter { row =>
-            filterEventsBeforeSnapshots(row.persistenceId, row.seqNr, row.source)
+          .filter { item =>
+            filterEventsBeforeSnapshots(item.persistenceId, item.seqNr, item.source)
           }
           .via(deserializeAndAddOffset(newState.currentOffset)))
     }
@@ -365,36 +364,36 @@ import org.slf4j.Logger
       beforeQuery = _ => None)
   }
 
-  private def deserializeAndAddOffset(timestampOffset: TimestampOffset): Flow[Row, Envelope, NotUsed] = {
-    Flow[Row].statefulMapConcat { () =>
+  private def deserializeAndAddOffset(timestampOffset: TimestampOffset): Flow[Item, Envelope, NotUsed] = {
+    Flow[Item].statefulMapConcat { () =>
       var currentTimestamp = timestampOffset.timestamp
       var currentSequenceNrs: Map[String, Long] = timestampOffset.seen
-      row => {
-        if (row.writeTimestamp == currentTimestamp) {
+      item => {
+        if (item.writeTimestamp == currentTimestamp) {
           // has this already been seen?
-          if (currentSequenceNrs.get(row.persistenceId).exists(_ >= row.seqNr)) {
+          if (currentSequenceNrs.get(item.persistenceId).exists(_ >= item.seqNr)) {
             if (currentSequenceNrs.size >= settings.querySettings.bufferSize) {
               throw new IllegalStateException(
                 s"Too many events stored with the same timestamp [$currentTimestamp], buffer size [${settings.querySettings.bufferSize}]")
             }
             log.traceN(
               "filtering [{}] [{}] as db timestamp is the same as last offset and is in seen [{}]",
-              row.persistenceId,
-              row.seqNr,
+              item.persistenceId,
+              item.seqNr,
               currentSequenceNrs)
             Nil
           } else {
-            currentSequenceNrs = currentSequenceNrs.updated(row.persistenceId, row.seqNr)
+            currentSequenceNrs = currentSequenceNrs.updated(item.persistenceId, item.seqNr)
             val offset =
-              TimestampOffset(row.writeTimestamp, row.readTimestamp, currentSequenceNrs)
-            createEnvelope(offset, row) :: Nil
+              TimestampOffset(item.writeTimestamp, item.readTimestamp, currentSequenceNrs)
+            createEnvelope(offset, item) :: Nil
           }
         } else {
           // ne timestamp, reset currentSequenceNrs
-          currentTimestamp = row.writeTimestamp
-          currentSequenceNrs = Map(row.persistenceId -> row.seqNr)
-          val offset = TimestampOffset(row.writeTimestamp, row.readTimestamp, currentSequenceNrs)
-          createEnvelope(offset, row) :: Nil
+          currentTimestamp = item.writeTimestamp
+          currentSequenceNrs = Map(item.persistenceId -> item.seqNr)
+          val offset = TimestampOffset(item.writeTimestamp, item.readTimestamp, currentSequenceNrs)
+          createEnvelope(offset, item) :: Nil
         }
       }
     }

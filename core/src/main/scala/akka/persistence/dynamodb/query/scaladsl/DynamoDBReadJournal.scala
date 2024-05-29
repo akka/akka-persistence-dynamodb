@@ -22,7 +22,6 @@ import akka.persistence.query.scaladsl._
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.CurrentEventsBySliceQuery
 import akka.persistence.query.typed.scaladsl.EventsBySliceQuery
-import akka.persistence.serialization
 import akka.persistence.typed.PersistenceId
 import akka.serialization.SerializationExtension
 import akka.stream.scaladsl.Source
@@ -57,24 +56,25 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       serialization.deserialize(payload, item.serId, item.serManifest).get.asInstanceOf[Event])
 
   private val _bySlice: BySliceQuery[SerializedJournalItem, EventEnvelope[Any]] = {
-    val createEnvelope: (TimestampOffset, SerializedJournalItem) => EventEnvelope[Any] = (offset, row) => {
-      val event = deserializePayload(row)
-      val metadata = row.metadata.map(meta => serialization.deserialize(meta.payload, meta.serId, meta.serManifest).get)
+    val createEnvelope: (TimestampOffset, SerializedJournalItem) => EventEnvelope[Any] = (offset, item) => {
+      val event = deserializePayload(item)
+      val metadata =
+        item.metadata.map(meta => serialization.deserialize(meta.payload, meta.serId, meta.serManifest).get)
       val source = if (event.isDefined) EnvelopeOrigin.SourceQuery else EnvelopeOrigin.SourceBacktracking
-      val filtered = row.serId == filteredPayloadSerId
+      val filtered = item.serId == filteredPayloadSerId
 
       new EventEnvelope(
         offset,
-        row.persistenceId,
-        row.seqNr,
+        item.persistenceId,
+        item.seqNr,
         if (filtered) None else event,
-        row.writeTimestamp.toEpochMilli,
+        item.writeTimestamp.toEpochMilli,
         metadata,
-        PersistenceId.extractEntityType(row.persistenceId),
-        persistenceExt.sliceForPersistenceId(row.persistenceId),
+        PersistenceId.extractEntityType(item.persistenceId),
+        persistenceExt.sliceForPersistenceId(item.persistenceId),
         filtered,
         source,
-        tags = row.tags)
+        tags = item.tags)
     }
 
     val extractOffset: EventEnvelope[Any] => TimestampOffset = env => env.offset.asInstanceOf[TimestampOffset]

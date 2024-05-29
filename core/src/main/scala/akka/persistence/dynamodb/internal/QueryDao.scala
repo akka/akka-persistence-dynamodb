@@ -79,7 +79,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
     }
   }
 
-  override def rowsBySlices(
+  override def itemsBySlices(
       entityType: String,
       minSlice: Int,
       maxSlice: Int,

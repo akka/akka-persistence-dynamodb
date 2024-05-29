@@ -19,7 +19,7 @@ final case class SerializedJournalItem(
     writerUuid: String,
     tags: Set[String],
     metadata: Option[SerializedEventMetadata])
-    extends BySliceQuery.SerializedRow {
+    extends BySliceQuery.SerializedItem {
 
   override def source: String =
     if (payload.isDefined) EnvelopeOrigin.SourceQuery else EnvelopeOrigin.SourceBacktracking
