@@ -108,8 +108,11 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       minSlice: Int,
       maxSlice: Int,
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
-    bySlice
-      .currentBySlices("currentEventsBySlices", entityType, minSlice, maxSlice, offset)
+    val bySliceQueries = (minSlice to maxSlice).map { slice =>
+      bySlice[Event].currentBySlices("currentEventsBySlices", entityType, slice, slice, offset)
+    }
+    require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
+    bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
   }
 
   /**
@@ -143,7 +146,14 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       minSlice: Int,
       maxSlice: Int,
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
-    val dbSource = bySlice[Event].liveBySlices("eventsBySlices", entityType, minSlice, maxSlice, offset)
+
+    val bySliceQueries = (minSlice to maxSlice).map { slice =>
+      bySlice[Event].liveBySlices("eventsBySlices", entityType, slice, slice, offset)
+    }
+    require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
+
+    val dbSource = bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
+
     // FIXME merge with pubSubSource
     dbSource
   }

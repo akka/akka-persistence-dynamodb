@@ -92,73 +92,64 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
     val toAttributeValue =
       AttributeValue.fromN(toTimestamp.map(InstantFactory.toEpochMicros).getOrElse(Long.MaxValue).toString)
 
-    def queryOneSlice(slice: Int): Source[SerializedJournalItem, NotUsed] = {
-      Source
-        .lazySource { () =>
+    val entityTypeSlice = s"$entityType-$minSlice"
 
-          val entityTypeSlice = s"$entityType-$slice"
+    val expressionAttributeValues =
+      Map(
+        ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
+        ":from" -> fromAttributeValue,
+        ":to" -> toAttributeValue).asJava
 
-          val expressionAttributeValues =
-            Map(
-              ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
-              ":from" -> fromAttributeValue,
-              ":to" -> toAttributeValue).asJava
+    import JournalAttributes._
+    val req = QueryRequest.builder
+      .tableName(settings.journalTable)
+      .indexName(settings.journalBySliceGsi)
+      .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $Timestamp BETWEEN :from AND :to")
+      .filterExpression(s"attribute_not_exists($Deleted)")
+      .expressionAttributeValues(expressionAttributeValues)
+      .build()
 
-          import JournalAttributes._
-          val req = QueryRequest.builder
-            .tableName(settings.journalTable)
-            .indexName(settings.journalBySliceGsi)
-            .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $Timestamp BETWEEN :from AND :to")
-            .filterExpression(s"attribute_not_exists($Deleted)")
-            .expressionAttributeValues(expressionAttributeValues)
-            .build()
+    // FIXME for backtracking we don't need all attributes, can be filtered with builder.attributesToGet
 
-          // FIXME for backtracking we don't need all attributes, can be filtered with builder.attributesToGet
+    val publisher = client.queryPaginator(req)
 
-          val publisher = client.queryPaginator(req)
+    Source.fromPublisher(publisher).mapConcat { response =>
+      response.items().iterator().asScala.map { item =>
+        val readTimestamp = InstantFactory.now()
+        if (backtracking) {
+          SerializedJournalItem(
+            persistenceId = item.get(Pid).s(),
+            seqNr = item.get(SeqNr).n().toLong,
+            writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
+            readTimestamp = readTimestamp,
+            payload = None, // lazy loaded for backtracking
+            serId = item.get(EventSerId).n().toInt,
+            serManifest = "",
+            writerUuid = "", // not need in this query
+            tags = Set.empty, // FIXME
+            metadata = None)
+        } else {
 
-          Source.fromPublisher(publisher).mapConcat { response =>
-            response.items().iterator().asScala.map { item =>
-              val readTimestamp = InstantFactory.now()
-              if (backtracking) {
-                SerializedJournalItem(
-                  persistenceId = item.get(Pid).s(),
-                  seqNr = item.get(SeqNr).n().toLong,
-                  writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-                  readTimestamp = readTimestamp,
-                  payload = None, // lazy loaded for backtracking
-                  serId = item.get(EventSerId).n().toInt,
-                  serManifest = "",
-                  writerUuid = "", // not need in this query
-                  tags = Set.empty, // FIXME
-                  metadata = None)
-              } else {
-
-                val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
-                  SerializedEventMetadata(
-                    serId = item.get(MetaSerId).n().toInt,
-                    serManifest = item.get(MetaSerManifest).s(),
-                    payload = metaPayload.b().asByteArray())
-                }
-
-                SerializedJournalItem(
-                  persistenceId = item.get(Pid).s(),
-                  seqNr = item.get(SeqNr).n().toLong,
-                  writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-                  readTimestamp = readTimestamp,
-                  payload = Some(item.get(EventPayload).b().asByteArray()),
-                  serId = item.get(EventSerId).n().toInt,
-                  serManifest = item.get(EventSerManifest).s(),
-                  writerUuid = "", // not need in this query
-                  tags = Set.empty, // FIXME
-                  metadata = metadata)
-              }
-            }
+          val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
+            SerializedEventMetadata(
+              serId = item.get(MetaSerId).n().toInt,
+              serManifest = item.get(MetaSerManifest).s(),
+              payload = metaPayload.b().asByteArray())
           }
-        }
-        .mapMaterializedValue(_ => NotUsed)
-    }
 
-    queryOneSlice(minSlice).concatAllLazy((minSlice + 1 to maxSlice).map(queryOneSlice): _*)
+          SerializedJournalItem(
+            persistenceId = item.get(Pid).s(),
+            seqNr = item.get(SeqNr).n().toLong,
+            writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
+            readTimestamp = readTimestamp,
+            payload = Some(item.get(EventPayload).b().asByteArray()),
+            serId = item.get(EventSerId).n().toInt,
+            serManifest = item.get(EventSerManifest).s(),
+            writerUuid = "", // not need in this query
+            tags = Set.empty, // FIXME
+            metadata = metadata)
+        }
+      }
+    }
   }
 }
