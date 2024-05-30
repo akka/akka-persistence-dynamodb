@@ -53,7 +53,7 @@ final class DynamodbReadJournal(delegate: scaladsl.DynamoDBReadJournal)
    * The supported offset is [[akka.persistence.query.TimestampOffset]] and [[Offset.noOffset]].
    *
    * The timestamp is based on the client wall clock and the events are read from a DynamoDB global secondary index,
-   * which is eventually consistent.This means that a "later" event may be visible first and when retrieving events
+   * which is eventually consistent. This means that a "later" event may be visible first and when retrieving events
    * after the previously seen timestamp we may miss some events. For that reason it will perform additional
    * backtracking queries to catch missed events. Events from backtracking will typically be duplicates of previously
    * emitted events. It's the responsibility of the consumer to filter duplicates and make sure that events are
