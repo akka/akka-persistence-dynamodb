@@ -11,6 +11,7 @@ object Dependencies {
   val ScalaVersions = Dependencies.Scala2Versions :+ Dependencies.Scala3
   val AkkaVersion = System.getProperty("override.akka.version", "2.9.3")
   val AkkaVersionInDocs = VersionNumber(AkkaVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
+  val AkkaProjectionVersion = "1.5.4"
   val AkkaProjectionVersionInDocs = "current"
   val AwsSdkVersion = "2.25.59"
 
@@ -18,14 +19,16 @@ object Dependencies {
     val akkaActorTyped = "com.typesafe.akka" %% "akka-actor-typed" % AkkaVersion
     val akkaStream = "com.typesafe.akka" %% "akka-stream" % AkkaVersion
     val akkaPersistence = "com.typesafe.akka" %% "akka-persistence-typed" % AkkaVersion
+    val akkaPersistenceTyped = "com.typesafe.akka" %% "akka-persistence-typed" % AkkaVersion
     val akkaPersistenceQuery = "com.typesafe.akka" %% "akka-persistence-query" % AkkaVersion
+    val akkaProjectionEventsourced = "com.lightbend.akka" %% "akka-projection-eventsourced" % AkkaProjectionVersion
     val dynamodbSdk = "software.amazon.awssdk" % "dynamodb" % AwsSdkVersion
 
   }
 
   object TestDeps {
     val akkaStreamTyped = "com.typesafe.akka" %% "akka-stream-typed" % AkkaVersion % Test
-    val akkaPersistenceTyped = "com.typesafe.akka" %% "akka-persistence-typed" % AkkaVersion % Test
+    val akkaPersistenceTyped = Compile.akkaPersistenceTyped % Test
     val akkaShardingTyped = "com.typesafe.akka" %% "akka-cluster-sharding-typed" % AkkaVersion % Test
     val akkaPersistenceTck = "com.typesafe.akka" %% "akka-persistence-tck" % AkkaVersion % Test
     val akkaTestkit = "com.typesafe.akka" %% "akka-actor-testkit-typed" % AkkaVersion % Test
@@ -45,6 +48,17 @@ object Dependencies {
     akkaPersistence,
     akkaPersistenceQuery,
     TestDeps.akkaPersistenceTck,
+    TestDeps.akkaStreamTestkit,
+    TestDeps.akkaTestkit,
+    TestDeps.akkaJackson,
+    TestDeps.akkaStreamTyped,
+    TestDeps.logback,
+    TestDeps.scalaTest)
+
+  val projection = Seq(
+    dynamodbSdk.exclude("software.amazon.awssdk", "apache-client"),
+    Compile.akkaProjectionEventsourced,
+    Compile.akkaPersistenceTyped,
     TestDeps.akkaStreamTestkit,
     TestDeps.akkaTestkit,
     TestDeps.akkaJackson,
