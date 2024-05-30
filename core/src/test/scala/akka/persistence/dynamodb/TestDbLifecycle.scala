@@ -4,6 +4,7 @@
 
 package akka.persistence.dynamodb
 
+import java.time.Instant
 import java.util.concurrent.CompletionException
 
 import scala.concurrent.Await
@@ -18,10 +19,25 @@ import scala.util.control.NonFatal
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.persistence.Persistence
+import akka.persistence.dynamodb.internal.InstantFactory
+import akka.persistence.dynamodb.internal.JournalAttributes
+import akka.persistence.dynamodb.internal.JournalAttributes.EntityTypeSlice
+import akka.persistence.dynamodb.internal.JournalAttributes.EventPayload
+import akka.persistence.dynamodb.internal.JournalAttributes.EventSerId
+import akka.persistence.dynamodb.internal.JournalAttributes.EventSerManifest
+import akka.persistence.dynamodb.internal.JournalAttributes.Pid
+import akka.persistence.dynamodb.internal.JournalAttributes.SeqNr
+import akka.persistence.dynamodb.internal.JournalAttributes.Timestamp
+import akka.persistence.dynamodb.internal.JournalAttributes.Writer
+import akka.persistence.typed.PersistenceId
+import akka.serialization.SerializationExtension
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.Suite
+import org.slf4j.LoggerFactory
+import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DeleteTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest
@@ -31,6 +47,7 @@ import software.amazon.awssdk.services.dynamodb.model.KeyType
 import software.amazon.awssdk.services.dynamodb.model.Projection
 import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughput
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
 
@@ -46,6 +63,8 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
   lazy val persistenceExt: Persistence = Persistence(typedSystem)
 
   lazy val client: DynamoDbAsyncClient = ClientProvider(typedSystem).clientFor(testConfigPath + ".client")
+
+  private lazy val log = LoggerFactory.getLogger(getClass)
 
   override protected def beforeAll(): Unit = {
     try {
@@ -67,7 +86,7 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
     def create(): Future[Done] = {
       val sliceIndex = GlobalSecondaryIndex
         .builder()
-        .indexName(settings.journalTable + "_slice_idx")
+        .indexName(settings.journalBySliceGsi)
         .keySchema(
           KeySchemaElement.builder().attributeName(EntityTypeSlice).keyType(KeyType.HASH).build(),
           KeySchemaElement.builder().attributeName(Timestamp).keyType(KeyType.RANGE).build())
@@ -111,6 +130,34 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
       case Failure(exc) =>
         Future.failed[Done](exc)
     }
+  }
+
+  // to be able to store events with specific timestamps
+  def writeEvent(slice: Int, persistenceId: PersistenceId, seqNr: Long, timestamp: Instant, event: String): Unit = {
+    import java.util.{ HashMap => JHashMap }
+    import JournalAttributes._
+
+    log.debug("Write test event [{}] [{}] [{}] at time [{}]", persistenceId, seqNr, event, timestamp)
+
+    val stringSerializer = SerializationExtension(typedSystem).serializerFor(classOf[String])
+
+    val attributes = new JHashMap[String, AttributeValue]
+    attributes.put(Pid, AttributeValue.fromS(persistenceId.id))
+    attributes.put(SeqNr, AttributeValue.fromN(seqNr.toString))
+    attributes.put(EntityTypeSlice, AttributeValue.fromS(s"${persistenceId.entityTypeHint}-$slice"))
+    val timestampMicros = InstantFactory.toEpochMicros(timestamp)
+    attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
+    attributes.put(EventSerId, AttributeValue.fromN(stringSerializer.identifier.toString))
+    attributes.put(EventSerManifest, AttributeValue.fromS(""))
+    attributes.put(EventPayload, AttributeValue.fromB(SdkBytes.fromByteArray(stringSerializer.toBinary(event))))
+    attributes.put(Writer, AttributeValue.fromS(""))
+
+    val req = PutItemRequest
+      .builder()
+      .tableName(settings.journalTable)
+      .item(attributes)
+      .build()
+    Await.result(client.putItem(req).asScala, 10.seconds)
   }
 
 }

@@ -37,6 +37,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
  */
 @InternalApi private[akka] object JournalDao {
   private val log: Logger = LoggerFactory.getLogger(classOf[JournalDao])
+
 }
 
 /**

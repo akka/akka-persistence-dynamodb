@@ -16,6 +16,8 @@ import akka.annotation.InternalApi
 @InternalApi private[akka] object InstantFactory {
   private val previousNow = new AtomicReference(Instant.EPOCH)
 
+  val EmptyTimestamp: Instant = Instant.EPOCH
+
   /**
    * Current time truncated to microseconds. Within this JVM it's guaranteed to be equal to or greater than previous
    * invocation of `now`.

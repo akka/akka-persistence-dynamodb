@@ -12,12 +12,18 @@ final case class SerializedJournalItem(
     persistenceId: String,
     seqNr: Long,
     writeTimestamp: Instant,
+    readTimestamp: Instant,
     payload: Option[Array[Byte]],
     serId: Int,
     serManifest: String,
     writerUuid: String,
     tags: Set[String],
     metadata: Option[SerializedEventMetadata])
+    extends BySliceQuery.SerializedItem {
+
+  override def source: String =
+    if (payload.isDefined) EnvelopeOrigin.SourceQuery else EnvelopeOrigin.SourceBacktracking
+}
 
 final case class SerializedEventMetadata(serId: Int, serManifest: String, payload: Array[Byte])
 
@@ -30,7 +36,7 @@ final case class SerializedEventMetadata(serId: Int, serManifest: String, payloa
   val SeqNr = "seq_nr"
   // needed for the bySlices GSI
   val EntityTypeSlice = "entity_type_slice"
-  val Timestamp = "timestamp"
+  val Timestamp = "ts"
   val EventSerId = "event_ser_id"
   val EventSerManifest = "event_ser_manifest"
   val EventPayload = "event_payload"

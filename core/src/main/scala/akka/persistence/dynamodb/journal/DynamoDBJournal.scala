@@ -136,6 +136,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
             pr.persistenceId,
             pr.sequenceNr,
             timestamp,
+            InstantFactory.EmptyTimestamp,
             Some(serializedEvent.bytes),
             serializedEvent.serializerId,
             serializedEvent.serializerManifest,
