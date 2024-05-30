@@ -18,8 +18,8 @@ final class DynamoDBReadJournalProvider(system: ExtendedActorSystem, config: Con
   override def scaladslReadJournal(): ReadJournal = scaladslReadJournalInstance
 
   private val javadslReadJournalInstance =
-    new javadsl.DynamodbReadJournal(scaladslReadJournalInstance)
+    new javadsl.DynamoDBReadJournal(scaladslReadJournalInstance)
 
-  override def javadslReadJournal(): javadsl.DynamodbReadJournal = javadslReadJournalInstance
+  override def javadslReadJournal(): javadsl.DynamoDBReadJournal = javadslReadJournalInstance
 
 }
