@@ -7,7 +7,6 @@ package akka.projection.dynamodb.internal
 import java.util.concurrent.atomic.AtomicLong
 
 import scala.annotation.nowarn
-import scala.collection.immutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
@@ -17,6 +16,7 @@ import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.LoggerOps
 import akka.annotation.InternalApi
+import akka.dispatch.ExecutionContexts
 import akka.event.Logging
 import akka.event.LoggingAdapter
 import akka.persistence.query.DeletedDurableState
@@ -73,6 +73,8 @@ private[projection] object DynamoDBProjectionImpl {
   val log: Logger = LoggerFactory.getLogger(classOf[DynamoDBProjectionImpl[_, _]])
 
   private val FutureDone: Future[Done] = Future.successful(Done)
+  private val FutureTrue: Future[Boolean] = Future.successful(true)
+  private val FutureFalse: Future[Boolean] = Future.successful(false)
 
   private[projection] def createOffsetStore(
       projectionId: ProjectionId,
@@ -195,13 +197,12 @@ private[projection] object DynamoDBProjectionImpl {
             case Duplicate =>
               FutureDone
             case RejectedSeqNr =>
-              triggerReplayIfPossible(sourceProvider, offsetStore, envelope)
-              FutureDone
+              triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map(_ => Done)(ExecutionContexts.parasitic)
             case RejectedBacktrackingSeqNr =>
-              if (triggerReplayIfPossible(sourceProvider, offsetStore, envelope))
-                FutureDone
-              else
-                throwRejectedEnvelope(sourceProvider, envelope)
+              triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map {
+                case true  => Done
+                case false => throwRejectedEnvelope(sourceProvider, envelope)
+              }
           }
       }
     }
@@ -210,19 +211,21 @@ private[projection] object DynamoDBProjectionImpl {
   private def triggerReplayIfPossible[Offset, Envelope](
       sourceProvider: SourceProvider[Offset, Envelope],
       offsetStore: DynamoDBOffsetStore,
-      envelope: Envelope): Boolean = {
+      envelope: Envelope)(implicit ec: ExecutionContext): Future[Boolean] = {
     envelope match {
       case env: EventEnvelope[Any @unchecked] if env.sequenceNr > 1 =>
         sourceProvider match {
           case provider: CanTriggerReplay =>
-            val fromSeqNr = offsetStore.storedSeqNr(env.persistenceId) + 1
-            provider.triggerReplay(env.persistenceId, fromSeqNr, env.sequenceNr)
-            true
+            offsetStore.storedSeqNr(env.persistenceId).map { storedSeqNr =>
+              val fromSeqNr = storedSeqNr + 1
+              provider.triggerReplay(env.persistenceId, fromSeqNr, env.sequenceNr)
+              true
+            }
           case _ =>
-            false // no replay support for other source providers
+            FutureFalse // no replay support for other source providers
         }
       case _ =>
-        false // no replay support for non typed envelopes
+        FutureFalse // no replay support for non typed envelopes
     }
   }
 
@@ -412,7 +415,7 @@ private[projection] class DynamoDBProjectionImpl[Offset, Envelope](
 
     override protected def saveOffsetsAndReport(
         projectionId: ProjectionId,
-        batch: immutable.Seq[ProjectionContextImpl[Offset, Envelope]]): Future[Done] = {
+        batch: Seq[ProjectionContextImpl[Offset, Envelope]]): Future[Done] = {
       import DynamoDBProjectionImpl.FutureDone
 
       val acceptedContexts =
