@@ -21,7 +21,6 @@ import akka.persistence.Persistence
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.query.DeletedDurableState
 import akka.persistence.query.DurableStateChange
-import akka.persistence.query.NoOffset
 import akka.persistence.query.TimestampOffset
 import akka.persistence.query.UpdatedDurableState
 import akka.persistence.query.typed.EventEnvelope
@@ -69,6 +68,10 @@ private[projection] object DynamoDBOffsetStore {
     def latestTimestamp: Instant =
       if (offsetBySlice.isEmpty) Instant.EPOCH
       else offsetBySlice.valuesIterator.map(_.timestamp).max
+
+    def latestOffset: TimestampOffset =
+      if (offsetBySlice.isEmpty) TimestampOffset.Zero
+      else offsetBySlice.valuesIterator.maxBy(_.timestamp)
 
     def add(records: IndexedSeq[Record]): State = {
       records.foldLeft(this) { case (acc, r) =>
@@ -186,9 +189,9 @@ private[projection] class DynamoDBOffsetStore(
 
   private[projection] implicit val executionContext: ExecutionContext = system.executionContext
 
-  // The OffsetStore instance is used by a single projectionId and there shouldn't be any concurrent
-  // calls to methods that access the `state`. To detect any violations of that concurrency assumption
-  // we use AtomicReference and fail if the CAS fails.
+  // The OffsetStore instance is used by a single projectionId and there shouldn't be many concurrent
+  // calls to methods that access the `state`, but for example validate (load) may be concurrent
+  // with save. Therefore, this state can be updated concurrently with CAS retries.
   private val state = new AtomicReference(State.empty)
 
   // Transient state of inflight pid -> seqNr (before they have been stored and included in `state`), which is
@@ -219,13 +222,10 @@ private[projection] class DynamoDBOffsetStore(
   def getInflight(): Map[Pid, SeqNr] =
     inflight.get()
 
+  // This is used by projection management and returns latest offset
   def getOffset[Offset](): Future[Option[Offset]] = {
-    // FIXME somewhat unclear if this should be latest or by slice
-//    getState().latestOffset match {
-//      case Some(t) => Future.successful(Some(t.asInstanceOf[Offset]))
-//      case None    => readOffset()
-//    }
-    ???
+    // FIXME in r2dbc this will reload via readOffset if no state
+    Future.successful(Some(getState().latestOffset).map(_.asInstanceOf[Offset]))
   }
 
   def readOffset[Offset](): Future[Option[Offset]] = {
@@ -285,13 +285,14 @@ private[projection] class DynamoDBOffsetStore(
   def load(pid: Pid): Future[Done] = {
     val oldState = state.get()
     val slice = persistenceExt.sliceForPersistenceId(pid)
-    dao.loadSequenceNumber(slice, pid).map {
+    dao.loadSequenceNumber(slice, pid).flatMap {
       case Some(record) =>
         val newState = oldState.add(Vector(record))
-        if (!state.compareAndSet(oldState, newState))
-          throw new IllegalStateException("Unexpected concurrent modification of state from load.")
-        Done
-      case None => Done
+        if (state.compareAndSet(oldState, newState))
+          FutureDone
+        else
+          load(pid) // CAS retry, concurrent update
+      case None => FutureDone
     }
   }
 
@@ -305,11 +306,12 @@ private[projection] class DynamoDBOffsetStore(
         val slice = persistenceExt.sliceForPersistenceId(pid)
         dao.loadSequenceNumber(slice, pid)
       }
-      Future.sequence(loadedRecords).map { records =>
+      Future.sequence(loadedRecords).flatMap { records =>
         val newState = oldState.add(records.flatten)
-        if (!state.compareAndSet(oldState, newState))
-          throw new IllegalStateException("Unexpected concurrent modification of state from load.")
-        Done
+        if (state.compareAndSet(oldState, newState))
+          FutureDone
+        else
+          load(pids) // CAS retry, concurrent update
       }
     }
   }
@@ -366,6 +368,7 @@ private[projection] class DynamoDBOffsetStore(
         val evictedNewState =
           if (newState.size > settings.keepNumberOfEntries && evictThresholdReached && newState.window
               .compareTo(evictWindow) > 0) {
+            // FIXME maybe this should take the slice into account
             val evictUntil = newState.latestTimestamp.minus(settings.timeWindow)
             val s = newState.evict(evictUntil, settings.keepNumberOfEntries)
             logger.debugN(
@@ -384,16 +387,18 @@ private[projection] class DynamoDBOffsetStore(
           offset != oldState.offsetBySlice.getOrElse(slice, TimestampOffset.Zero)
         }
 
-        for {
-          _ <- dao.storeSequenceNumbers(filteredRecords)
-          _ <- if (changedOffsetBySlice.isEmpty) FutureDone else dao.storeTimestampOffsets(changedOffsetBySlice)
-        } yield {
-          if (state.compareAndSet(oldState, evictedNewState))
-            cleanupInflight(evictedNewState)
-          else
-            throw new IllegalStateException("Unexpected concurrent modification of state from saveOffset.")
-          Done
+        dao.storeSequenceNumbers(filteredRecords).flatMap { _ =>
+          val storeOffsetsResult =
+            if (changedOffsetBySlice.isEmpty) FutureDone else dao.storeTimestampOffsets(changedOffsetBySlice)
+          storeOffsetsResult.flatMap { _ =>
+            if (state.compareAndSet(oldState, evictedNewState)) {
+              cleanupInflight(evictedNewState)
+              FutureDone
+            } else
+              saveTimestampOffsets(records) // CAS retry, concurrent update
+          }
         }
+
       }
     }
   }
@@ -479,7 +484,6 @@ private[projection] class DynamoDBOffsetStore(
     val pid = recordWithOffset.record.pid
     val seqNr = recordWithOffset.record.seqNr
 
-    // FIXME load is also updating the state, is validate guaranteed to not be called concurrently?
     load(pid).flatMap { _ =>
       val currentState = getState()
 

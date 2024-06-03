@@ -969,11 +969,10 @@ class DynamoDBTimestampOffsetStoreSpec
       offsetStore3.getState().offsetBySlice.size shouldBe 3
 
       offset.timestamp shouldBe time2
-      // FIXME seen not reconstructed
-//      offset.seen shouldBe Map(p2 -> 1L)
+      offset.seen shouldBe Map(p2 -> 1L)
 
       // getOffset is used by management api, and that should not be adjusted
-      // FIXME TimestampOffset.toTimestampOffset(offsetStore3.getOffset().futureValue.get).timestamp shouldBe time4
+      TimestampOffset.toTimestampOffset(offsetStore3.getOffset().futureValue.get).timestamp shouldBe time4
     }
 
     // FIXME more tests, see r2dbc
