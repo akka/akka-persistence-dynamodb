@@ -286,7 +286,7 @@ private[projection] class DynamoDBOffsetStore(
     }
   }
 
-  private def load(pid: Pid): Future[Done] = {
+  def load(pid: Pid): Future[Done] = {
     val oldState = state.get()
     val slice = persistenceExt.sliceForPersistenceId(pid)
     dao.load(slice, pid).map {
@@ -299,7 +299,7 @@ private[projection] class DynamoDBOffsetStore(
     }
   }
 
-  private def load(pids: IndexedSeq[Pid]): Future[Done] = {
+  def load(pids: IndexedSeq[Pid]): Future[Done] = {
     val oldState = state.get()
     val pidsToLoad = pids.filterNot(oldState.contains)
     if (pidsToLoad.isEmpty)
