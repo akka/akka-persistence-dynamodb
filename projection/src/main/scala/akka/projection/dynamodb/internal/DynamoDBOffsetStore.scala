@@ -267,6 +267,10 @@ private[projection] class DynamoDBOffsetStore(
         // FIXME r2dbc is only using earliest when moreThanOneProjectionKey.
         // When a projection is restarted and there has not been any scaling. We could store the
         // projectionKey together with the timestamp by slice to have the same here.
+        // For DynamoDB, where we anyway query by individual slice, it would be better to store
+        // and also read TimestampOffset for each slice. Then we would need some kind of composite
+        // TimestampOffset that the eventsBySlices would understand and start each query from right
+        // offset.
         val earliest = latestBySlice.valuesIterator.min
         if (logger.isDebugEnabled)
           logger.debug(
@@ -274,10 +278,8 @@ private[projection] class DynamoDBOffsetStore(
             latestBySlice.minBy(_._1),
             latestBySlice.maxBy(_._1))
 
-        // FIXME populating seen like this is fruitless, since no pids have been loaded to the
-        // newState. Shall we just skip the seen, otherwise it would have to be stored together with
-        // the latestBySlice timestamp
-        // not important to reconstruct the right `seen`, will be filtered as duplicates by offset store
+        // FIXME not important to reconstruct the right `seen`, will be filtered as duplicates by offset store,
+        // but better to be able to read offset per slice, see fixme above.
         // val seen = newState.recordsWithTimestamp(earliest).iterator.map(r => r.pid -> r.seqNr).toMap
         Some(TimestampOffset(earliest, Map.empty))
       }
