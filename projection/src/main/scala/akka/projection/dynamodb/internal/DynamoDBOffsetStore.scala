@@ -15,7 +15,6 @@ import scala.concurrent.Future
 
 import akka.Done
 import akka.actor.typed.ActorSystem
-import akka.actor.typed.scaladsl.LoggerOps
 import akka.annotation.InternalApi
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
@@ -173,15 +172,15 @@ private[projection] class DynamoDBOffsetStore(
 
   import DynamoDBOffsetStore._
 
-  // FIXME include projectionId in all log messages
-  private val logger = LoggerFactory.getLogger(this.getClass)
-
   private val persistenceExt = Persistence(system)
 
   private val (minSlice: Int, maxSlice: Int) = sourceProvider match {
     case Some(s) => s.minSlice -> s.maxSlice
     case None    => 0 -> (persistenceExt.numberOfSlices - 1)
   }
+
+  private val logger = LoggerFactory.getLogger(this.getClass)
+  private val logPrefix = s"${projectionId.name} [$minSlice-$maxSlice]:"
 
   private val dao = new OffsetStoreDao(system, settings, projectionId, client)
 
@@ -251,8 +250,9 @@ private[projection] class DynamoDBOffsetStore(
     val offsetBySliceFut = Future.sequence(futTimestamps).map(_.collect { case (slice, Some(ts)) => slice -> ts }.toMap)
     offsetBySliceFut.map { offsetBySlice =>
       val newState = State(offsetBySlice)
-      logger.debugN(
-        "readTimestampOffset state with [{}] persistenceIds, oldest [{}], latest [{}]",
+      logger.debug(
+        "{} readTimestampOffset state with [{}] persistenceIds, oldest [{}], latest [{}]",
+        logPrefix,
         newState.byPid.size,
         newState.oldestTimestamp,
         newState.latestTimestamp)
@@ -260,7 +260,7 @@ private[projection] class DynamoDBOffsetStore(
         throw new IllegalStateException("Unexpected concurrent modification of state from readOffset.")
       clearInflight()
       if (offsetBySlice.isEmpty) {
-        logger.debug("readTimestampOffset no stored offset")
+        logger.debug("{} readTimestampOffset no stored offset", logPrefix)
         None
       } else {
         // FIXME r2dbc is only using earliest when moreThanOneProjectionKey.
@@ -273,7 +273,8 @@ private[projection] class DynamoDBOffsetStore(
         val earliestOffset = offsetBySlice.valuesIterator.minBy(_.timestamp)
         if (logger.isDebugEnabled)
           logger.debug(
-            "readTimestampOffset earliest slice [{}], latest slice [{}]",
+            "{} readTimestampOffset earliest slice [{}], latest slice [{}]",
+            logPrefix,
             offsetBySlice.minBy(_._1),
             offsetBySlice.maxBy(_._1))
 
@@ -371,8 +372,9 @@ private[projection] class DynamoDBOffsetStore(
             // FIXME maybe this should take the slice into account
             val evictUntil = newState.latestTimestamp.minus(settings.timeWindow)
             val s = newState.evict(evictUntil, settings.keepNumberOfEntries)
-            logger.debugN(
-              "Evicted [{}] records until [{}], keeping [{}] records. Latest [{}].",
+            logger.debug(
+              "{} Evicted [{}] records until [{}], keeping [{}] records. Latest [{}].",
+              logPrefix,
               newState.size - s.size,
               evictUntil,
               s.size,
@@ -490,7 +492,7 @@ private[projection] class DynamoDBOffsetStore(
       val duplicate = currentState.isDuplicate(recordWithOffset.record)
 
       if (duplicate) {
-        logger.trace("Filtering out duplicate sequence number [{}] for pid [{}]", seqNr, pid)
+        logger.trace("{} Filtering out duplicate sequence number [{}] for pid [{}]", logPrefix, seqNr, pid)
         FutureDuplicate
       } else if (recordWithOffset.strictSeqNr) {
         // strictSeqNr == true is for event sourced
@@ -498,22 +500,25 @@ private[projection] class DynamoDBOffsetStore(
 
         def logUnexpected(): Unit = {
           if (recordWithOffset.fromPubSub)
-            logger.debugN(
-              "Rejecting pub-sub envelope, unexpected sequence number [{}] for pid [{}], previous sequence number [{}]. Offset: {}",
+            logger.debug(
+              "{} Rejecting pub-sub envelope, unexpected sequence number [{}] for pid [{}], previous sequence number [{}]. Offset: {}",
+              logPrefix,
               seqNr,
               pid,
               prevSeqNr,
               recordWithOffset.offset)
           else if (!recordWithOffset.fromBacktracking)
-            logger.debugN(
-              "Rejecting unexpected sequence number [{}] for pid [{}], previous sequence number [{}]. Offset: {}",
+            logger.debug(
+              "{} Rejecting unexpected sequence number [{}] for pid [{}], previous sequence number [{}]. Offset: {}",
+              logPrefix,
               seqNr,
               pid,
               prevSeqNr,
               recordWithOffset.offset)
           else
-            logger.warnN(
-              "Rejecting unexpected sequence number [{}] for pid [{}], previous sequence number [{}]. Offset: {}",
+            logger.warn(
+              "{} Rejecting unexpected sequence number [{}] for pid [{}], previous sequence number [{}]. Offset: {}",
+              logPrefix,
               seqNr,
               pid,
               prevSeqNr,
@@ -522,21 +527,24 @@ private[projection] class DynamoDBOffsetStore(
 
         def logUnknown(): Unit = {
           if (recordWithOffset.fromPubSub) {
-            logger.debugN(
-              "Rejecting pub-sub envelope, unknown sequence number [{}] for pid [{}] (might be accepted later): {}",
+            logger.debug(
+              "{} Rejecting pub-sub envelope, unknown sequence number [{}] for pid [{}] (might be accepted later): {}",
+              logPrefix,
               seqNr,
               pid,
               recordWithOffset.offset)
           } else if (!recordWithOffset.fromBacktracking) {
             // This may happen rather frequently when using `publish-events`, after reconnecting and such.
-            logger.debugN(
-              "Rejecting unknown sequence number [{}] for pid [{}] (might be accepted later): {}",
+            logger.debug(
+              "{} Rejecting unknown sequence number [{}] for pid [{}] (might be accepted later): {}",
+              logPrefix,
               seqNr,
               pid,
               recordWithOffset.offset)
           } else {
-            logger.warnN(
-              "Rejecting unknown sequence number [{}] for pid [{}]. Offset: {}",
+            logger.warn(
+              "{} Rejecting unknown sequence number [{}] for pid [{}]. Offset: {}",
+              logPrefix,
               seqNr,
               pid,
               recordWithOffset.offset)
@@ -578,9 +586,10 @@ private[projection] class DynamoDBOffsetStore(
             case Some(previousTimestamp) =>
               val before = currentState.latestTimestamp.minus(settings.timeWindow)
               if (previousTimestamp.isBefore(before)) {
-                logger.debugN(
-                  "Accepting envelope with pid [{}], seqNr [{}], where previous event timestamp [{}] " +
+                logger.debug(
+                  "{} Accepting envelope with pid [{}], seqNr [{}], where previous event timestamp [{}] " +
                   "is before time window [{}].",
+                  logPrefix,
                   pid,
                   seqNr,
                   previousTimestamp,
@@ -607,8 +616,9 @@ private[projection] class DynamoDBOffsetStore(
         if (ok) {
           FutureAccepted
         } else {
-          logger.traceN(
-            "Filtering out earlier revision [{}] for pid [{}], previous revision [{}]",
+          logger.trace(
+            "{} Filtering out earlier revision [{}] for pid [{}], previous revision [{}]",
+            logPrefix,
             seqNr,
             pid,
             prevSeqNr)
