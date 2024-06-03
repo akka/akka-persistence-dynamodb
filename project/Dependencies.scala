@@ -33,6 +33,7 @@ object Dependencies {
     val akkaPersistenceTck = "com.typesafe.akka" %% "akka-persistence-tck" % AkkaVersion % Test
     val akkaTestkit = "com.typesafe.akka" %% "akka-actor-testkit-typed" % AkkaVersion % Test
     val akkaStreamTestkit = "com.typesafe.akka" %% "akka-stream-testkit" % AkkaVersion % Test
+    val akkaProjectionTestkit = "com.lightbend.akka" %% "akka-projection-testkit" % AkkaProjectionVersion % Test
     val akkaJackson = "com.typesafe.akka" %% "akka-serialization-jackson" % AkkaVersion % Test
 
     val logback = "ch.qos.logback" % "logback-classic" % "1.2.13" % Test // EPL 1.0 / LGPL 2.1
@@ -61,6 +62,7 @@ object Dependencies {
     Compile.akkaPersistenceTyped,
     TestDeps.akkaStreamTestkit,
     TestDeps.akkaTestkit,
+    TestDeps.akkaProjectionTestkit,
     TestDeps.akkaJackson,
     TestDeps.akkaStreamTyped,
     TestDeps.logback,
