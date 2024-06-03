@@ -4,9 +4,8 @@
 
 package akka.projection.dynamodb.internal
 
-import java.util.{ HashMap => JHashMap }
-import java.time.Instant
 import java.util.Collections
+import java.util.{ HashMap => JHashMap }
 
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
@@ -17,6 +16,7 @@ import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
 import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.internal.InstantFactory
+import akka.persistence.query.TimestampOffset
 import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Record
@@ -42,6 +42,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     val SeqNr = "seq_nr"
     val NameSlice = "name_slice"
     val Timestamp = "ts"
+    val Seen = "seen"
 
     // FIXME empty string not allowed
     val timestampBySlicePid = AttributeValue.fromS("_")
@@ -61,7 +62,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 
   private def nameSlice(slice: Int): String = s"${projectionId.name}-$slice"
 
-  def latestTimestamp(slice: Int): Future[Option[Instant]] = {
+  def loadTimestampOffset(slice: Int): Future[Option[TimestampOffset]] = {
     import OffsetStoreDao.OffsetStoreAttributes._
     val expressionAttributeValues =
       Map(":nameSlice" -> AttributeValue.fromS(nameSlice(slice)), ":pid" -> timestampBySlicePid).asJava
@@ -71,7 +72,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       .consistentRead(false) // not necessary to read latest, can start at earlier time
       .keyConditionExpression(s"$NameSlice = :nameSlice AND $Pid = :pid")
       .expressionAttributeValues(expressionAttributeValues)
-      .projectionExpression(Timestamp)
+      .projectionExpression(s"$Timestamp, $Seen")
       .build()
 
     client.query(req).asScala.map { response =>
@@ -79,25 +80,41 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       if (items.isEmpty)
         None
       else {
-        val timestampMicros = items.get(0).get(Timestamp).n().toLong
-        Some(InstantFactory.fromEpochMicros(timestampMicros))
+        val item = items.get(0)
+        val timestampMicros = item.get(Timestamp).n().toLong
+        val timestamp = InstantFactory.fromEpochMicros(timestampMicros)
+        val seen = item.get(Seen).m().asScala.iterator.map { case (pid, attr) => pid -> attr.n().toLong }.toMap
+        val timestampOffset = TimestampOffset(timestamp, seen)
+        Some(timestampOffset)
       }
     }
   }
 
-  def storeLatestTimestamps(timestampsBySlice: Map[Int, Instant]): Future[Done] = {
+  def storeTimestampOffsets(offsetsBySlice: Map[Int, TimestampOffset]): Future[Done] = {
     import OffsetStoreDao.OffsetStoreAttributes._
 
     // FIXME upper limit on number of writes in a batch, split up
 
     val writeItems =
-      timestampsBySlice
-        .map { case (slice, timestamp) =>
+      offsetsBySlice
+        .map { case (slice, offset) =>
           val attributes = new JHashMap[String, AttributeValue]
           attributes.put(NameSlice, AttributeValue.fromS(nameSlice(slice)))
           attributes.put(Pid, timestampBySlicePid)
-          val timestampMicros = InstantFactory.toEpochMicros(timestamp)
+          val timestampMicros = InstantFactory.toEpochMicros(offset.timestamp)
           attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
+          val seen = {
+            if (offset.seen.isEmpty)
+              Collections.emptyMap[String, AttributeValue]
+            else if (offset.seen.size == 1)
+              Collections.singletonMap(offset.seen.head._1, AttributeValue.fromN(offset.seen.head._2.toString))
+            else {
+              val seen = new JHashMap[String, AttributeValue]
+              offset.seen.iterator.foreach { case (pid, seqNr) => seen.put(pid, AttributeValue.fromN(seqNr.toString)) }
+              seen
+            }
+          }
+          attributes.put(Seen, AttributeValue.fromM(seen))
 
           WriteRequest.builder
             .putRequest(
@@ -122,7 +139,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       result.foreach { response =>
         log.debug(
           "Wrote latest timestamps for [{}] slices, consumed [{}] WCU",
-          timestampsBySlice.size,
+          offsetsBySlice.size,
           response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
       }
     }
@@ -176,7 +193,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     result.map(_ => Done)(ExecutionContexts.parasitic)
   }
 
-  def load(slice: Int, pid: String): Future[Option[Record]] = {
+  def loadSequenceNumber(slice: Int, pid: String): Future[Option[Record]] = {
     import OffsetStoreDao.OffsetStoreAttributes._
     val expressionAttributeValues =
       Map(":nameSlice" -> AttributeValue.fromS(nameSlice(slice)), ":pid" -> AttributeValue.fromS(pid)).asJava

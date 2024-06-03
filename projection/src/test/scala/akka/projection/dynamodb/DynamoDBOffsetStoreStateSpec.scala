@@ -6,6 +6,7 @@ package akka.projection.dynamodb
 
 import java.time.Instant
 
+import akka.persistence.query.TimestampOffset
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Pid
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Record
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.SeqNr
@@ -32,14 +33,15 @@ class DynamoDBOffsetStoreStateSpec extends AnyWordSpec with TestSuite with Match
             createRecord("p1", 2, t0.plusMillis(1)),
             createRecord("p1", 3, t0.plusMillis(2))))
       state1.byPid("p1").seqNr shouldBe 3L
-      state1.latestBySlice(slice("p1")) shouldBe t0.plusMillis(2)
+      state1.offsetBySlice(slice("p1")) shouldBe TimestampOffset(t0.plusMillis(2), Map("p1" -> 3L))
       state1.latestTimestamp shouldBe t0.plusMillis(2)
       state1.oldestTimestamp shouldBe t0
 
       val state2 = state1.add(Vector(createRecord("p2", 2, t0.plusMillis(1))))
       state2.byPid("p1").seqNr shouldBe 3L
       state2.byPid("p2").seqNr shouldBe 2L
-      state2.latestBySlice(slice("p2")) shouldBe t0.plusMillis(1)
+      slice("p2") should not be slice("p1")
+      state2.offsetBySlice(slice("p2")) shouldBe TimestampOffset(t0.plusMillis(1), Map("p2" -> 2L))
       // latest not updated because timestamp of p2 was before latest
       state2.latestTimestamp shouldBe t0.plusMillis(2)
       state2.oldestTimestamp shouldBe t0
@@ -48,9 +50,16 @@ class DynamoDBOffsetStoreStateSpec extends AnyWordSpec with TestSuite with Match
       state3.byPid("p1").seqNr shouldBe 3L
       state3.byPid("p2").seqNr shouldBe 2L
       state3.byPid("p3").seqNr shouldBe 10L
-      state3.latestBySlice(slice("p3")) shouldBe t0.plusMillis(3)
+      slice("p3") should not be slice("p1")
+      slice("p3") should not be slice("p2")
+      state3.offsetBySlice(slice("p3")) shouldBe TimestampOffset(t0.plusMillis(3), Map("p3" -> 10L))
       state3.latestTimestamp shouldBe t0.plusMillis(3)
       state3.oldestTimestamp shouldBe t0
+
+      // same slice and same timestamp, keep both in seen
+      slice("p10084") shouldBe slice("p3")
+      val state4 = state3.add(Vector(createRecord("p10084", 9, t0.plusMillis(3))))
+      state4.offsetBySlice(slice("p10084")) shouldBe TimestampOffset(t0.plusMillis(3), Map("p3" -> 10L, "p10084" -> 9))
     }
 
     "evict old" in {

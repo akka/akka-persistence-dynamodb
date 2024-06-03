@@ -136,12 +136,6 @@ class DynamoDBTimestampOffsetStoreSpec
   def slice(pid: String): Int =
     persistenceExt.sliceForPersistenceId(pid)
 
-  // FIXME seen not reconstructed
-  private def withoutSeen(offset: TimestampOffset): TimestampOffset =
-    TimestampOffset(offset.timestamp, offset.readTimestamp, Map.empty)
-  private def withoutSeen(offset: Any): TimestampOffset =
-    withoutSeen(offset.asInstanceOf[TimestampOffset])
-
   s"The DynamoDBOffsetStore for TimestampOffset" must {
 
     "save TimestampOffset with one entry" in {
@@ -152,142 +146,168 @@ class DynamoDBTimestampOffsetStoreSpec
       val offset1 = TimestampOffset(clock.instant(), Map("p1" -> 3L))
       offsetStore.saveOffset(OffsetPidSeqNr(offset1, "p1", 3L)).futureValue
       val readOffset1 = offsetStore.readOffset[TimestampOffset]().futureValue
-      readOffset1 shouldBe Some(withoutSeen(offset1))
-      offsetStore.getState().latestBySlice(slice("p1")) shouldBe offset1.timestamp
+      readOffset1 shouldBe Some(offset1)
+      offsetStore.getState().offsetBySlice(slice("p1")) shouldBe offset1
       offsetStore.storedSeqNr("p1").futureValue shouldBe 3L
 
       tick()
       val offset2 = TimestampOffset(clock.instant(), Map("p1" -> 4L))
       offsetStore.saveOffset(OffsetPidSeqNr(offset2, "p1", 4L)).futureValue
       val readOffset2 = offsetStore.readOffset[TimestampOffset]().futureValue
-      readOffset2 shouldBe Some(withoutSeen(offset2)) // yep, saveOffset overwrites previous
-      offsetStore.getState().latestBySlice(slice("p1")) shouldBe offset2.timestamp
+      readOffset2 shouldBe Some(offset2) // yep, saveOffset overwrites previous
+      offsetStore.getState().offsetBySlice(slice("p1")) shouldBe offset2
       offsetStore.storedSeqNr("p1").futureValue shouldBe 4L
     }
 
     "save TimestampOffset with several seen entries" in {
-      // FIXME seen not reconstructed
-      pending
       val projectionId = genRandomProjectionId()
       val offsetStore = createOffsetStore(projectionId)
+      val entityType = nextEntityType()
+      val p1 = nextPersistenceId(entityType)
+      val s = slice(p1.id)
+      val p2 = randomPersistenceIdForSlice(entityType, s)
+      val p3 = randomPersistenceIdForSlice(entityType, s)
+      val p4 = randomPersistenceIdForSlice(entityType, s)
 
       tick()
-      val offset1 = TimestampOffset(clock.instant(), Map("p1" -> 3L, "p2" -> 1L, "p3" -> 5L))
-      offsetStore.saveOffset(OffsetPidSeqNr(offset1, "p1", 3L)).futureValue
+      val offset1a = TimestampOffset(clock.instant(), Map(p1.id -> 3L))
+      offsetStore.saveOffset(OffsetPidSeqNr(offset1a, p1.id, 3L)).futureValue
+      val offset1b = TimestampOffset(clock.instant(), Map(p1.id -> 3L, p2.id -> 1L))
+      offsetStore.saveOffset(OffsetPidSeqNr(offset1b, p2.id, 1L)).futureValue
+      val offset1c = TimestampOffset(clock.instant(), Map(p1.id -> 3L, p2.id -> 1L, p3.id -> 5L))
+      offsetStore.saveOffset(OffsetPidSeqNr(offset1c, p3.id, 5L)).futureValue
+
       val readOffset1 = offsetStore.readOffset[TimestampOffset]().futureValue
-      val expectedOffset1 = TimestampOffset(offset1.timestamp, offset1.readTimestamp, Map("p1" -> 3L))
+      val expectedOffset1 =
+        TimestampOffset(offset1a.timestamp, offset1a.readTimestamp, Map(p1.id -> 3L, p2.id -> 1L, p3.id -> 5L))
       readOffset1 shouldBe Some(expectedOffset1)
 
       tick()
-      val offset2 = TimestampOffset(clock.instant(), Map("p1" -> 4L, "p3" -> 6L, "p4" -> 9L))
-      offsetStore.saveOffset(OffsetPidSeqNr(offset2, "p3", 6L)).futureValue
+      val offset2 = TimestampOffset(clock.instant(), Map(p1.id -> 4L, p3.id -> 6L, p4.id -> 9L))
+      offsetStore.saveOffset(OffsetPidSeqNr(offset2, p3.id, 6L)).futureValue
       val readOffset2 = offsetStore.readOffset[TimestampOffset]().futureValue
-      val expectedOffset2 = TimestampOffset(offset2.timestamp, offset2.readTimestamp, Map("p3" -> 6L))
+      // note that it's not the seen Map in the saveOffset that is used, but the pid, seqNr of saveOffset,
+      // so here we have only saved p3 -> 6
+      val expectedOffset2 = TimestampOffset(offset2.timestamp, offset2.readTimestamp, Map(p3.id -> 6L))
       readOffset2 shouldBe Some(expectedOffset2)
     }
 
     "save TimestampOffset when same timestamp" in {
       val projectionId = genRandomProjectionId()
       val offsetStore = createOffsetStore(projectionId)
+      val entityType = nextEntityType()
+      val p1 = nextPersistenceId(entityType)
+      val s = slice(p1.id)
+      val p2 = randomPersistenceIdForSlice(entityType, s)
+      val p3 = randomPersistenceIdForSlice(entityType, s)
+      val p4 = randomPersistenceIdForSlice(entityType, s)
 
       tick()
-      val offset1 = TimestampOffset(clock.instant(), Map("p1" -> 3L, "p2" -> 1L, "p3" -> 5L))
-      offsetStore.saveOffset(OffsetPidSeqNr(offset1, "p1", 3L)).futureValue
-      offsetStore.saveOffset(OffsetPidSeqNr(offset1, "p2", 1L)).futureValue
-      offsetStore.saveOffset(OffsetPidSeqNr(offset1, "p3", 5L)).futureValue
+      // the seen map in saveOffset is not used when saving, so using empty Map for simplicity
+      val offset1 = TimestampOffset(clock.instant(), Map.empty)
+      offsetStore.saveOffset(OffsetPidSeqNr(offset1, p1.id, 3L)).futureValue
+      offsetStore.saveOffset(OffsetPidSeqNr(offset1, p2.id, 1L)).futureValue
+      offsetStore.saveOffset(OffsetPidSeqNr(offset1, p3.id, 5L)).futureValue
       offsetStore.readOffset[TimestampOffset]().futureValue
-      offsetStore.getState().latestBySlice(slice("p1")) shouldBe offset1.timestamp
-      offsetStore.getState().latestBySlice(slice("p2")) shouldBe offset1.timestamp
-      offsetStore.getState().latestBySlice(slice("p3")) shouldBe offset1.timestamp
-      offsetStore.storedSeqNr("p1").futureValue shouldBe 3L
-      offsetStore.storedSeqNr("p2").futureValue shouldBe 1L
-      offsetStore.storedSeqNr("p3").futureValue shouldBe 5L
+      val expectedOffset1 = TimestampOffset(clock.instant(), Map(p1.id -> 3L, p2.id -> 1L, p3.id -> 5L))
+      offsetStore.getState().offsetBySlice(s) shouldBe expectedOffset1
 
       // not tick, same timestamp
-      val offset2 = TimestampOffset(clock.instant(), Map("p2" -> 2L, "p4" -> 9L))
-      offsetStore.saveOffset(OffsetPidSeqNr(offset2, "p2", 2L)).futureValue
-      offsetStore.saveOffset(OffsetPidSeqNr(offset2, "p4", 9L)).futureValue
+      val offset2 = TimestampOffset(clock.instant(), Map.empty)
+      offsetStore.saveOffset(OffsetPidSeqNr(offset2, p2.id, 2L)).futureValue
+      offsetStore.saveOffset(OffsetPidSeqNr(offset2, p4.id, 9L)).futureValue
       val readOffset2 = offsetStore.readOffset[TimestampOffset]().futureValue
+      val expectedOffset2 = TimestampOffset(clock.instant(), expectedOffset1.seen ++ Map(p2.id -> 2L, p4.id -> 9L))
       // all should be included since same timestamp
-      // FIXME could be relevant if we use moreThanOneProjectionKey, otherwise remove
-//      val expectedOffset2 = TimestampOffset(clock.instant(), Map("p1" -> 3L, "p2" -> 2L, "p3" -> 5L, "p4" -> 9L))
-//      readOffset2 shouldBe Some(withoutSeen(expectedOffset2))
+      readOffset2 shouldBe Some(expectedOffset2)
 
       // saving new with later timestamp
       tick()
-      val offset3 = TimestampOffset(clock.instant(), Map("p1" -> 4L))
-      offsetStore.saveOffset(OffsetPidSeqNr(offset3, "p1", 4L)).futureValue
+      val offset3 = TimestampOffset(clock.instant(), Map(p1.id -> 4L))
+      offsetStore.saveOffset(OffsetPidSeqNr(offset3, p1.id, 4L)).futureValue
       val readOffset3 = offsetStore.readOffset[TimestampOffset]().futureValue
-      // FIXME could be relevant if we use moreThanOneProjectionKey, otherwise remove
-      // then it should only contain that entry
-      //readOffset3 shouldBe Some(withoutSeen(offset3))
-      offsetStore.getState().latestBySlice(slice("p1")) shouldBe offset3.timestamp
-      offsetStore.storedSeqNr("p1").futureValue shouldBe 4L
+      readOffset3 shouldBe Some(offset3)
+      offsetStore.getState().offsetBySlice(s) shouldBe offset3
     }
 
     "save batch of TimestampOffsets" in {
       val projectionId = genRandomProjectionId()
       val offsetStore = createOffsetStore(projectionId)
 
+      val p1 = "p1"
+      val slice1 = persistenceExt.sliceForPersistenceId(p1)
+      slice1 shouldBe 449
+
+      val p2 = "p2"
+      val slice2 = persistenceExt.sliceForPersistenceId(p2)
+      slice2 shouldBe 450
+
+      val p3 = "p10"
+      val slice3 = persistenceExt.sliceForPersistenceId(p3)
+      slice3 shouldBe 655
+
+      val p4 = "p11"
+      val slice4 = persistenceExt.sliceForPersistenceId(p4)
+      slice4 shouldBe 656
+
       tick()
-      val offset1 = TimestampOffset(clock.instant(), Map("p1" -> 3L, "p2" -> 1L, "p3" -> 5L))
+      val offset1 = TimestampOffset(clock.instant(), Map.empty)
       tick()
-      val offset2 = TimestampOffset(clock.instant(), Map("p5" -> 1L))
+      val offset2 = TimestampOffset(clock.instant(), Map.empty)
       tick()
-      val offset3 = TimestampOffset(clock.instant(), Map("p6" -> 6L))
+      val offset3 = TimestampOffset(clock.instant(), Map.empty)
       tick()
-      val offset4 = TimestampOffset(clock.instant(), Map("p1" -> 4L, "p3" -> 6L, "p4" -> 9L))
+      val offset4 = TimestampOffset(clock.instant(), Map.empty)
       val offsetsBatch1 = Vector(
-        OffsetPidSeqNr(offset1, "p1", 3L),
-        OffsetPidSeqNr(offset1, "p2", 1L),
-        OffsetPidSeqNr(offset1, "p3", 5L),
-        OffsetPidSeqNr(offset2, "p5", 1L),
-        OffsetPidSeqNr(offset3, "p6", 6L),
-        OffsetPidSeqNr(offset4, "p1", 4L),
-        OffsetPidSeqNr(offset4, "p3", 6L),
-        OffsetPidSeqNr(offset4, "p4", 9L))
+        OffsetPidSeqNr(offset1, p1, 3L),
+        OffsetPidSeqNr(offset1, p2, 1L),
+        OffsetPidSeqNr(offset1, p3, 5L),
+        OffsetPidSeqNr(offset2, p4, 1L),
+        OffsetPidSeqNr(offset2, p1, 4L),
+        OffsetPidSeqNr(offset3, p2, 2L))
 
       offsetStore.saveOffsets(offsetsBatch1).futureValue
       val readOffset1 = offsetStore.readOffset[TimestampOffset]().futureValue
       // FIXME could be relevant if we use moreThanOneProjectionKey, otherwise remove
 //      readOffset1 shouldBe Some(withoutSeen(offsetsBatch1.last.offset))
-      offsetStore.load((1 to 6).map(n => s"p$n")).futureValue
-      offsetStore.getState().byPid("p1").seqNr shouldBe 4L
-      offsetStore.getState().byPid("p2").seqNr shouldBe 1L
-      offsetStore.getState().byPid("p3").seqNr shouldBe 6L
-      offsetStore.getState().byPid("p4").seqNr shouldBe 9L
-      offsetStore.getState().byPid("p5").seqNr shouldBe 1L
-      offsetStore.getState().byPid("p6").seqNr shouldBe 6L
+      offsetStore.getState().offsetBySlice(slice1) shouldBe TimestampOffset(offset2.timestamp, Map(p1 -> 4L))
+      offsetStore.getState().offsetBySlice(slice2) shouldBe TimestampOffset(offset3.timestamp, Map(p2 -> 2L))
+      offsetStore.getState().offsetBySlice(slice3) shouldBe TimestampOffset(offset1.timestamp, Map(p3 -> 5L))
+      offsetStore.getState().offsetBySlice(slice4) shouldBe TimestampOffset(offset2.timestamp, Map(p4 -> 1L))
+
+      offsetStore.load(Vector(p1, p2, p3, p4)).futureValue
+      offsetStore.getState().byPid(p1).seqNr shouldBe 4L
+      offsetStore.getState().byPid(p2).seqNr shouldBe 2L
+      offsetStore.getState().byPid(p3).seqNr shouldBe 5L
+      offsetStore.getState().byPid(p4).seqNr shouldBe 1L
 
       tick()
-      val offset5 = TimestampOffset(clock.instant(), Map("p1" -> 5L))
-      offsetStore.saveOffsets(Vector(OffsetPidSeqNr(offset5, "p1", 5L))).futureValue
+      val offset5 = TimestampOffset(clock.instant(), Map(p1 -> 5L))
+      offsetStore.saveOffsets(Vector(OffsetPidSeqNr(offset5, p1, 5L))).futureValue
 
       tick()
       // duplicate
-      val offset6 = TimestampOffset(clock.instant(), Map("p2" -> 1L))
-      offsetStore.saveOffsets(Vector(OffsetPidSeqNr(offset6, "p2", 1L))).futureValue
+      val offset6 = TimestampOffset(clock.instant(), Map(p2 -> 1L))
+      offsetStore.saveOffsets(Vector(OffsetPidSeqNr(offset6, p2, 1L))).futureValue
 
       tick()
-      val offset7 = TimestampOffset(clock.instant(), Map("p1" -> 6L))
+      val offset7 = TimestampOffset(clock.instant(), Map(p1 -> 6L))
       tick()
-      val offset8 = TimestampOffset(clock.instant(), Map("p1" -> 7L))
+      val offset8 = TimestampOffset(clock.instant(), Map(p1 -> 7L))
       tick()
-      val offset9 = TimestampOffset(clock.instant(), Map("p1" -> 8L))
+      val offset9 = TimestampOffset(clock.instant(), Map(p1 -> 8L))
       val offsetsBatch2 =
-        Vector(OffsetPidSeqNr(offset7, "p1", 6L), OffsetPidSeqNr(offset8, "p1", 7L), OffsetPidSeqNr(offset9, "p1", 8L))
+        Vector(OffsetPidSeqNr(offset7, p1, 6L), OffsetPidSeqNr(offset8, p1, 7L), OffsetPidSeqNr(offset9, p1, 8L))
 
       offsetStore.saveOffsets(offsetsBatch2).futureValue
       val readOffset2 = offsetStore.readOffset[TimestampOffset]().futureValue
       // FIXME could be relevant if we use moreThanOneProjectionKey, otherwise remove
       //readOffset2 shouldBe Some(withoutSeen(offsetsBatch2.last.offset))
-      offsetStore.load((1 to 6).map(n => s"p$n")).futureValue
-      offsetStore.getState().byPid("p1").seqNr shouldBe 8L
-      offsetStore.getState().byPid("p2").seqNr shouldBe 1L
-      offsetStore.getState().byPid("p3").seqNr shouldBe 6L
-      offsetStore.getState().byPid("p4").seqNr shouldBe 9L
-      offsetStore.getState().byPid("p5").seqNr shouldBe 1L
-      offsetStore.getState().byPid("p6").seqNr shouldBe 6L
+      offsetStore.load(Vector(p1, p2, p3, p4)).futureValue
+      offsetStore.getState().byPid(p1).seqNr shouldBe 8L
+      offsetStore.getState().byPid(p2).seqNr shouldBe 2L // duplicate with lower seqNr not saved
+      offsetStore.getState().byPid(p3).seqNr shouldBe 5L
+      offsetStore.getState().byPid(p4).seqNr shouldBe 1L
     }
 
     "save batch of many TimestampOffsets" in {
@@ -369,13 +389,13 @@ class DynamoDBTimestampOffsetStoreSpec
       val offset1 = TimestampOffset(clock.instant(), Map("p1" -> 3L))
       offsetStore.saveOffset(OffsetPidSeqNr(offset1, "p1", 3L)).futureValue
       val readOffset1 = offsetStore.readOffset[TimestampOffset]().futureValue
-      readOffset1 shouldBe Some(withoutSeen(offset1))
+      readOffset1 shouldBe Some(offset1)
 
       clock.setInstant(clock.instant().minusMillis(1))
       val offset2 = TimestampOffset(clock.instant(), Map("p1" -> 2L))
       offsetStore.saveOffset(OffsetPidSeqNr(offset2, "p1", 2L)).futureValue
       val readOffset2 = offsetStore.readOffset[TimestampOffset]().futureValue
-      readOffset2 shouldBe Some(withoutSeen(offset1)) // keeping offset1
+      readOffset2 shouldBe Some(offset1) // keeping offset1
     }
 
     "readOffset from given slices" in {
@@ -946,7 +966,7 @@ class DynamoDBTimestampOffsetStoreSpec
 
       val offset =
         TimestampOffset.toTimestampOffset(offsetStore3.readOffset().futureValue.get) // this will load from database
-      offsetStore3.getState().latestBySlice.size shouldBe 3
+      offsetStore3.getState().offsetBySlice.size shouldBe 3
 
       offset.timestamp shouldBe time2
       // FIXME seen not reconstructed
