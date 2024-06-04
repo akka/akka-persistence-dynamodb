@@ -16,8 +16,10 @@ import scala.concurrent.Future
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
+import akka.dispatch.ExecutionContexts
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
+import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
 import akka.persistence.query.DeletedDurableState
 import akka.persistence.query.DurableStateChange
 import akka.persistence.query.TimestampOffset
@@ -231,18 +233,18 @@ private[projection] class DynamoDBOffsetStore(
     // look for TimestampOffset first since that is used by akka-persistence-dynamodb,
     // and then fall back to the other more primitive offset types
     sourceProvider match {
-      case Some(s) =>
-        readTimestampOffset().map {
-          case Some(t) => Some(t.asInstanceOf[Offset])
-          case None    => None
-        }
+      case Some(_) =>
+        readTimestampOffset().map { offsetBySlice =>
+          if (offsetBySlice.offsets.isEmpty) None
+          else Some(offsetBySlice.asInstanceOf[Offset])
+        }(ExecutionContexts.parasitic)
       case None =>
         // FIXME primitive offsets not supported, maybe we can change the sourceProvider parameter
         throw new IllegalStateException("BySlicesSourceProvider is required. Primitive offsets not supported.")
     }
   }
 
-  private def readTimestampOffset(): Future[Option[TimestampOffset]] = {
+  private def readTimestampOffset(): Future[TimestampOffsetBySlice] = {
     val oldState = state.get()
     // retrieve latest timestamp for each slice, and use the earliest
     val futTimestamps =
@@ -261,16 +263,8 @@ private[projection] class DynamoDBOffsetStore(
       clearInflight()
       if (offsetBySlice.isEmpty) {
         logger.debug("{} readTimestampOffset no stored offset", logPrefix)
-        None
+        TimestampOffsetBySlice.empty
       } else {
-        // FIXME r2dbc is only using earliest when moreThanOneProjectionKey.
-        // When a projection is restarted and there has not been any scaling. We could store the
-        // projectionKey together with the timestamp by slice to have the same here.
-        // For DynamoDB, where we anyway query by individual slice, it would be better to store
-        // and also read TimestampOffset for each slice. Then we would need some kind of composite
-        // TimestampOffset that the eventsBySlices would understand and start each query from right
-        // offset.
-        val earliestOffset = offsetBySlice.valuesIterator.minBy(_.timestamp)
         if (logger.isDebugEnabled)
           logger.debug(
             "{} readTimestampOffset earliest slice [{}], latest slice [{}]",
@@ -278,7 +272,7 @@ private[projection] class DynamoDBOffsetStore(
             offsetBySlice.minBy(_._1),
             offsetBySlice.maxBy(_._1))
 
-        Some(earliestOffset)
+        TimestampOffsetBySlice(offsetBySlice)
       }
     }
   }

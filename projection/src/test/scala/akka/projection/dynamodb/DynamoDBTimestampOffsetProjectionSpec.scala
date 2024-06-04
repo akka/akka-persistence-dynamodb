@@ -25,6 +25,7 @@ import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorRef
 import akka.actor.typed.ActorSystem
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
+import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
 import akka.persistence.query.TimestampOffset
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.EventTimestampQuery
@@ -218,22 +219,14 @@ class DynamoDBTimestampOffsetProjectionSpec
     new TestTimestampSourceProvider(envelopes, sp, persistenceExt.numberOfSlices - 1)
   }
 
-  private def offsetShouldBe[Offset](expected: Offset)(implicit offsetStore: DynamoDBOffsetStore) = {
+  private def latestOffsetShouldBe[Offset](expected: Offset)(implicit offsetStore: DynamoDBOffsetStore) = {
     val expectedTimestampOffset = expected.asInstanceOf[TimestampOffset]
-    offsetStore.readOffset[TimestampOffset]().futureValue
-    // FIXME tests are assuming latestOffset, but DynamoDBOffsetStore returns latest from earliest slice
+    offsetStore.readOffset().futureValue
     offsetStore.getState().latestOffset shouldBe expectedTimestampOffset
-    // FIXME from r2dbc
-//    val offset = offsetStore.readOffset[TimestampOffset]().futureValue
-//    offset shouldBe Some(
-//      TimestampOffset(
-//        expectedTimestampOffset.timestamp,
-//        readTimestamp = Instant.EPOCH,
-//        seen = expectedTimestampOffset.seen))
   }
 
   private def offsetShouldBeEmpty()(implicit offsetStore: DynamoDBOffsetStore) = {
-    offsetStore.readOffset[TimestampOffset]().futureValue shouldBe empty
+    offsetStore.readOffset[TimestampOffsetBySlice]().futureValue shouldBe empty
   }
 
   private def projectedValueShouldBe(expected: String)(implicit entityId: String) = {
@@ -392,7 +385,7 @@ class DynamoDBTimestampOffsetProjectionSpec
         projectedValueShouldBe("e1|e2|e3|e4|e5|e6")
       }
       eventually {
-        offsetShouldBe(envelopes.last.offset)
+        latestOffsetShouldBe(envelopes.last.offset)
       }
     }
 
@@ -416,7 +409,7 @@ class DynamoDBTimestampOffsetProjectionSpec
         projectedValueShouldBe("e2-1|e2-2|e2-3")(pid2)
       }
       eventually {
-        offsetShouldBe(envelopes.last.offset)
+        latestOffsetShouldBe(envelopes.last.offset)
       }
     }
 
@@ -453,7 +446,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       }
 
       eventually {
-        offsetShouldBe(envelopes2.last.offset)
+        latestOffsetShouldBe(envelopes2.last.offset)
       }
       projectionRef ! ProjectionBehavior.Stop
     }
@@ -486,7 +479,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       bogusEventHandler.attempts shouldBe 1
 
       eventually {
-        offsetShouldBe(envelopes.last.offset)
+        latestOffsetShouldBe(envelopes.last.offset)
       }
     }
 
@@ -514,7 +507,7 @@ class DynamoDBTimestampOffsetProjectionSpec
         projectedValueShouldBe("e1|e2|e5")
       }
       eventually {
-        offsetShouldBe(envelopes.last.offset)
+        latestOffsetShouldBe(envelopes.last.offset)
       }
     }
 
@@ -544,7 +537,7 @@ class DynamoDBTimestampOffsetProjectionSpec
         result.toString shouldBe "e1|e2|e3|e4|e5|e6|"
       }
       eventually {
-        offsetShouldBe(envelopes.last.offset)
+        latestOffsetShouldBe(envelopes.last.offset)
       }
     }
 
@@ -588,7 +581,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       }
 
       eventually {
-        offsetShouldBe(envelopes.last.offset)
+        latestOffsetShouldBe(envelopes.last.offset)
       }
     }
 
@@ -624,7 +617,7 @@ class DynamoDBTimestampOffsetProjectionSpec
         result2.toString shouldBe "e2-1|e2-2|e2-3|"
       }
       eventually {
-        offsetShouldBe(envelopes.last.offset)
+        latestOffsetShouldBe(envelopes.last.offset)
       }
     }
 
@@ -677,7 +670,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       }
 
       eventually {
-        offsetShouldBe(envelopes2.last.offset)
+        latestOffsetShouldBe(envelopes2.last.offset)
       }
       projectionRef ! ProjectionBehavior.Stop
     }
@@ -708,7 +701,7 @@ class DynamoDBTimestampOffsetProjectionSpec
         projectedValueShouldBe("e1|e2|e5")
       }
       eventually {
-        offsetShouldBe(envelopes.last.offset)
+        latestOffsetShouldBe(envelopes.last.offset)
       }
     }
   }
