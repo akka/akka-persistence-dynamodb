@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package shoppingcart;
+
+option java_multiple_files = true;
+option java_package = "shopping.cart.proto";
+
+// gRPC definition for ShoppingCartService
+
+
+
+service ShoppingCartService { 
+  
+  
+  rpc AddItem(AddItemRequest) returns (Cart) {}
+  rpc RemoveItem(RemoveItemRequest) returns (Cart) {}
+  rpc UpdateItem(UpdateItemRequest) returns (Cart) {}
+  
+  rpc Checkout(CheckoutRequest) returns (Cart) {}
+  rpc GetCart(GetCartRequest) returns (Cart) {}
+  
+
+  
+  rpc GetItemPopularity(GetItemPopularityRequest) returns (GetItemPopularityResponse) {}
+  
+}
+
+
+
+
+message AddItemRequest { 
+  string cart_id = 1;
+  string item_id = 2;
+  int32 quantity = 3;
+}
+
+message RemoveItemRequest {
+  string cart_id = 1;
+  string item_id = 2;
+  int32 quantity = 3;
+}
+
+message UpdateItemRequest {
+  string cart_id = 1;
+  string item_id = 2;
+  int32 quantity = 3;
+}
+
+
+message CheckoutRequest {
+  string cart_id = 1;
+}
+
+message GetCartRequest {
+  string cart_id = 1;
+}
+
+message Cart {
+  repeated Item items = 1;
+  bool checked_out = 2;
+}
+
+
+message Item {
+  string item_id = 1;
+  int32 quantity = 2;
+}
+
+
+message GetItemPopularityRequest {
+  string item_id = 1;
+}
+
+message GetItemPopularityResponse {
+  string item_id = 1;
+  int64 popularity_count = 2;
+}
+
