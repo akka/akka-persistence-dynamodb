@@ -4,20 +4,29 @@
 
 package akka.persistence.dynamodb
 
-import scala.jdk.CollectionConverters._
-import scala.jdk.FutureConverters._
-import scala.jdk.DurationConverters._
 import scala.concurrent.duration.FiniteDuration
+import scala.jdk.DurationConverters._
 
-import akka.annotation.InternalStableApi
+import akka.actor.typed.ActorSystem
 import com.typesafe.config.Config
 
-/**
- * INTERNAL API
- */
-@InternalStableApi
 object DynamoDBSettings {
 
+  /**
+   * Scala API: Load configuration from `akka.persistence.dynamodb`.
+   */
+  def apply(system: ActorSystem[_]): DynamoDBSettings =
+    apply(system.settings.config.getConfig("akka.persistence.dynamodb"))
+
+  /**
+   * Java API: Load configuration from `akka.persistence.dynamodb`.
+   */
+  def create(system: ActorSystem[_]): DynamoDBSettings =
+    apply(system)
+
+  /**
+   * Scala API: From custom configuration corresponding to `akka.persistence.dynamodb`.
+   */
   def apply(config: Config): DynamoDBSettings = {
     val journalTable: String = config.getString("journal.table")
 
@@ -28,12 +37,14 @@ object DynamoDBSettings {
     new DynamoDBSettings(journalTable, snapshotTable, querySettings)
   }
 
+  /**
+   * Java API: From custom configuration corresponding to `akka.persistence.dynamodb`.
+   */
+  def create(config: Config): DynamoDBSettings =
+    apply(config)
+
 }
 
-/**
- * INTERNAL API
- */
-@InternalStableApi
 final class DynamoDBSettings private (
     val journalTable: String,
     val snapshotTable: String,
@@ -45,10 +56,6 @@ final class DynamoDBSettings private (
     s"DynamoDBSettings($journalTable, $querySettings)"
 }
 
-/**
- * INTERNAL API
- */
-@InternalStableApi
 final class QuerySettings(config: Config) {
   val refreshInterval: FiniteDuration = config.getDuration("refresh-interval").toScala
   val behindCurrentTime: FiniteDuration = config.getDuration("behind-current-time").toScala

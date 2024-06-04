@@ -14,13 +14,13 @@ import akka.actor.typed.scaladsl.adapter._
 import akka.annotation.InternalApi
 import akka.persistence.FilteredPayload
 import akka.persistence.Persistence
-import akka.persistence.dynamodb.ClientProvider
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.BySliceQuery
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.dynamodb.internal.QueryDao
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
+import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.query.NoOffset
 import akka.persistence.query.Offset
 import akka.persistence.query.TimestampOffset

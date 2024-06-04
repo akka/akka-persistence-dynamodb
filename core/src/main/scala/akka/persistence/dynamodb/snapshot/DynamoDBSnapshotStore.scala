@@ -15,13 +15,13 @@ import akka.annotation.InternalApi
 import akka.persistence.SelectedSnapshot
 import akka.persistence.SnapshotMetadata
 import akka.persistence.SnapshotSelectionCriteria
-import akka.persistence.dynamodb.ClientProvider
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.QueryDao
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.internal.SerializedSnapshotItem
 import akka.persistence.dynamodb.internal.SerializedSnapshotMetadata
 import akka.persistence.dynamodb.internal.SnapshotDao
+import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.snapshot.SnapshotStore
 import akka.serialization.Serialization
 import akka.serialization.SerializationExtension

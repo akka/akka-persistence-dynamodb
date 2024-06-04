@@ -2,7 +2,7 @@
  * Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>
  */
 
-package akka.persistence.dynamodb
+package akka.persistence.dynamodb.util
 
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
@@ -15,6 +15,7 @@ import akka.actor.CoordinatedShutdown
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.Extension
 import akka.actor.typed.ExtensionId
+import akka.persistence.dynamodb.ClientSettings
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient

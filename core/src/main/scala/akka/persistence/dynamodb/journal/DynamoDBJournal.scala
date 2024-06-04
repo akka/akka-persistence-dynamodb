@@ -22,13 +22,13 @@ import akka.persistence.AtomicWrite
 import akka.persistence.Persistence
 import akka.persistence.PersistentRepr
 import akka.persistence.SerializedEvent
-import akka.persistence.dynamodb.ClientProvider
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.dynamodb.internal.JournalDao
 import akka.persistence.dynamodb.internal.SerializedEventMetadata
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
+import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.journal.AsyncWriteJournal
 import akka.persistence.journal.Tagged
 import akka.persistence.query.PersistenceQuery
