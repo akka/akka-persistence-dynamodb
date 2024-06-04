@@ -6,11 +6,14 @@ package akka.persistence.dynamodb.query
 
 import java.time.temporal.ChronoUnit
 
+import scala.concurrent.Await
+
 import akka.Done
 import akka.NotUsed
 import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorSystem
+import akka.persistence.FilteredPayload
 import akka.persistence.dynamodb.TestActors
 import akka.persistence.dynamodb.TestActors.Persister
 import akka.persistence.dynamodb.TestConfig
@@ -23,6 +26,8 @@ import akka.persistence.query.Offset
 import akka.persistence.query.PersistenceQuery
 import akka.persistence.query.TimestampOffset
 import akka.persistence.query.typed.EventEnvelope
+import akka.persistence.query.typed.scaladsl.EventTimestampQuery
+import akka.persistence.query.typed.scaladsl.LoadEventQuery
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.internal.ReplicatedEventMetadata
 import akka.stream.scaladsl.Sink
@@ -201,11 +206,57 @@ class EventsBySliceSpec
         assertFinished(result)
       }
 
-      // FIXME more tests, see r2dbc
-      // "support EventTimestampQuery" in new Setup {
-      // "support LoadEventQuery" in new Setup {
+      "support EventTimestampQuery" in new Setup {
+        for (i <- 1 to 3) {
+          persister ! PersistWithAck(s"e-$i", probe.ref)
+          probe.expectMessage(Done)
+        }
+
+        query.isInstanceOf[EventTimestampQuery] shouldBe true
+        query.timestampOf(persistenceId.id, 2L).futureValue.isDefined shouldBe true
+        query.timestampOf(persistenceId.id, 1L).futureValue.isDefined shouldBe true
+        query.timestampOf(persistenceId.id, 4L).futureValue.isDefined shouldBe false
+      }
+
+      "support LoadEventQuery" in new Setup {
+        for (i <- 1 to 3) {
+          persister ! PersistWithAck(s"e-$i", probe.ref)
+          probe.expectMessage(Done)
+        }
+
+        query.isInstanceOf[LoadEventQuery] shouldBe true
+        query.loadEnvelope[String](persistenceId.id, 2L).futureValue.event shouldBe "e-2"
+        query.loadEnvelope[String](persistenceId.id, 1L).futureValue.event shouldBe "e-1"
+        intercept[NoSuchElementException] {
+          Await.result(query.loadEnvelope[String](persistenceId.id, 4L), patience.timeout)
+        }
+      }
+
+      "mark FilteredEventPayload as filtered with no payload when reading it" in new Setup {
+        persister ! PersistWithAck(FilteredPayload, probe.ref)
+        probe.receiveMessage()
+
+        {
+          val result: TestSubscriber.Probe[EventEnvelope[String]] =
+            doQuery(entityType, slice, slice, NoOffset)
+              .runWith(TestSink())
+
+          result.request(1)
+          val envelope = result.expectNext()
+          envelope.filtered should be(true)
+          envelope.eventOption should be(empty)
+          assertFinished(result)
+        }
+
+        {
+          val envelope = query.loadEnvelope[String](persistenceId.id, 1L).futureValue
+          envelope.filtered should ===(true)
+          envelope.eventOption should be(empty)
+        }
+      }
+
+      // FIXME tags test, see r2dbc
       // "includes tags" in new Setup {
-      // "mark FilteredEventPayload as filtered with no payload when reading it" in new Setup {
 
     }
   }

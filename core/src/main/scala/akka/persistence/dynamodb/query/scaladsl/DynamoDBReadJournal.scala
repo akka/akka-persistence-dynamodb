@@ -4,6 +4,10 @@
 
 package akka.persistence.dynamodb.query.scaladsl
 
+import java.time.Instant
+
+import scala.concurrent.Future
+
 import akka.NotUsed
 import akka.actor.ExtendedActorSystem
 import akka.actor.typed.scaladsl.adapter._
@@ -21,7 +25,9 @@ import akka.persistence.query.TimestampOffset
 import akka.persistence.query.scaladsl._
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.CurrentEventsBySliceQuery
+import akka.persistence.query.typed.scaladsl.EventTimestampQuery
 import akka.persistence.query.typed.scaladsl.EventsBySliceQuery
+import akka.persistence.query.typed.scaladsl.LoadEventQuery
 import akka.persistence.typed.PersistenceId
 import akka.serialization.SerializationExtension
 import akka.stream.scaladsl.Source
@@ -35,7 +41,9 @@ object DynamoDBReadJournal {
 final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfgPath: String)
     extends ReadJournal
     with CurrentEventsBySliceQuery
-    with EventsBySliceQuery {
+    with EventsBySliceQuery
+    with EventTimestampQuery
+    with LoadEventQuery {
 
   private val log = LoggerFactory.getLogger(getClass)
   private val sharedConfigPath = cfgPath.replaceAll("""\.query$""", "")
@@ -43,6 +51,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
   log.debug("DynamoDB read journal starting up")
 
   private val typedSystem = system.toTyped
+  import typedSystem.executionContext
   private val serialization = SerializationExtension(system)
   private val persistenceExt = Persistence(system)
 
@@ -51,39 +60,45 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   private val filteredPayloadSerId = SerializationExtension(system).findSerializerFor(FilteredPayload).identifier
 
-  private def deserializePayload[Event](item: SerializedJournalItem): Option[Event] =
-    item.payload.map(payload =>
-      serialization.deserialize(payload, item.serId, item.serManifest).get.asInstanceOf[Event])
-
   private val _bySlice: BySliceQuery[SerializedJournalItem, EventEnvelope[Any]] = {
-    val createEnvelope: (TimestampOffset, SerializedJournalItem) => EventEnvelope[Any] = (offset, item) => {
-      val event = deserializePayload(item)
-      val metadata =
-        item.metadata.map(meta => serialization.deserialize(meta.payload, meta.serId, meta.serManifest).get)
-      val source = if (event.isDefined) EnvelopeOrigin.SourceQuery else EnvelopeOrigin.SourceBacktracking
-      val filtered = item.serId == filteredPayloadSerId
-
-      new EventEnvelope(
-        offset,
-        item.persistenceId,
-        item.seqNr,
-        if (filtered) None else event,
-        item.writeTimestamp.toEpochMilli,
-        metadata,
-        PersistenceId.extractEntityType(item.persistenceId),
-        persistenceExt.sliceForPersistenceId(item.persistenceId),
-        filtered,
-        source,
-        tags = item.tags)
-    }
+    val createEnvelope: (TimestampOffset, SerializedJournalItem) => EventEnvelope[Any] = createEventEnvelope
 
     val extractOffset: EventEnvelope[Any] => TimestampOffset = env => env.offset.asInstanceOf[TimestampOffset]
 
-    new BySliceQuery(queryDao, createEnvelope, extractOffset, settings, log)(typedSystem.executionContext)
+    new BySliceQuery(queryDao, createEnvelope, extractOffset, settings, log)
   }
 
   private def bySlice[Event]: BySliceQuery[SerializedJournalItem, EventEnvelope[Event]] =
     _bySlice.asInstanceOf[BySliceQuery[SerializedJournalItem, EventEnvelope[Event]]]
+
+  private def deserializePayload[Event](item: SerializedJournalItem): Option[Event] =
+    item.payload.map(payload =>
+      serialization.deserialize(payload, item.serId, item.serManifest).get.asInstanceOf[Event])
+
+  private def deserializeBySliceItem[Event](item: SerializedJournalItem): EventEnvelope[Event] = {
+    val offset = TimestampOffset(item.writeTimestamp, item.readTimestamp, Map(item.persistenceId -> item.seqNr))
+    createEventEnvelope(offset, item)
+  }
+
+  private def createEventEnvelope[Event](offset: TimestampOffset, item: SerializedJournalItem): EventEnvelope[Event] = {
+    val event = deserializePayload[Event](item)
+    val metadata = item.metadata.map(meta => serialization.deserialize(meta.payload, meta.serId, meta.serManifest).get)
+    val source = if (event.isDefined) EnvelopeOrigin.SourceQuery else EnvelopeOrigin.SourceBacktracking
+    val filtered = item.serId == filteredPayloadSerId
+
+    new EventEnvelope(
+      offset,
+      item.persistenceId,
+      item.seqNr,
+      if (filtered) None else event,
+      item.writeTimestamp.toEpochMilli,
+      metadata,
+      PersistenceId.extractEntityType(item.persistenceId),
+      persistenceExt.sliceForPersistenceId(item.persistenceId),
+      filtered,
+      source,
+      tags = item.tags)
+  }
 
   /**
    * INTERNAL API: Used by both journal replay and currentEventsByPersistenceId
@@ -158,4 +173,20 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     dbSource
   }
 
+  // EventTimestampQuery
+  override def timestampOf(persistenceId: String, sequenceNr: Long): Future[Option[Instant]] = {
+    queryDao.timestampOfEvent(persistenceId, sequenceNr)
+  }
+
+  //LoadEventQuery
+  override def loadEnvelope[Event](persistenceId: String, sequenceNr: Long): Future[EventEnvelope[Event]] = {
+    queryDao
+      .loadEvent(persistenceId, sequenceNr, includePayload = true)
+      .map {
+        case Some(item) => deserializeBySliceItem(item)
+        case None =>
+          throw new NoSuchElementException(
+            s"Event with persistenceId [$persistenceId] and sequenceNr [$sequenceNr] not found.")
+      }
+  }
 }
