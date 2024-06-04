@@ -86,13 +86,20 @@ lazy val root = (project in file("."))
     publishTo := Some(Resolver.file("Unused transient repository", file("target/unusedrepo"))))
   .enablePlugins(ScalaUnidocPlugin)
   .disablePlugins(SitePlugin, MimaPlugin, CiReleasePlugin)
-  .aggregate(core, docs)
+  .aggregate(core, projection, docs)
 
 def suffixFileFilter(suffix: String): FileFilter = new SimpleFileFilter(f => f.getAbsolutePath.endsWith(suffix))
 
 lazy val core = (project in file("core"))
   .settings(common)
   .settings(name := "akka-persistence-dynamodb", libraryDependencies ++= Dependencies.core)
+  .enablePlugins(AutomateHeaderPlugin)
+  .disablePlugins(CiReleasePlugin)
+
+lazy val projection = (project in file("projection"))
+  .dependsOn(core)
+  .settings(common)
+  .settings(name := "akka-projection-dynamodb", libraryDependencies ++= Dependencies.projection)
   .enablePlugins(AutomateHeaderPlugin)
   .disablePlugins(CiReleasePlugin)
 
