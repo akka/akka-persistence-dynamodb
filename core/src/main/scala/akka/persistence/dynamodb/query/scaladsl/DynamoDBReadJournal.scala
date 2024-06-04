@@ -183,7 +183,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     queryDao
       .loadEvent(persistenceId, sequenceNr, includePayload = true)
       .map {
-        case Some(row) => deserializeBySliceItem(row)
+        case Some(item) => deserializeBySliceItem(item)
         case None =>
           throw new NoSuchElementException(
             s"Event with persistenceId [$persistenceId] and sequenceNr [$sequenceNr] not found.")
