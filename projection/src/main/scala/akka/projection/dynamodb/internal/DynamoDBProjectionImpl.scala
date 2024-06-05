@@ -375,7 +375,7 @@ private[projection] class DynamoDBProjectionImpl[Offset, Envelope](
 
     override def readPaused(): Future[Boolean] =
       // FIXME offsetStore.readManagementState().map(_.exists(_.paused))
-      ???
+      Future.successful(false)
 
     override def readOffsets(): Future[Option[Offset]] =
       offsetStore.readOffset()
