@@ -124,11 +124,6 @@
             <artifactId>logback-classic</artifactId>
             <version>1.5.3</version>
         </dependency>
-        <dependency>
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-api</artifactId>
-            <version>1.60.2</version>
-        </dependency>
 
         <dependency>
             <groupId>com.typesafe.akka</groupId>
