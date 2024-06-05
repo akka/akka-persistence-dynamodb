@@ -20,6 +20,8 @@ import akka.persistence.dynamodb.internal.BySliceQuery
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.dynamodb.internal.QueryDao
 import akka.persistence.dynamodb.internal.SerializedJournalItem
+import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
+import akka.persistence.query.NoOffset
 import akka.persistence.query.Offset
 import akka.persistence.query.TimestampOffset
 import akka.persistence.query.scaladsl._
@@ -124,7 +126,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       maxSlice: Int,
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-      bySlice[Event].currentBySlice("currentEventsBySlices", entityType, slice, offset)
+      bySlice[Event].currentBySlice("currentEventsBySlices", entityType, slice, sliceStartOffset(slice, offset))
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
     bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
@@ -163,7 +165,8 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
 
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-      bySlice[Event].liveBySlice("eventsBySlices", entityType, slice, offset)
+
+      bySlice[Event].liveBySlice("eventsBySlices", entityType, slice, sliceStartOffset(slice, offset))
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
 
@@ -171,6 +174,13 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
     // FIXME merge with pubSubSource
     dbSource
+  }
+
+  private def sliceStartOffset(slice: Int, offset: Offset): Offset = {
+    offset match {
+      case offsetBySlice: TimestampOffsetBySlice => offsetBySlice.offsets.getOrElse(slice, NoOffset)
+      case _                                     => offset
+    }
   }
 
   // EventTimestampQuery
