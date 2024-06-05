@@ -4,7 +4,6 @@
 
 package akka.projection.dynamodb.scaladsl
 
-import scala.collection.immutable
 import scala.concurrent.duration.FiniteDuration
 
 import akka.Done

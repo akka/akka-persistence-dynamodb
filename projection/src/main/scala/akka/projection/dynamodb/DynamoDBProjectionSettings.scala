@@ -34,7 +34,7 @@ object DynamoDBProjectionSettings {
   def apply(config: Config): DynamoDBProjectionSettings = {
     new DynamoDBProjectionSettings(
       timestampOffsetTable = config.getString("offset-store.timestamp-offset-table"),
-      useClient = config.getString("use-connection-factory"),
+      useClient = config.getString("use-client"),
       timeWindow = config.getDuration("offset-store.time-window"),
       keepNumberOfEntries = config.getInt("offset-store.keep-number-of-entries"),
       evictInterval = config.getDuration("offset-store.evict-interval"),
