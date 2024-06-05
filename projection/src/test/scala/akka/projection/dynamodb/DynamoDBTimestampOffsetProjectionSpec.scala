@@ -59,7 +59,7 @@ object DynamoDBTimestampOffsetProjectionSpec {
    * EventBySliceEnvelope, but we want to assert on [[Envelope]]. The original [[EventEnvelope]] has too many params
    * that are not so interesting for the test including the offset timestamp that would make the it harder to test.
    */
-  class R2dbcTestStatusObserver(
+  class DynamoDBTestStatusObserver(
       statusProbe: ActorRef[TestStatusObserver.Status],
       progressProbe: ActorRef[TestStatusObserver.OffsetProgress[Envelope]])
       extends TestStatusObserver[EventEnvelope[String]](statusProbe.ref) {
