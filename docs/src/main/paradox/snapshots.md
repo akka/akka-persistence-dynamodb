@@ -20,7 +20,7 @@ configurations are supported.
 
 @@@ note
 Snapshots are optional, and if you know that the application doesn't store many events for each entity it is more
-efficient to not enable the snapshot plugin, because then it will not try to read snapshots when recovering the entites.
+efficient to not enable the snapshot plugin, because then it will not try to read snapshots when recovering the entities.
 @@@
 
 ### Reference configuration

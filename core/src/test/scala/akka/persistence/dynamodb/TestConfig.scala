@@ -15,7 +15,7 @@ object TestConfig {
       .parseString("""
       akka.loglevel = DEBUG
       akka.persistence.journal.plugin = "akka.persistence.dynamodb.journal"
-      # FIXME akka.persistence.snapshot-store.plugin = "akka.persistence.dynamodb.snapshot"
+      akka.persistence.snapshot-store.plugin = "akka.persistence.dynamodb.snapshot"
       akka.actor.testkit.typed.default-timeout = 10s
       """)
       .withFallback(defaultConfig)
