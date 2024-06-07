@@ -21,9 +21,11 @@ object DynamoDBSettings {
   def apply(config: Config): DynamoDBSettings = {
     val journalTable: String = config.getString("journal.table")
 
+    val snapshotTable: String = config.getString("snapshot.table")
+
     val querySettings = new QuerySettings(config.getConfig("query"))
 
-    new DynamoDBSettings(journalTable, querySettings)
+    new DynamoDBSettings(journalTable, snapshotTable, querySettings)
   }
 
 }
@@ -32,7 +34,10 @@ object DynamoDBSettings {
  * INTERNAL API
  */
 @InternalStableApi
-final class DynamoDBSettings private (val journalTable: String, val querySettings: QuerySettings) {
+final class DynamoDBSettings private (
+    val journalTable: String,
+    val snapshotTable: String,
+    val querySettings: QuerySettings) {
 
   val journalBySliceGsi: String = journalTable + "_slice_idx"
 
