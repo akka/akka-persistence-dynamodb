@@ -65,17 +65,25 @@ class DynamoDBSnapshotStoreSpec extends SnapshotStoreSpec(TestConfig.config) wit
     }
 
     "delete the single snapshot for a pid identified by sequenceNr in snapshot metadata" in {
-      val md = SnapshotMetadata(pid, sequenceNr = 15, timestamp = 0)
+      val senderProbe = TestProbe()
+
+      // first confirm the current sequence number for the snapshot
+      snapshotStore.tell(LoadSnapshot(pid, SnapshotSelectionCriteria(), Long.MaxValue), senderProbe.ref)
+      val result = senderProbe.expectMsgType[LoadSnapshotResult]
+      result.snapshot shouldBe defined
+      val sequenceNr = result.snapshot.get.metadata.sequenceNr
+      sequenceNr shouldBe 15
+
+      val md = SnapshotMetadata(pid, sequenceNr, timestamp = 0)
       val cmd = DeleteSnapshot(md)
       val sub = TestProbe()
 
-      val senderProbe = TestProbe()
       subscribe[DeleteSnapshot](sub.ref)
       snapshotStore.tell(cmd, senderProbe.ref)
       sub.expectMsg(cmd)
       senderProbe.expectMsg(DeleteSnapshotSuccess(md))
 
-      snapshotStore.tell(LoadSnapshot(pid, SnapshotSelectionCriteria(md.sequenceNr), Long.MaxValue), senderProbe.ref)
+      snapshotStore.tell(LoadSnapshot(pid, SnapshotSelectionCriteria(), Long.MaxValue), senderProbe.ref)
       senderProbe.expectMsg(LoadSnapshotResult(None, Long.MaxValue))
     }
   }
