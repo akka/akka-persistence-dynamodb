@@ -9,7 +9,8 @@ object Dependencies {
   val Scala3 = "3.3.3"
   val Scala2Versions = Seq(Scala213)
   val ScalaVersions = Dependencies.Scala2Versions :+ Dependencies.Scala3
-  val AkkaVersion = System.getProperty("override.akka.version", "2.9.3")
+  // FIXME stable version
+  val AkkaVersion = System.getProperty("override.akka.version", "2.9.3+16-ae4ba35e-SNAPSHOT")
   val AkkaVersionInDocs = VersionNumber(AkkaVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
   val AkkaProjectionVersion = "1.5.4"
   val AkkaProjectionVersionInDocs = "current"

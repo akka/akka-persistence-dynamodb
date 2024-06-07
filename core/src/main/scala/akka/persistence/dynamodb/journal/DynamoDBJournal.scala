@@ -4,6 +4,8 @@
 
 package akka.persistence.dynamodb.journal
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.collection.immutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
@@ -30,6 +32,7 @@ import akka.persistence.dynamodb.internal.SerializedEventMetadata
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.dynamodb.util.ClientProvider
+import akka.persistence.journal.AsyncReplay
 import akka.persistence.journal.AsyncWriteJournal
 import akka.persistence.journal.Tagged
 import akka.persistence.query.PersistenceQuery
@@ -67,13 +70,17 @@ private[dynamodb] object DynamoDBJournal {
     }
     reprWithMeta
   }
+
+  val FutureDone: Future[Done] = Future.successful(Done)
 }
 
 /**
  * INTERNAL API
  */
 @InternalApi
-private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) extends AsyncWriteJournal {
+private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
+    extends AsyncWriteJournal
+    with AsyncReplay {
   import DynamoDBJournal._
 
   implicit val system: ActorSystem[_] = context.system.toTyped
@@ -192,34 +199,68 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
     journalDao.deleteEventsTo(persistenceId, toSequenceNr, resetSequenceNumber = false)
   }
 
+  override def replayMessages(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long, max: Long)(
+      recoveryCallback: PersistentRepr => Unit): Future[Long] = {
+    log.debug("replayMessages [{}] [{}]", persistenceId, fromSequenceNr)
+    val pendingWrite = Option(writesInProgress.get(persistenceId)) match {
+      case Some(f) =>
+        log.debug("Write in progress for [{}], deferring replayMessages until write completed", persistenceId)
+        // we only want to make write - replay sequential, not fail if previous write failed
+        f.recover { case _ => Done }(ExecutionContexts.parasitic)
+      case None => FutureDone
+    }
+    pendingWrite.flatMap { _ =>
+      if (toSequenceNr == Long.MaxValue && max == Long.MaxValue) {
+        // this is the normal case, highest sequence number from last event
+        val seqNr = new AtomicLong
+        query
+          .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = true)
+          .runWith(Sink.foreach { item =>
+            seqNr.set(item.seqNr)
+            // payload is empty for deleted item
+            if (item.payload.isDefined) {
+              val repr = deserializeItem(serialization, item)
+              recoveryCallback(repr)
+            }
+          })
+          .map(_ => seqNr.get)(ExecutionContexts.parasitic)
+      } else if (toSequenceNr <= 0) {
+        // no replay
+        journalDao.readHighestSequenceNr(persistenceId)
+      } else {
+        // replay to custom sequence number
+
+        val highestSeqNr = journalDao.readHighestSequenceNr(persistenceId)
+
+        val effectiveToSequenceNr =
+          if (max == Long.MaxValue) toSequenceNr
+          else math.min(toSequenceNr, fromSequenceNr + max - 1)
+
+        query
+          .internalCurrentEventsByPersistenceId(
+            persistenceId,
+            fromSequenceNr,
+            effectiveToSequenceNr,
+            includeDeleted = false)
+          .runWith(Sink
+            .foreach { item =>
+              val repr = deserializeItem(serialization, item)
+              recoveryCallback(repr)
+            })
+          .flatMap(_ => highestSeqNr)
+      }
+    }
+  }
+
   override def asyncReplayMessages(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long, max: Long)(
       recoveryCallback: PersistentRepr => Unit): Future[Unit] = {
-    log.debug("asyncReplayMessages persistenceId [{}], fromSequenceNr [{}]", persistenceId, fromSequenceNr)
-    val effectiveToSequenceNr =
-      if (max == Long.MaxValue) toSequenceNr
-      else math.min(toSequenceNr, fromSequenceNr + max - 1)
-    query
-      .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, effectiveToSequenceNr)
-      .runWith(Sink.foreach { item =>
-        val repr = deserializeItem(serialization, item)
-        recoveryCallback(repr)
-      })
-      .map(_ => ())
+    throw new IllegalStateException(
+      "asyncReplayMessages is not supposed to be called when implementing AsyncReplay. This is a bug, please report.")
   }
 
   override def asyncReadHighestSequenceNr(persistenceId: String, fromSequenceNr: Long): Future[Long] = {
-    log.debug("asyncReadHighestSequenceNr [{}] [{}]", persistenceId, fromSequenceNr)
-    val pendingWrite = Option(writesInProgress.get(persistenceId)) match {
-      case Some(f) =>
-        log.debug("Write in progress for [{}], deferring highest seq nr until write completed", persistenceId)
-        // we only want to make write - replay sequential, not fail if previous write failed
-        f.recover { case _ => Done }(ExecutionContexts.parasitic)
-      case None => Future.successful(Done)
-    }
-    pendingWrite.flatMap { _ =>
-      // FIXME Can we get rid of the separate ReadHighestSequenceNr query altogether and rely on latest event in the
-      //  replay? Requires some changes in Akka, but would be good performance improvement.
-      journalDao.readHighestSequenceNr(persistenceId)
-    }
+    throw new IllegalStateException(
+      "asyncReplayMessages is not supposed to be called when implementing AsyncReplay. This is a bug, please report.")
   }
+
 }
