@@ -335,8 +335,6 @@ class DynamoDBTimestampOffsetStoreSpec
     }
 
     "perf save batch of TimestampOffsets" in {
-      // FIXME Too many items requested for the BatchWriteItem
-      pending
       val projectionId = genRandomProjectionId()
       val offsetStore = createOffsetStore(projectionId)
 

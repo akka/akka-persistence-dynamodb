@@ -36,6 +36,9 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 @InternalApi private[projection] object OffsetStoreDao {
   private val log: Logger = LoggerFactory.getLogger(classOf[OffsetStoreDao])
 
+  // Hard limit in DynamoDB
+  private val MaxBatchSize = 25
+
   object OffsetStoreAttributes {
     // FIXME should attribute names be shorter?
     val Pid = "pid"
@@ -58,6 +61,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     projectionId: ProjectionId,
     client: DynamoDbAsyncClient) {
   import OffsetStoreDao.log
+  import OffsetStoreDao.MaxBatchSize
   import system.executionContext
 
   private def nameSlice(slice: Int): String = s"${projectionId.name}-$slice"
@@ -93,11 +97,9 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
   def storeTimestampOffsets(offsetsBySlice: Map[Int, TimestampOffset]): Future[Done] = {
     import OffsetStoreDao.OffsetStoreAttributes._
 
-    // FIXME upper limit on number of writes in a batch, split up
-
-    val writeItems =
-      offsetsBySlice
-        .map { case (slice, offset) =>
+    def writeBatch(offsetsBatch: IndexedSeq[(Int, TimestampOffset)]): Future[Done] = {
+      val writeItems =
+        offsetsBatch.map { case (slice, offset) =>
           val attributes = new JHashMap[String, AttributeValue]
           attributes.put(NameSlice, AttributeValue.fromS(nameSlice(slice)))
           attributes.put(Pid, timestampBySlicePid)
@@ -123,74 +125,92 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
                 .item(attributes)
                 .build())
             .build()
+        }.asJava
+
+      val req = BatchWriteItemRequest
+        .builder()
+        .requestItems(Collections.singletonMap(settings.timestampOffsetTable, writeItems))
+        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+        .build()
+
+      val result = client.batchWriteItem(req).asScala
+
+      if (log.isDebugEnabled()) {
+        result.foreach { response =>
+          log.debug(
+            "Wrote latest timestamps for [{}] slices, consumed [{}] WCU",
+            offsetsBatch.size,
+            response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
         }
-        .toVector
-        .asJava
-
-    val req = BatchWriteItemRequest
-      .builder()
-      .requestItems(Collections.singletonMap(settings.timestampOffsetTable, writeItems))
-      .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-      .build()
-
-    val result = client.batchWriteItem(req).asScala
-
-    if (log.isDebugEnabled()) {
-      result.foreach { response =>
-        log.debug(
-          "Wrote latest timestamps for [{}] slices, consumed [{}] WCU",
-          offsetsBySlice.size,
-          response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
       }
+      result.map(_ => Done)(ExecutionContexts.parasitic)
     }
 
-    result.map(_ => Done)(ExecutionContexts.parasitic)
+    if (offsetsBySlice.size <= MaxBatchSize) {
+      writeBatch(offsetsBySlice.toVector)
+    } else {
+      val batches = offsetsBySlice.toVector.sliding(MaxBatchSize, MaxBatchSize)
+      Future
+        .sequence(batches.map(writeBatch))
+        .map(_ => Done)(ExecutionContexts.parasitic)
+    }
   }
 
   def storeSequenceNumbers(records: IndexedSeq[Record]): Future[Done] = {
     import OffsetStoreDao.OffsetStoreAttributes._
 
-    // FIXME upper limit on number of writes in a batch, split up
+    def writeBatch(recordsBatch: IndexedSeq[Record]): Future[Done] = {
 
-    val writeItems =
-      records
-        .map { case Record(slice, pid, seqNr, timestamp) =>
-          val attributes = new JHashMap[String, AttributeValue]
-          attributes.put(NameSlice, AttributeValue.fromS(nameSlice(slice)))
-          attributes.put(Pid, AttributeValue.fromS(pid))
-          attributes.put(SeqNr, AttributeValue.fromN(seqNr.toString))
-          val timestampMicros = InstantFactory.toEpochMicros(timestamp)
-          attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
+      val writeItems =
+        recordsBatch
+          .map { case Record(slice, pid, seqNr, timestamp) =>
+            val attributes = new JHashMap[String, AttributeValue]
+            attributes.put(NameSlice, AttributeValue.fromS(nameSlice(slice)))
+            attributes.put(Pid, AttributeValue.fromS(pid))
+            attributes.put(SeqNr, AttributeValue.fromN(seqNr.toString))
+            val timestampMicros = InstantFactory.toEpochMicros(timestamp)
+            attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
 
-          WriteRequest.builder
-            .putRequest(
-              PutRequest
-                .builder()
-                .item(attributes)
-                .build())
-            .build()
+            WriteRequest.builder
+              .putRequest(
+                PutRequest
+                  .builder()
+                  .item(attributes)
+                  .build())
+              .build()
+          }
+          .toVector
+          .asJava
+
+      val req = BatchWriteItemRequest
+        .builder()
+        .requestItems(Collections.singletonMap(settings.timestampOffsetTable, writeItems))
+        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+        .build()
+
+      val result = client.batchWriteItem(req).asScala
+
+      if (log.isDebugEnabled()) {
+        result.foreach { response =>
+          log.debug(
+            "Wrote [{}] sequence numbers, consumed [{}] WCU",
+            recordsBatch.size,
+            response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
         }
-        .toVector
-        .asJava
-
-    val req = BatchWriteItemRequest
-      .builder()
-      .requestItems(Collections.singletonMap(settings.timestampOffsetTable, writeItems))
-      .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-      .build()
-
-    val result = client.batchWriteItem(req).asScala
-
-    if (log.isDebugEnabled()) {
-      result.foreach { response =>
-        log.debug(
-          "Wrote [{}] sequence numbers, consumed [{}] WCU",
-          records.size,
-          response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
       }
+
+      result.map(_ => Done)(ExecutionContexts.parasitic)
     }
 
-    result.map(_ => Done)(ExecutionContexts.parasitic)
+    if (records.size <= MaxBatchSize) {
+      writeBatch(records)
+    } else {
+      val batches = records.sliding(MaxBatchSize, MaxBatchSize)
+      Future
+        .sequence(batches.map(writeBatch))
+        .map(_ => Done)(ExecutionContexts.parasitic)
+    }
+
   }
 
   def loadSequenceNumber(slice: Int, pid: String): Future[Option[Record]] = {
