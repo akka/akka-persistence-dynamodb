@@ -64,15 +64,28 @@ spec:
                   name: db-secret
                   key: DB_HOST
                   optional: true
-            - name: DB_USER
+            - name: AWS_REGION
               valueFrom:
                 secretKeyRef:
-                  name: db-secret
-                  key: DB_USER
+                  name: aws-region
+                  key: AWS_REGION
                   optional: true
-            - name: DB_PASSWORD
+            - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: db-secret
-                  key: DB_PASSWORD
+                  name: aws-access-key-id
+                  key: AWS_ACCESS_KEY_ID
                   optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aws-secret-access-key
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aws-session-token
+                  key: AWS_SESSION_TOKEN
+                  optional: true
+
