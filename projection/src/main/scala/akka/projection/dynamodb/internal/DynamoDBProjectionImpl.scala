@@ -168,7 +168,7 @@ private[projection] object DynamoDBProjectionImpl {
     }
   }
 
-  private[projection] def adaptedHandlerForAtLeastOnceAsync[Offset, Envelope](
+  private[projection] def adaptedHandlerForAtLeastOnce[Offset, Envelope](
       sourceProvider: SourceProvider[Offset, Envelope],
       handlerFactory: () => Handler[Envelope],
       offsetStore: DynamoDBOffsetStore)(implicit

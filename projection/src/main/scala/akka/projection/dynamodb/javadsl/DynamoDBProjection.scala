@@ -26,9 +26,6 @@ object DynamoDBProjection {
   /**
    * Create a [[akka.projection.Projection]] with at-least-once processing semantics.
    *
-   * Compared to [[DynamoDBProjection.atLeastOnce]] the [[Handler]] is not storing the projected result in DynamoDB, but
-   * is integrating with something else.
-   *
    * It stores the offset in a DynamoDB table after the `handler` has processed the envelope. This means that if the
    * projection is restarted from previously stored offset then some elements may be processed more than once.
    *
@@ -36,7 +33,7 @@ object DynamoDBProjection {
    * can be defined with [[AtLeastOnceProjection.withSaveOffset]] of the returned `AtLeastOnceProjection`. The default
    * settings for the window is defined in configuration section `akka.projection.at-least-once`.
    */
-  def atLeastOnceAsync[Offset, Envelope](
+  def atLeastOnce[Offset, Envelope](
       projectionId: ProjectionId,
       settings: Optional[DynamoDBProjectionSettings],
       sourceProvider: SourceProvider[Offset, Envelope],
@@ -44,7 +41,7 @@ object DynamoDBProjection {
       system: ActorSystem[_]): AtLeastOnceProjection[Offset, Envelope] = {
 
     scaladsl.DynamoDBProjection
-      .atLeastOnceAsync[Offset, Envelope](
+      .atLeastOnce[Offset, Envelope](
         projectionId,
         settings.toScala,
         JavaToScalaBySliceSourceProviderAdapter(sourceProvider),
