@@ -95,7 +95,7 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
           payload = item.get(SnapshotPayload).b().asByteArray(),
           serId = item.get(SnapshotSerId).n().toInt,
           serManifest = item.get(SnapshotSerManifest).s(),
-          tags = Set.empty, // FIXME
+          tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
           metadata = metadata)
 
         log.debug(
@@ -127,6 +127,11 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
     attributes.put(SnapshotSerId, AttributeValue.fromN(snapshot.serId.toString))
     attributes.put(SnapshotSerManifest, AttributeValue.fromS(snapshot.serManifest))
     attributes.put(SnapshotPayload, AttributeValue.fromB(SdkBytes.fromByteArray(snapshot.payload)))
+
+    if (snapshot.tags.nonEmpty) { // note: DynamoDB does not support empty sets
+      attributes.put(Tags, AttributeValue.fromSs(snapshot.tags.toSeq.asJava))
+    }
+
     snapshot.metadata.foreach { meta =>
       attributes.put(MetaSerId, AttributeValue.fromN(meta.serId.toString))
       attributes.put(MetaSerManifest, AttributeValue.fromS(meta.serManifest))

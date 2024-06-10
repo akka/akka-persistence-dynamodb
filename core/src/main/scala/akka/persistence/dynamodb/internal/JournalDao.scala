@@ -74,6 +74,10 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       attributes.put(EventPayload, AttributeValue.fromB(SdkBytes.fromByteArray(item.payload.get)))
       attributes.put(Writer, AttributeValue.fromS(item.writerUuid))
 
+      if (item.tags.nonEmpty) { // note: DynamoDB does not support empty sets
+        attributes.put(Tags, AttributeValue.fromSs(item.tags.toSeq.asJava))
+      }
+
       item.metadata.foreach { meta =>
         attributes.put(MetaSerId, AttributeValue.fromN(meta.serId.toString))
         attributes.put(MetaSerManifest, AttributeValue.fromS(meta.serManifest))
