@@ -156,7 +156,7 @@ class ShoppingCartEventConsumer {
                       sliceRange.second());
 
               return ProjectionBehavior.create(
-                  DynamoDBProjection.atLeastOnceAsync(
+                  DynamoDBProjection.atLeastOnce(
                       projectionId,
                       Optional.empty(),
                       sourceProvider,

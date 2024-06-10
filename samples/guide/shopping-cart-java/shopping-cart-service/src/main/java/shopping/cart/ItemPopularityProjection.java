@@ -62,7 +62,7 @@ public final class ItemPopularityProjection {
 
     String slice = "carts-" + minSlice + "-" + maxSlice;
     Optional<DynamoDBProjectionSettings> settings = Optional.empty();
-    return DynamoDBProjection.atLeastOnceAsync(
+    return DynamoDBProjection.atLeastOnce(
         ProjectionId.of("ItemPopularityProjection", slice),
         settings,
         sourceProvider,
