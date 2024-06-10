@@ -4,8 +4,6 @@
 
 package akka.persistence.dynamodb.journal
 
-import java.util.concurrent.atomic.AtomicLong
-
 import scala.collection.immutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
@@ -212,18 +210,16 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
     pendingWrite.flatMap { _ =>
       if (toSequenceNr == Long.MaxValue && max == Long.MaxValue) {
         // this is the normal case, highest sequence number from last event
-        val seqNr = new AtomicLong
         query
           .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = true)
-          .runWith(Sink.foreach { item =>
-            seqNr.set(item.seqNr)
+          .runWith(Sink.fold(0L) { (_, item) =>
             // payload is empty for deleted item
             if (item.payload.isDefined) {
               val repr = deserializeItem(serialization, item)
               recoveryCallback(repr)
             }
+            item.seqNr
           })
-          .map(_ => seqNr.get)(ExecutionContexts.parasitic)
       } else if (toSequenceNr <= 0) {
         // no replay
         journalDao.readHighestSequenceNr(persistenceId)
