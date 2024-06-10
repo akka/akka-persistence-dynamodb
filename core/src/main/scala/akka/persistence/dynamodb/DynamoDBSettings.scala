@@ -69,11 +69,38 @@ final class QuerySettings(config: Config) {
 }
 
 object ClientSettings {
+  final class Credentials(val accessKeyId: String, val secretAccessKey: String)
+
+  object Credentials {
+    def get(clientConfig: Config): Option[Credentials] = {
+      val config = clientConfig.getConfig("credentials")
+      (optString(config, "access-key-id"), optString(config, "secret-access-key")) match {
+        case (Some(accessKeyId), Some(secretAccessKey)) => Some(new Credentials(accessKeyId, secretAccessKey))
+        case _                                          => None
+      }
+    }
+  }
+
   def apply(config: Config): ClientSettings =
-    new ClientSettings(host = config.getString("host"), port = config.getInt("port"))
+    new ClientSettings(
+      host = config.getString("host"),
+      port = config.getInt("port"),
+      region = optString(config, "region"),
+      credentials = Credentials.get(config))
+
+  private def optString(config: Config, path: String): Option[String] = {
+    if (config.hasPath(path)) {
+      val value = config.getString(path)
+      if (value.nonEmpty) Some(value) else None
+    } else None
+  }
 }
 
-final class ClientSettings(val host: String, val port: Int) {
+final class ClientSettings(
+    val host: String,
+    val port: Int,
+    val region: Option[String],
+    val credentials: Option[ClientSettings.Credentials]) {
   override def toString: String =
     s"ClientSettings($host, $port)"
 }
