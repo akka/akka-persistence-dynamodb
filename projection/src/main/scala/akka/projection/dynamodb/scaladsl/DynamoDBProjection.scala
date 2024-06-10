@@ -6,7 +6,7 @@ package akka.projection.dynamodb.scaladsl
 
 import akka.actor.typed.ActorSystem
 import akka.annotation.ApiMayChange
-import akka.persistence.dynamodb.ClientProvider
+import akka.persistence.dynamodb.util.ClientProvider
 import akka.projection.BySlicesSourceProvider
 import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings

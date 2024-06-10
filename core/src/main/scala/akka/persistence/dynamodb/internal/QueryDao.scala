@@ -135,8 +135,6 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       .limit(settings.querySettings.bufferSize)
       .build()
 
-    // FIXME for backtracking we don't need all attributes, can be filtered with builder.attributesToGet
-
     val publisher = client.queryPaginator(req)
 
     Source.fromPublisher(publisher).mapConcat { response =>

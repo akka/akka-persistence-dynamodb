@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package shoppingcart;
+
+option java_multiple_files = true;
+option java_package = "shopping.cart.proto";
+
+// Events published to the outside world
+
+message ItemAdded {
+  string cart_id = 1;
+  string item_id = 2;
+  int32 quantity = 3;
+}
+
+message ItemQuantityAdjusted {
+  string cart_id = 1;
+  string item_id = 2;
+  int32 quantity = 3;
+}
+
+message ItemRemoved {
+  string cart_id = 1;
+  string item_id = 2;
+}
+
+message CheckedOut {
+  string cart_id = 1;
+}
