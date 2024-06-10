@@ -374,7 +374,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
 
       val projection =
-        DynamoDBProjection.atLeastOnceAsync(
+        DynamoDBProjection.atLeastOnce(
           projectionId,
           Some(settings),
           sourceProvider,
@@ -398,7 +398,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
 
       val projection =
-        DynamoDBProjection.atLeastOnceAsync(
+        DynamoDBProjection.atLeastOnce(
           projectionId,
           Some(settings),
           sourceProvider,
@@ -423,8 +423,9 @@ class DynamoDBTimestampOffsetProjectionSpec
       implicit val offsetStore: DynamoDBOffsetStore =
         new DynamoDBOffsetStore(projectionId, Some(sourceProvider), system, settings, client)
 
-      val projectionRef = spawn(ProjectionBehavior(DynamoDBProjection
-        .atLeastOnceAsync(projectionId, Some(settings), sourceProvider, handler = () => new ConcatHandler(repository))))
+      val projectionRef = spawn(
+        ProjectionBehavior(DynamoDBProjection
+          .atLeastOnce(projectionId, Some(settings), sourceProvider, handler = () => new ConcatHandler(repository))))
       val input = sourceProvider.input.futureValue
 
       val envelopes1 = createEnvelopesUnknownSequenceNumbers(startTime, pid1, pid2)
@@ -467,7 +468,7 @@ class DynamoDBTimestampOffsetProjectionSpec
 
       val projectionFailing =
         DynamoDBProjection
-          .atLeastOnceAsync(projectionId, Some(settings), sourceProvider, handler = () => bogusEventHandler)
+          .atLeastOnce(projectionId, Some(settings), sourceProvider, handler = () => bogusEventHandler)
           .withSaveOffset(afterEnvelopes = 5, afterDuration = 2.seconds)
           .withRecoveryStrategy(HandlerRecoveryStrategy.retryAndSkip(2, 10.millis))
 
@@ -496,7 +497,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
 
       val projection =
-        DynamoDBProjection.atLeastOnceAsync(
+        DynamoDBProjection.atLeastOnce(
           projectionId,
           Some(settings),
           sourceProvider,
@@ -531,7 +532,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       }
 
       val projection =
-        DynamoDBProjection.atLeastOnceAsync(projectionId, Some(settings), sourceProvider, handler = () => handler())
+        DynamoDBProjection.atLeastOnce(projectionId, Some(settings), sourceProvider, handler = () => handler())
 
       projectionTestKit.run(projection) {
         result.toString shouldBe "e1|e2|e3|e4|e5|e6|"
@@ -571,7 +572,7 @@ class DynamoDBTimestampOffsetProjectionSpec
 
       val projectionFailing =
         DynamoDBProjection
-          .atLeastOnceAsync(projectionId, Some(settings), sourceProvider, handler = () => handler())
+          .atLeastOnce(projectionId, Some(settings), sourceProvider, handler = () => handler())
           .withSaveOffset(afterEnvelopes = 5, afterDuration = 2.seconds)
           .withRecoveryStrategy(HandlerRecoveryStrategy.retryAndSkip(2, 10.millis))
 
@@ -610,7 +611,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       }
 
       val projection =
-        DynamoDBProjection.atLeastOnceAsync(projectionId, Some(settings), sourceProvider, handler = () => handler())
+        DynamoDBProjection.atLeastOnce(projectionId, Some(settings), sourceProvider, handler = () => handler())
 
       projectionTestKit.run(projection) {
         result1.toString shouldBe "e1-1|e1-2|e1-3|e1-4|"
@@ -648,7 +649,7 @@ class DynamoDBTimestampOffsetProjectionSpec
 
       val projectionRef = spawn(
         ProjectionBehavior(
-          DynamoDBProjection.atLeastOnceAsync(projectionId, Some(settings), sourceProvider, handler = () => handler())))
+          DynamoDBProjection.atLeastOnce(projectionId, Some(settings), sourceProvider, handler = () => handler())))
       val input = sourceProvider.input.futureValue
 
       val envelopes1 = createEnvelopesUnknownSequenceNumbers(startTime, pid1, pid2)
@@ -690,7 +691,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
 
       val projection =
-        DynamoDBProjection.atLeastOnceAsync(
+        DynamoDBProjection.atLeastOnce(
           projectionId,
           Some(settings),
           sourceProvider,

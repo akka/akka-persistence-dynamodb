@@ -4,9 +4,6 @@
 
 package akka.projection.dynamodb.scaladsl
 
-import scala.concurrent.duration.FiniteDuration
-
-import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.ApiMayChange
 import akka.persistence.dynamodb.ClientProvider
@@ -20,16 +17,12 @@ import akka.projection.internal.SingleHandlerStrategy
 import akka.projection.scaladsl.AtLeastOnceProjection
 import akka.projection.scaladsl.Handler
 import akka.projection.scaladsl.SourceProvider
-import akka.stream.scaladsl.FlowWithContext
 
 @ApiMayChange
 object DynamoDBProjection {
 
   /**
    * Create a [[akka.projection.Projection]] with at-least-once processing semantics.
-   *
-   * Compared to [[DynamoDBProjection.atLeastOnce]] the [[Handler]] is not storing the projected result in DynamoDB, but
-   * is integrating with something else.
    *
    * It stores the offset in a DynamoDB table after the `handler` has processed the envelope. This means that if the
    * projection is restarted from previously stored offset then some elements may be processed more than once.
@@ -38,7 +31,7 @@ object DynamoDBProjection {
    * can be defined with [[AtLeastOnceProjection.withSaveOffset]] of the returned `AtLeastOnceProjection`. The default
    * settings for the window is defined in configuration section `akka.projection.at-least-once`.
    */
-  def atLeastOnceAsync[Offset, Envelope](
+  def atLeastOnce[Offset, Envelope](
       projectionId: ProjectionId,
       settings: Option[DynamoDBProjectionSettings],
       sourceProvider: SourceProvider[Offset, Envelope],
@@ -55,7 +48,7 @@ object DynamoDBProjection {
         client)
 
     val adaptedHandler =
-      DynamoDBProjectionImpl.adaptedHandlerForAtLeastOnceAsync(sourceProvider, handler, offsetStore)(
+      DynamoDBProjectionImpl.adaptedHandlerForAtLeastOnce(sourceProvider, handler, offsetStore)(
         system.executionContext,
         system)
 
