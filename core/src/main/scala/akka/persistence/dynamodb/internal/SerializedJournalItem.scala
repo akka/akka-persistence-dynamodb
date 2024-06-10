@@ -41,6 +41,7 @@ final case class SerializedEventMetadata(serId: Int, serManifest: String, payloa
   val EventSerManifest = "event_ser_manifest"
   val EventPayload = "event_payload"
   val Writer = "writer"
+  val Tags = "tags"
   val MetaSerId = "meta_ser_id"
   val MetaSerManifest = "meta_ser_manifest"
   val MetaPayload = "meta_payload"

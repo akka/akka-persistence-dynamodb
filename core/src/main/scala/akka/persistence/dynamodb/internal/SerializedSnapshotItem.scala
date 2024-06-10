@@ -38,6 +38,7 @@ final case class SerializedSnapshotMetadata(serId: Int, serManifest: String, pay
   val SnapshotSerId = "snapshot_ser_id"
   val SnapshotSerManifest = "snapshot_ser_manifest"
   val SnapshotPayload = "snapshot_payload"
+  val Tags = "tags"
   val MetaSerId = "meta_ser_id"
   val MetaSerManifest = "meta_ser_manifest"
   val MetaPayload = "meta_payload"

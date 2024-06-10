@@ -32,7 +32,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
   private val bySliceProjectionExpression = {
     import JournalAttributes._
-    s"$Pid, $SeqNr, $Timestamp, $EventSerId, $EventSerManifest"
+    s"$Pid, $SeqNr, $Timestamp, $EventSerId, $EventSerManifest, $Tags"
   }
 
   private val bySliceWithMetaProjectionExpression = {
@@ -89,7 +89,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
             serId = item.get(EventSerId).n().toInt,
             serManifest = item.get(EventSerManifest).s(),
             writerUuid = item.get(Writer).s(),
-            tags = Set.empty, // FIXME
+            tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
             metadata = metadata)
         }
       }
@@ -151,7 +151,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
             serId = item.get(EventSerId).n().toInt,
             serManifest = "",
             writerUuid = "", // not need in this query
-            tags = Set.empty, // FIXME
+            tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
             metadata = None)
         } else {
           createSerializedJournalItem(item, includePayload = true)
@@ -181,7 +181,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       serId = item.get(EventSerId).n().toInt,
       serManifest = item.get(EventSerManifest).s(),
       writerUuid = "", // not need in this query
-      tags = Set.empty, // FIXME
+      tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
       metadata = metadata)
   }
 

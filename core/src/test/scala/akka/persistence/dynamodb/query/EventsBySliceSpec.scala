@@ -255,8 +255,26 @@ class EventsBySliceSpec
         }
       }
 
-      // FIXME tags test, see r2dbc
-      // "includes tags" in new Setup {
+      "includes tags" in new Setup {
+        val taggingPersister = spawn(Persister(persistenceId, tags = Set("tag-A")))
+
+        for (i <- 1 to 3) {
+          taggingPersister ! PersistWithAck(s"f-$i", probe.ref)
+          probe.expectMessage(Done)
+        }
+
+        val result: TestSubscriber.Probe[EventEnvelope[String]] =
+          doQuery(entityType, slice, slice, NoOffset)
+            .runWith(TestSink())
+
+        result.request(3)
+        val envelopes = result.expectNextN(3)
+        envelopes.map(_.tags) should ===(Seq(Set("tag-A"), Set("tag-A"), Set("tag-A")))
+
+        query.loadEnvelope[String](persistenceId.id, 1L).futureValue.tags shouldBe Set("tag-A")
+
+        assertFinished(result)
+      }
 
     }
   }
