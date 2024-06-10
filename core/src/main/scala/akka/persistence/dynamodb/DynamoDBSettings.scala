@@ -8,6 +8,7 @@ import scala.concurrent.duration.FiniteDuration
 import scala.jdk.DurationConverters._
 
 import akka.actor.typed.ActorSystem
+import akka.annotation.InternalStableApi
 import com.typesafe.config.Config
 
 object DynamoDBSettings {
@@ -30,11 +31,13 @@ object DynamoDBSettings {
   def apply(config: Config): DynamoDBSettings = {
     val journalTable: String = config.getString("journal.table")
 
+    val journalPublishEvents: Boolean = config.getBoolean("journal.publish-events")
+
     val snapshotTable: String = config.getString("snapshot.table")
 
     val querySettings = new QuerySettings(config.getConfig("query"))
 
-    new DynamoDBSettings(journalTable, snapshotTable, querySettings)
+    new DynamoDBSettings(journalTable, journalPublishEvents, snapshotTable, querySettings)
   }
 
   /**
@@ -47,13 +50,12 @@ object DynamoDBSettings {
 
 final class DynamoDBSettings private (
     val journalTable: String,
+    val journalPublishEvents: Boolean,
     val snapshotTable: String,
     val querySettings: QuerySettings) {
 
   val journalBySliceGsi: String = journalTable + "_slice_idx"
 
-  override def toString =
-    s"DynamoDBSettings($journalTable, $querySettings)"
 }
 
 final class QuerySettings(config: Config) {
@@ -63,6 +65,7 @@ final class QuerySettings(config: Config) {
   val backtrackingWindow: FiniteDuration = config.getDuration("backtracking.window").toScala
   val backtrackingBehindCurrentTime: FiniteDuration = config.getDuration("backtracking.behind-current-time").toScala
   val bufferSize: Int = config.getInt("buffer-size")
+  val deduplicateCapacity: Int = config.getInt("deduplicate-capacity")
 }
 
 object ClientSettings {
@@ -73,4 +76,13 @@ object ClientSettings {
 final class ClientSettings(val host: String, val port: Int) {
   override def toString: String =
     s"ClientSettings($host, $port)"
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalStableApi
+final class PublishEventsDynamicSettings(config: Config) {
+  val throughputThreshold: Int = config.getInt("throughput-threshold")
+  val throughputCollectInterval: FiniteDuration = config.getDuration("throughput-collect-interval").toScala
 }

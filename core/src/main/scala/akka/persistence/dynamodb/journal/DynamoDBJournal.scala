@@ -25,6 +25,7 @@ import akka.persistence.SerializedEvent
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.dynamodb.internal.JournalDao
+import akka.persistence.dynamodb.internal.PubSub
 import akka.persistence.dynamodb.internal.SerializedEventMetadata
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
@@ -92,6 +93,10 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
 
   private val query = PersistenceQuery(system).readJournalFor[DynamoDBReadJournal](sharedConfigPath + ".query")
 
+  private val pubSub: Option[PubSub] =
+    if (settings.journalPublishEvents) Some(PubSub(system))
+    else None
+
   // if there are pending writes when an actor restarts we must wait for
   // them to complete before we can read the highest sequence number or we will miss it
   private val writesInProgress = new java.util.HashMap[String, Future[_]]()
@@ -148,7 +153,17 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
 
       serialized match {
         case Success(writes) =>
-          journalDao.writeEvents(writes)
+          journalDao
+            .writeEvents(writes)
+            .map { _ =>
+              pubSub.foreach { ps =>
+                atomicWrite.payload.zip(writes).foreach { case (pr, serialized) =>
+                  ps.publish(pr, serialized.writeTimestamp)
+                }
+              }
+              Done
+            }
+
         case Failure(exc) =>
           Future.failed(exc)
       }
@@ -165,15 +180,11 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String) e
         atomicWrite(batch)
       }
 
-    // FiXME pubSub not added yet
-    val writeAndPublishResult: Future[Done] =
-      writeResult
-
-    writesInProgress.put(persistenceId, writeAndPublishResult)
-    writeAndPublishResult.onComplete { _ =>
-      self ! WriteFinished(persistenceId, writeAndPublishResult)
+    writesInProgress.put(persistenceId, writeResult)
+    writeResult.onComplete { _ =>
+      self ! WriteFinished(persistenceId, writeResult)
     }
-    writeAndPublishResult.map(_ => Nil)(ExecutionContexts.parasitic)
+    writeResult.map(_ => Nil)(ExecutionContexts.parasitic)
   }
 
   override def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = {
