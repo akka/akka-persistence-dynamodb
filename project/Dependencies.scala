@@ -59,8 +59,9 @@ object Dependencies {
 
   val projection = Seq(
     dynamodbSdk.exclude("software.amazon.awssdk", "apache-client"),
-    Compile.akkaProjectionEventsourced,
-    Compile.akkaPersistenceTyped,
+    akkaProjectionEventsourced,
+    akkaPersistenceQuery,
+    akkaPersistenceTyped,
     TestDeps.akkaStreamTestkit,
     TestDeps.akkaTestkit,
     TestDeps.akkaProjectionTestkit,
