@@ -2,7 +2,11 @@
 
 ## DynamoDB client configuration
 
-Configuration for how to connect to DynamoDB is located under `akka.persistence.dynamodb.connection-factory`.
+Configuration for how to connect to DynamoDB is located under `akka.persistence.dynamodb.client`.
+
+The [default credentials provider](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/credentials-chain.html) will be used for authentication.
+
+A local mode can be enabled, for testing with a [DynamoDB local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html) instance.
 
 The following client settings be overridden in the `client` block:
 

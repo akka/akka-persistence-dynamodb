@@ -16,15 +16,8 @@ object TestConfig {
       akka.loglevel = DEBUG
       akka.persistence.journal.plugin = "akka.persistence.dynamodb.journal"
       akka.persistence.snapshot-store.plugin = "akka.persistence.dynamodb.snapshot"
+      akka.persistence.dynamodb.client.local.enabled = true
       akka.actor.testkit.typed.default-timeout = 10s
-
-      akka.persistence.dynamodb.client {
-        region = "us-west-2"
-        credentials {
-          access-key-id = "dummyKey"
-          secret-access-key = "dummySecret"
-        }
-      }
       """)
       .withFallback(defaultConfig)
   }

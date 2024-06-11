@@ -20,13 +20,7 @@ object TestConfig {
         query {
           refresh-interval = 1s
         }
-        client {
-          region = "us-west-2"
-          credentials {
-            access-key-id = "dummyKey"
-            secret-access-key = "dummySecret"
-          }
-        }
+        client.local.enabled = true
       }
       akka.actor.testkit.typed.default-timeout = 10s
       """)
