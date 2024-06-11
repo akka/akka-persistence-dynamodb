@@ -69,13 +69,32 @@ final class QuerySettings(config: Config) {
 }
 
 object ClientSettings {
+  final class LocalSettings(val host: String, val port: Int) {
+    override def toString = s"LocalSettings(host=$host, port=$port)"
+  }
+
+  object LocalSettings {
+    def get(clientConfig: Config): Option[LocalSettings] = {
+      val config = clientConfig.getConfig("local")
+      if (config.getBoolean("enabled")) {
+        Some(new LocalSettings(config.getString("host"), config.getInt("port")))
+      } else None
+    }
+  }
+
   def apply(config: Config): ClientSettings =
-    new ClientSettings(host = config.getString("host"), port = config.getInt("port"))
+    new ClientSettings(region = optString(config, "region"), local = LocalSettings.get(config))
+
+  private def optString(config: Config, path: String): Option[String] = {
+    if (config.hasPath(path)) {
+      val value = config.getString(path)
+      if (value.nonEmpty) Some(value) else None
+    } else None
+  }
 }
 
-final class ClientSettings(val host: String, val port: Int) {
-  override def toString: String =
-    s"ClientSettings($host, $port)"
+final class ClientSettings(val region: Option[String], val local: Option[ClientSettings.LocalSettings]) {
+  override def toString = s"ClientSettings(region=$region, local=$local)"
 }
 
 /**

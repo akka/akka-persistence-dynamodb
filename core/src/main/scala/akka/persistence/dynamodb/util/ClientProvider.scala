@@ -61,12 +61,23 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
 
   private def createClient(settings: ClientSettings): DynamoDbAsyncClient = {
     // FIXME more config
-    DynamoDbAsyncClient.builder
+    var clientBuilder = DynamoDbAsyncClient.builder
       .httpClientBuilder(NettyNioAsyncHttpClient.builder)
-      .endpointOverride(URI.create(s"http://${settings.host}:${settings.port}"))
-      .region(Region.US_WEST_2)
-      .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("dummyKey", "dummySecret")))
-      .build()
+
+    // otherwise default region lookup
+    settings.region.foreach { region =>
+      clientBuilder = clientBuilder.region(Region.of(region))
+    }
+
+    // override endpoint, region, and credentials when local enabled
+    settings.local.foreach { localSettings =>
+      clientBuilder = clientBuilder
+        .endpointOverride(URI.create(s"http://${localSettings.host}:${localSettings.port}"))
+        .region(Region.US_WEST_2)
+        .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("dummyKey", "dummySecret")))
+    }
+
+    clientBuilder.build()
   }
 
 }

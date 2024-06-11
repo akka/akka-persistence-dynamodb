@@ -16,6 +16,7 @@ object TestConfig {
       akka.loglevel = DEBUG
       akka.persistence.journal.plugin = "akka.persistence.dynamodb.journal"
       akka.persistence.snapshot-store.plugin = "akka.persistence.dynamodb.snapshot"
+      akka.persistence.dynamodb.client.local.enabled = true
       akka.actor.testkit.typed.default-timeout = 10s
       """)
       .withFallback(defaultConfig)

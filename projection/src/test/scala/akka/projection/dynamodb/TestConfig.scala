@@ -20,6 +20,7 @@ object TestConfig {
         query {
           refresh-interval = 1s
         }
+        client.local.enabled = true
       }
       akka.actor.testkit.typed.default-timeout = 10s
       """)
