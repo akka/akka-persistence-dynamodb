@@ -5,18 +5,23 @@
 package akka.persistence.dynamodb.query.scaladsl
 
 import java.time.Instant
+import java.time.{ Duration => JDuration }
 
+import scala.collection.mutable
 import scala.concurrent.Future
 
 import akka.NotUsed
 import akka.actor.ExtendedActorSystem
+import akka.actor.typed.pubsub.Topic
 import akka.actor.typed.scaladsl.adapter._
 import akka.annotation.InternalApi
 import akka.persistence.FilteredPayload
 import akka.persistence.Persistence
+import akka.persistence.SerializedEvent
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.BySliceQuery
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
+import akka.persistence.dynamodb.internal.PubSub
 import akka.persistence.dynamodb.internal.QueryDao
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
@@ -32,6 +37,8 @@ import akka.persistence.query.typed.scaladsl.EventsBySliceQuery
 import akka.persistence.query.typed.scaladsl.LoadEventQuery
 import akka.persistence.typed.PersistenceId
 import akka.serialization.SerializationExtension
+import akka.stream.OverflowStrategy
+import akka.stream.scaladsl.Flow
 import akka.stream.scaladsl.Source
 import com.typesafe.config.Config
 import org.slf4j.LoggerFactory
@@ -171,9 +178,11 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
 
     val dbSource = bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
-
-    // FIXME merge with pubSubSource
-    dbSource
+    if (settings.journalPublishEvents) {
+      val pubSubSource = eventsBySlicesPubSubSource[Event](entityType, minSlice, maxSlice)
+      mergeDbAndPubSubSources(dbSource, pubSubSource)
+    } else
+      dbSource
   }
 
   private def sliceStartOffset(slice: Int, offset: Offset): Offset = {
@@ -181,6 +190,136 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       case offsetBySlice: TimestampOffsetBySlice => offsetBySlice.offsets.getOrElse(slice, NoOffset)
       case _                                     => offset
     }
+  }
+
+  private def eventsBySlicesPubSubSource[Event](
+      entityType: String,
+      minSlice: Int,
+      maxSlice: Int): Source[EventEnvelope[Event], NotUsed] = {
+    val pubSub = PubSub(typedSystem)
+    Source
+      .actorRef[EventEnvelope[Event]](
+        completionMatcher = PartialFunction.empty,
+        failureMatcher = PartialFunction.empty,
+        bufferSize = settings.querySettings.bufferSize,
+        overflowStrategy = OverflowStrategy.dropNew)
+      .mapMaterializedValue { ref =>
+        pubSub.eventTopics[Event](entityType, minSlice, maxSlice).foreach { topic =>
+          import akka.actor.typed.scaladsl.adapter._
+          topic ! Topic.Subscribe(ref.toTyped[EventEnvelope[Event]])
+        }
+      }
+      .filter { env =>
+        val slice = sliceForPersistenceId(env.persistenceId)
+        minSlice <= slice && slice <= maxSlice
+      }
+      .map { env =>
+        env.eventOption match {
+          case Some(se: SerializedEvent) =>
+            env.withEvent(deserializeEvent(se))
+          case _ => env
+        }
+      }
+      .mapMaterializedValue(_ => NotUsed)
+  }
+
+  private def deserializeEvent[Event](se: SerializedEvent): Event =
+    serialization.deserialize(se.bytes, se.serializerId, se.serializerManifest).get.asInstanceOf[Event]
+
+  private def mergeDbAndPubSubSources[Event, Snapshot](
+      dbSource: Source[EventEnvelope[Event], NotUsed],
+      pubSubSource: Source[EventEnvelope[Event], NotUsed]) = {
+    dbSource
+      .mergePrioritized(pubSubSource, leftPriority = 1, rightPriority = 10)
+      .via(
+        skipPubSubTooFarAhead(
+          settings.querySettings.backtrackingEnabled,
+          JDuration.ofMillis(settings.querySettings.backtrackingWindow.toMillis)))
+      .via(deduplicate(settings.querySettings.deduplicateCapacity))
+  }
+
+  /**
+   * INTERNAL API
+   */
+  @InternalApi private[akka] def deduplicate[Event](
+      capacity: Int): Flow[EventEnvelope[Event], EventEnvelope[Event], NotUsed] = {
+    if (capacity == 0)
+      Flow[EventEnvelope[Event]]
+    else {
+      val evictThreshold = (capacity * 1.1).toInt
+      Flow[EventEnvelope[Event]]
+        .statefulMapConcat(() => {
+          // cache of seen pid/seqNr
+          var seen = mutable.LinkedHashSet.empty[(String, Long)]
+          env => {
+            if (EnvelopeOrigin.fromBacktracking(env)) {
+              // don't deduplicate from backtracking
+              env :: Nil
+            } else {
+              val entry = env.persistenceId -> env.sequenceNr
+              val result = {
+                if (seen.contains(entry)) {
+                  Nil
+                } else {
+                  seen.add(entry)
+                  env :: Nil
+                }
+              }
+
+              if (seen.size >= evictThreshold) {
+                // weird that add modifies the instance but drop returns a new instance
+                seen = seen.drop(seen.size - capacity)
+              }
+
+              result
+            }
+          }
+        })
+    }
+  }
+
+  /**
+   * INTERNAL API
+   */
+  @InternalApi private[akka] def skipPubSubTooFarAhead[Event](
+      enabled: Boolean,
+      maxAheadOfBacktracking: JDuration): Flow[EventEnvelope[Event], EventEnvelope[Event], NotUsed] = {
+    if (!enabled)
+      Flow[EventEnvelope[Event]]
+    else
+      Flow[EventEnvelope[Event]]
+        .statefulMapConcat(() => {
+          // track backtracking offset
+          var latestBacktracking = Instant.EPOCH
+          env => {
+            env.offset match {
+              case t: TimestampOffset =>
+                if (EnvelopeOrigin.fromBacktracking(env)) {
+                  latestBacktracking = t.timestamp
+                  env :: Nil
+                } else if (EnvelopeOrigin.fromPubSub(env) && latestBacktracking == Instant.EPOCH) {
+                  log.trace(
+                    "Dropping pubsub event for persistenceId [{}] seqNr [{}] because no event from backtracking yet.",
+                    env.persistenceId,
+                    env.sequenceNr)
+                  Nil
+                } else if (EnvelopeOrigin.fromPubSub(env) && JDuration
+                    .between(latestBacktracking, t.timestamp)
+                    .compareTo(maxAheadOfBacktracking) > 0) {
+                  // drop from pubsub when too far ahead from backtracking
+                  log.debug(
+                    "Dropping pubsub event for persistenceId [{}] seqNr [{}] because too far ahead of backtracking.",
+                    env.persistenceId,
+                    env.sequenceNr)
+                  Nil
+                } else {
+                  env :: Nil
+                }
+              case _ =>
+                env :: Nil
+            }
+          }
+        })
   }
 
   // EventTimestampQuery
