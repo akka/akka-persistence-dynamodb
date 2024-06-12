@@ -37,6 +37,7 @@ import akka.projection.RunningProjectionManagement
 import akka.projection.StatusObserver
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.RejectedEnvelope
+import akka.projection.dynamodb.scaladsl.DynamoDBTransactHandler
 import akka.projection.internal.ActorHandlerInit
 import akka.projection.internal.AtLeastOnce
 import akka.projection.internal.AtMostOnce
@@ -208,6 +209,45 @@ private[projection] object DynamoDBProjectionImpl {
     }
   }
 
+  private[projection] def adaptedHandlerForExactlyOnce[Offset, Envelope](
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handlerFactory: () => DynamoDBTransactHandler[Envelope],
+      offsetStore: DynamoDBOffsetStore)(implicit
+      ec: ExecutionContext,
+      system: ActorSystem[_]): () => Handler[Envelope] = { () =>
+
+    new AdaptedDynamoDBTransactHandler(handlerFactory()) {
+      override def process(envelope: Envelope): Future[Done] = {
+        import DynamoDBOffsetStore.Validation._
+        offsetStore
+          .validate(envelope)
+          .flatMap {
+            case Accepted =>
+              if (isFilteredEvent(envelope)) {
+                val offset = extractOffsetPidSeqNr(sourceProvider, envelope)
+                offsetStore.saveOffset(offset)
+              } else {
+                loadEnvelope(envelope, sourceProvider).flatMap { loadedEnvelope =>
+                  val offset = extractOffsetPidSeqNr(sourceProvider, loadedEnvelope)
+                  delegate.process(loadedEnvelope).flatMap { writeItems =>
+                    offsetStore.transactSaveOffset(writeItems, offset)
+                  }
+                }
+              }
+            case Duplicate =>
+              FutureDone
+            case RejectedSeqNr =>
+              triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map(_ => Done)(ExecutionContexts.parasitic)
+            case RejectedBacktrackingSeqNr =>
+              triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map {
+                case true  => Done
+                case false => throwRejectedEnvelope(sourceProvider, envelope)
+              }
+          }
+      }
+    }
+  }
+
   private def triggerReplayIfPossible[Offset, Envelope](
       sourceProvider: SourceProvider[Offset, Envelope],
       offsetStore: DynamoDBOffsetStore,
@@ -252,6 +292,19 @@ private[projection] object DynamoDBProjectionImpl {
       delegate.stop()
   }
 
+  @nowarn("msg=never used")
+  abstract class AdaptedDynamoDBTransactHandler[E](val delegate: DynamoDBTransactHandler[E])(implicit
+      ec: ExecutionContext,
+      system: ActorSystem[_])
+      extends Handler[E] {
+
+    override def start(): Future[Done] =
+      delegate.start()
+
+    override def stop(): Future[Done] =
+      delegate.stop()
+  }
+
 }
 
 /**
@@ -270,6 +323,8 @@ private[projection] class DynamoDBProjectionImpl[Offset, Envelope](
     offsetStore: DynamoDBOffsetStore)
     extends scaladsl.AtLeastOnceProjection[Offset, Envelope]
     with javadsl.AtLeastOnceProjection[Offset, Envelope]
+    with scaladsl.ExactlyOnceProjection[Offset, Envelope]
+    with javadsl.ExactlyOnceProjection[Offset, Envelope]
     with SettingsImpl[DynamoDBProjectionImpl[Offset, Envelope]]
     with InternalProjection {
   import DynamoDBProjectionImpl.extractOffsetPidSeqNr

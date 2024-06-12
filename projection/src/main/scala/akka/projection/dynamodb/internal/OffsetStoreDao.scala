@@ -25,9 +25,12 @@ import org.slf4j.LoggerFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest
+import software.amazon.awssdk.services.dynamodb.model.Put
 import software.amazon.awssdk.services.dynamodb.model.PutRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
 import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 
 /**
@@ -157,25 +160,15 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
   }
 
   def storeSequenceNumbers(records: IndexedSeq[Record]): Future[Done] = {
-    import OffsetStoreDao.OffsetStoreAttributes._
-
     def writeBatch(recordsBatch: IndexedSeq[Record]): Future[Done] = {
-
       val writeItems =
         recordsBatch
-          .map { case Record(slice, pid, seqNr, timestamp) =>
-            val attributes = new JHashMap[String, AttributeValue]
-            attributes.put(NameSlice, AttributeValue.fromS(nameSlice(slice)))
-            attributes.put(Pid, AttributeValue.fromS(pid))
-            attributes.put(SeqNr, AttributeValue.fromN(seqNr.toString))
-            val timestampMicros = InstantFactory.toEpochMicros(timestamp)
-            attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
-
+          .map { record =>
             WriteRequest.builder
               .putRequest(
                 PutRequest
                   .builder()
-                  .item(attributes)
+                  .item(sequenceNumberAttributes(record))
                   .build())
               .build()
           }
@@ -210,7 +203,6 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
         .sequence(batches.map(writeBatch))
         .map(_ => Done)(ExecutionContexts.parasitic)
     }
-
   }
 
   def loadSequenceNumber(slice: Int, pid: String): Future[Option[Record]] = {
@@ -238,5 +230,53 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
         Some(DynamoDBOffsetStore.Record(slice, pid, seqNr, timestamp))
       }
     }
+  }
+
+  def transactStoreSequenceNumbers(writeItems: Iterable[TransactWriteItem], records: Seq[Record]): Future[Done] = {
+    val writeSequenceNumbers = records.map { record =>
+      TransactWriteItem.builder
+        .put(
+          Put
+            .builder()
+            .tableName(settings.timestampOffsetTable)
+            .item(sequenceNumberAttributes(record))
+            .build())
+        .build()
+    }
+
+    val allTransactItems = (writeItems ++ writeSequenceNumbers).asJavaCollection
+
+    val request = TransactWriteItemsRequest
+      .builder()
+      .transactItems(allTransactItems)
+      .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+      .build()
+
+    val result = client.transactWriteItems(request).asScala
+
+    if (log.isDebugEnabled()) {
+      result.foreach { response =>
+        log.debug(
+          "Atomically wrote [{}] items with [{}] sequence numbers, consumed [{}] WCU",
+          writeItems.size,
+          writeSequenceNumbers.size,
+          response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
+      }
+    }
+
+    result.map(_ => Done)(ExecutionContexts.parasitic)
+  }
+
+  private def sequenceNumberAttributes(record: Record): JHashMap[String, AttributeValue] = {
+    import OffsetStoreDao.OffsetStoreAttributes._
+
+    val attributes = new JHashMap[String, AttributeValue]
+    attributes.put(NameSlice, AttributeValue.fromS(nameSlice(record.slice)))
+    attributes.put(Pid, AttributeValue.fromS(record.pid))
+    attributes.put(SeqNr, AttributeValue.fromN(record.seqNr.toString))
+    val timestampMicros = InstantFactory.toEpochMicros(record.timestamp)
+    attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
+
+    attributes
   }
 }

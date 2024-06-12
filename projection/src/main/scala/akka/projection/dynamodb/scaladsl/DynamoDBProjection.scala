@@ -12,9 +12,11 @@ import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import akka.projection.dynamodb.internal.DynamoDBProjectionImpl
 import akka.projection.internal.AtLeastOnce
+import akka.projection.internal.ExactlyOnce
 import akka.projection.internal.NoopStatusObserver
 import akka.projection.internal.SingleHandlerStrategy
 import akka.projection.scaladsl.AtLeastOnceProjection
+import akka.projection.scaladsl.ExactlyOnceProjection
 import akka.projection.scaladsl.Handler
 import akka.projection.scaladsl.SourceProvider
 
@@ -59,6 +61,45 @@ object DynamoDBProjection {
       sourceProvider,
       restartBackoffOpt = None,
       offsetStrategy = AtLeastOnce(),
+      handlerStrategy = SingleHandlerStrategy(adaptedHandler),
+      NoopStatusObserver,
+      offsetStore)
+  }
+
+  /**
+   * Create a [[akka.projection.Projection]] with exactly-once processing semantics.
+   *
+   * The offset is stored in DynamoDB in the same transaction as the `TransactWriteItem`s returned by the `handler`.
+   */
+  def exactlyOnce[Offset, Envelope](
+      projectionId: ProjectionId,
+      settings: Option[DynamoDBProjectionSettings],
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handler: () => DynamoDBTransactHandler[Envelope])(implicit
+      system: ActorSystem[_]): ExactlyOnceProjection[Offset, Envelope] = {
+
+    val dynamodbSettings = settings.getOrElse(DynamoDBProjectionSettings(system))
+    val client = ClientProvider(system).clientFor(dynamodbSettings.useClient)
+
+    val offsetStore =
+      DynamoDBProjectionImpl.createOffsetStore(
+        projectionId,
+        timestampOffsetBySlicesSourceProvider(sourceProvider),
+        dynamodbSettings,
+        client)
+
+    val adaptedHandler =
+      DynamoDBProjectionImpl.adaptedHandlerForExactlyOnce(sourceProvider, handler, offsetStore)(
+        system.executionContext,
+        system)
+
+    new DynamoDBProjectionImpl(
+      projectionId,
+      dynamodbSettings,
+      settingsOpt = None,
+      sourceProvider,
+      restartBackoffOpt = None,
+      offsetStrategy = ExactlyOnce(),
       handlerStrategy = SingleHandlerStrategy(adaptedHandler),
       NoopStatusObserver,
       offsetStore)

@@ -31,6 +31,7 @@ import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 
 /**
  * INTERNAL API
@@ -395,6 +396,98 @@ private[projection] class DynamoDBOffsetStore(
           }
         }
 
+      }
+    }
+  }
+
+  def transactSaveOffset(writeItems: Iterable[TransactWriteItem], offset: OffsetPidSeqNr): Future[Done] =
+    transactSaveOffsets(writeItems, Vector(offset))
+
+  def transactSaveOffsets(
+      writeItems: Iterable[TransactWriteItem],
+      offsets: IndexedSeq[OffsetPidSeqNr]): Future[Done] = {
+    if (offsets.isEmpty)
+      FutureDone
+    else if (offsets.head.offset.isInstanceOf[TimestampOffset]) {
+      val records = offsets.map {
+        case OffsetPidSeqNr(t: TimestampOffset, Some((pid, seqNr))) =>
+          val slice = persistenceExt.sliceForPersistenceId(pid)
+          Record(slice, pid, seqNr, t.timestamp)
+        case OffsetPidSeqNr(_: TimestampOffset, None) =>
+          throw new IllegalArgumentException("Required EventEnvelope or DurableStateChange for TimestampOffset.")
+        case _ =>
+          throw new IllegalArgumentException(
+            "Mix of TimestampOffset and other offset type in same transaction is not supported")
+      }
+      transactSaveTimestampOffsets(writeItems, records)
+    } else {
+      throw new IllegalStateException("TimestampOffset is required. Primitive offsets not supported.")
+    }
+  }
+
+  private def transactSaveTimestampOffsets(
+      writeItems: Iterable[TransactWriteItem],
+      records: IndexedSeq[Record]): Future[Done] = {
+    load(records.map(_.pid)).flatMap { _ =>
+      val oldState = state.get()
+      val filteredRecords = {
+        if (records.size <= 1)
+          records.filterNot(oldState.isDuplicate)
+        else {
+          // use last record for each pid
+          records
+            .groupBy(_.pid)
+            .valuesIterator
+            .collect {
+              case recordsByPid if !oldState.isDuplicate(recordsByPid.last) => recordsByPid.last
+            }
+            .toVector
+        }
+      }
+      if (filteredRecords.isEmpty) {
+        FutureDone
+      } else {
+        val newState = oldState.add(filteredRecords)
+
+        // accumulate some more than the timeWindow before evicting, and at least 10% increase of size
+        // for testing keepNumberOfEntries = 0 is used
+        val evictThresholdReached =
+          if (settings.keepNumberOfEntries == 0) true else newState.size > (newState.sizeAfterEvict * 1.1).toInt
+        val evictedNewState =
+          if (newState.size > settings.keepNumberOfEntries && evictThresholdReached && newState.window
+              .compareTo(evictWindow) > 0) {
+            // FIXME maybe this should take the slice into account
+            val evictUntil = newState.latestTimestamp.minus(settings.timeWindow)
+            val s = newState.evict(evictUntil, settings.keepNumberOfEntries)
+            logger.debug(
+              "{} Evicted [{}] records until [{}], keeping [{}] records. Latest [{}].",
+              logPrefix,
+              newState.size - s.size,
+              evictUntil,
+              s.size,
+              newState.latestTimestamp)
+            s
+          } else
+            newState
+
+        // FIXME we probably don't have to store the latest offset per slice all the time, but can
+        //       accumulate some changes and flush on size/time.
+        val changedOffsetBySlice = evictedNewState.offsetBySlice.filter { case (slice, offset) =>
+          offset != oldState.offsetBySlice.getOrElse(slice, TimestampOffset.Zero)
+        }
+
+        dao.transactStoreSequenceNumbers(writeItems, filteredRecords).flatMap { _ =>
+          val storeOffsetsResult =
+            if (changedOffsetBySlice.isEmpty) FutureDone else dao.storeTimestampOffsets(changedOffsetBySlice)
+          storeOffsetsResult.flatMap { _ =>
+            if (state.compareAndSet(oldState, evictedNewState)) {
+              cleanupInflight(evictedNewState)
+              FutureDone
+            } else
+              throw new IllegalStateException(
+                "Unexpected concurrent modification of state in transactional save offsets.")
+          }
+        }
       }
     }
   }
