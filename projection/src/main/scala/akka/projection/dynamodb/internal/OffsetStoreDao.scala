@@ -232,7 +232,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     }
   }
 
-  def transactStoreSequenceNumbers(writeItems: Iterable[TransactWriteItem], records: Seq[Record]): Future[Done] = {
+  def transactStoreSequenceNumbers(writeItems: Iterable[TransactWriteItem])(records: Seq[Record]): Future[Done] = {
     val writeSequenceNumbers = records.map { record =>
       TransactWriteItem.builder
         .put(
