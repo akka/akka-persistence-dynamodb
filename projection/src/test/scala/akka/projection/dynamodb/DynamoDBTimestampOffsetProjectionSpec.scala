@@ -10,12 +10,18 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.{ HashMap => JHashMap }
 
 import scala.annotation.tailrec
 import scala.collection.immutable
+import scala.concurrent.Await
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
+import scala.jdk.FutureConverters._
+import scala.util.Failure
+import scala.util.Success
 
 import akka.Done
 import akka.NotUsed
@@ -26,6 +32,7 @@ import akka.actor.typed.ActorRef
 import akka.actor.typed.ActorSystem
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
+import akka.persistence.query.Offset
 import akka.persistence.query.TimestampOffset
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.EventTimestampQuery
@@ -42,6 +49,7 @@ import akka.projection.dynamodb.internal.DynamoDBOffsetStore
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Pid
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.SeqNr
 import akka.projection.dynamodb.scaladsl.DynamoDBProjection
+import akka.projection.dynamodb.scaladsl.DynamoDBTransactHandler
 import akka.projection.scaladsl.Handler
 import akka.projection.scaladsl.SourceProvider
 import akka.projection.testkit.scaladsl.ProjectionTestKit
@@ -50,6 +58,18 @@ import akka.stream.scaladsl.Source
 import akka.stream.testkit.TestSubscriber
 import org.scalatest.wordspec.AnyWordSpecLike
 import org.slf4j.LoggerFactory
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
+import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
+import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
+import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
+import software.amazon.awssdk.services.dynamodb.model.KeyType
+import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughput
+import software.amazon.awssdk.services.dynamodb.model.Put
+import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 
 object DynamoDBTimestampOffsetProjectionSpec {
 
@@ -80,17 +100,17 @@ object DynamoDBTimestampOffsetProjectionSpec {
 
   class TestTimestampSourceProvider(
       envelopes: immutable.IndexedSeq[EventEnvelope[String]],
-      testSourceProvider: TestSourceProvider[TimestampOffset, EventEnvelope[String]],
+      testSourceProvider: TestSourceProvider[Offset, EventEnvelope[String]],
       override val maxSlice: Int)
-      extends SourceProvider[TimestampOffset, EventEnvelope[String]]
+      extends SourceProvider[Offset, EventEnvelope[String]]
       with BySlicesSourceProvider
       with EventTimestampQuery
       with LoadEventQuery {
 
-    override def source(offset: () => Future[Option[TimestampOffset]]): Future[Source[EventEnvelope[String], NotUsed]] =
+    override def source(offset: () => Future[Option[Offset]]): Future[Source[EventEnvelope[String], NotUsed]] =
       testSourceProvider.source(offset)
 
-    override def extractOffset(envelope: EventEnvelope[String]): TimestampOffset =
+    override def extractOffset(envelope: EventEnvelope[String]): Offset =
       testSourceProvider.extractOffset(envelope)
 
     override def extractCreationTime(envelope: EventEnvelope[String]): Long =
@@ -171,6 +191,52 @@ object DynamoDBTimestampOffsetProjectionSpec {
 
   }
 
+  object TestTable {
+    val name = "projection_spec"
+
+    object Attributes {
+      val Id = "id"
+      val Payload = "payload"
+    }
+
+    def create(client: DynamoDbAsyncClient, system: ActorSystem[_]): Future[Done] = {
+      import system.executionContext
+
+      client.describeTable(DescribeTableRequest.builder().tableName(name).build()).asScala.transformWith {
+        case Success(_) => Future.successful(Done) // already exists
+        case Failure(_) =>
+          val request = CreateTableRequest
+            .builder()
+            .tableName(name)
+            .keySchema(KeySchemaElement.builder().attributeName(Attributes.Id).keyType(KeyType.HASH).build())
+            .attributeDefinitions(
+              AttributeDefinition.builder().attributeName(Attributes.Id).attributeType(ScalarAttributeType.S).build())
+            .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
+            .build()
+          client.createTable(request).asScala.map(_ => Done)
+      }
+    }
+
+    def findById(id: String)(client: DynamoDbAsyncClient, system: ActorSystem[_]): Future[Option[ConcatStr]] = {
+      import system.executionContext
+
+      client
+        .getItem(
+          GetItemRequest
+            .builder()
+            .tableName(name)
+            .consistentRead(true)
+            .key(Map(Attributes.Id -> AttributeValue.fromS(id)).asJava)
+            .build())
+        .asScala
+        .map { response =>
+          if (response.hasItem && response.item.containsKey(Attributes.Payload))
+            Some(ConcatStr(id, response.item.get(Attributes.Payload).s()))
+          else None
+        }
+    }
+  }
+
 }
 
 class DynamoDBTimestampOffsetProjectionSpec
@@ -193,17 +259,23 @@ class DynamoDBTimestampOffsetProjectionSpec
 
   private val repository = new TestRepository()
 
+  override protected def beforeAll(): Unit = {
+    Await.result(TestTable.create(client, system), 10.seconds)
+    super.beforeAll()
+  }
+
   def createSourceProvider(
       envelopes: immutable.IndexedSeq[EventEnvelope[String]],
       complete: Boolean = true): TestTimestampSourceProvider = {
-    val sp = TestSourceProvider[TimestampOffset, EventEnvelope[String]](
-      Source(envelopes),
-      _.offset.asInstanceOf[TimestampOffset])
-      .withStartSourceFrom { (lastProcessedOffset, offset) =>
-        offset.timestamp.isBefore(lastProcessedOffset.timestamp) ||
-        (offset.timestamp == lastProcessedOffset.timestamp && offset.seen == lastProcessedOffset.seen)
-      }
-      .withAllowCompletion(complete)
+    val sp =
+      TestSourceProvider[Offset, EventEnvelope[String]](Source(envelopes), _.offset)
+        .withStartSourceFrom { case (lastProcessedOffsetBySlice: TimestampOffsetBySlice, offset: TimestampOffset) =>
+          // FIXME: should have the envelope slice to handle this properly
+          val lastProcessedOffset = lastProcessedOffsetBySlice.offsets.head._2
+          offset.timestamp.isBefore(lastProcessedOffset.timestamp) ||
+          (offset.timestamp == lastProcessedOffset.timestamp && offset.seen == lastProcessedOffset.seen)
+        }
+        .withAllowCompletion(complete)
 
     new TestTimestampSourceProvider(envelopes, sp, persistenceExt.numberOfSlices - 1)
   }
@@ -211,11 +283,10 @@ class DynamoDBTimestampOffsetProjectionSpec
   def createBacktrackingSourceProvider(
       envelopes: immutable.IndexedSeq[EventEnvelope[String]],
       complete: Boolean = true): TestTimestampSourceProvider = {
-    val sp = TestSourceProvider[TimestampOffset, EventEnvelope[String]](
-      Source(envelopes),
-      _.offset.asInstanceOf[TimestampOffset])
-      .withStartSourceFrom { (_, _) => false } // include all
-      .withAllowCompletion(complete)
+    val sp =
+      TestSourceProvider[Offset, EventEnvelope[String]](Source(envelopes), _.offset)
+        .withStartSourceFrom { (_, _) => false } // include all
+        .withAllowCompletion(complete)
     new TestTimestampSourceProvider(envelopes, sp, persistenceExt.numberOfSlices - 1)
   }
 
@@ -231,6 +302,11 @@ class DynamoDBTimestampOffsetProjectionSpec
 
   private def projectedValueShouldBe(expected: String)(implicit entityId: String) = {
     val opt = repository.findById(entityId).futureValue.map(_.text)
+    opt shouldBe Some(expected)
+  }
+
+  private def projectedTestValueShouldBe(expected: String)(implicit entityId: String) = {
+    val opt = TestTable.findById(entityId)(client, system).futureValue.map(_.text)
     opt shouldBe Some(expected)
   }
 
@@ -261,6 +337,30 @@ class DynamoDBTimestampOffsetProjectionSpec
       }
     }
 
+  }
+
+  class TransactConcatHandler(failPredicate: EventEnvelope[String] => Boolean = _ => false)
+      extends DynamoDBTransactHandler[EventEnvelope[String]] {
+
+    private val logger = LoggerFactory.getLogger(getClass)
+    private val _attempts = new AtomicInteger()
+    def attempts: Int = _attempts.get
+
+    override def process(envelope: EventEnvelope[String]): Future[Iterable[TransactWriteItem]] = {
+      if (failPredicate(envelope)) {
+        _attempts.incrementAndGet()
+        throw TestException(concatHandlerFail4Msg + s" after $attempts attempts")
+      } else {
+        logger.debug(s"handling {}", envelope)
+        TestTable.findById(envelope.persistenceId)(client, system).map { current =>
+          val newPayload = current.fold(envelope.event)(_.concat(envelope.event).text)
+          val attributes = new JHashMap[String, AttributeValue]
+          attributes.put(TestTable.Attributes.Id, AttributeValue.fromS(envelope.persistenceId))
+          attributes.put(TestTable.Attributes.Payload, AttributeValue.fromS(newPayload))
+          Seq(TransactWriteItem.builder().put(Put.builder().tableName(TestTable.name).item(attributes).build()).build())
+        }
+      }
+    }
   }
 
   private val clock = TestClock.nowMicros()
@@ -704,6 +804,264 @@ class DynamoDBTimestampOffsetProjectionSpec
       eventually {
         latestOffsetShouldBe(envelopes.last.offset)
       }
+    }
+  }
+
+  "A DynamoDB exactly-once projection with TimestampOffset" must {
+
+    "persist projection and offset in the same write operation (transactional)" in {
+      implicit val pid = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+
+      val envelopes = createEnvelopes(pid, 6)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val projection =
+        DynamoDBProjection.exactlyOnce(
+          projectionId,
+          Some(settings),
+          sourceProvider,
+          handler = () => new TransactConcatHandler)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projection) {
+        projectedTestValueShouldBe("e1|e2|e3|e4|e5|e6")
+      }
+      latestOffsetShouldBe(envelopes.last.offset)
+    }
+
+    "skip failing events when using RecoveryStrategy.skip" in {
+      implicit val pid1 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid1, 6)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val bogusEventHandler = new TransactConcatHandler(_.sequenceNr == 4)
+
+      val projectionFailing =
+        DynamoDBProjection
+          .exactlyOnce(projectionId, Some(settings), sourceProvider, handler = () => bogusEventHandler)
+          .withRecoveryStrategy(HandlerRecoveryStrategy.skip)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projectionFailing) {
+        projectedTestValueShouldBe("e1|e2|e3|e5|e6")
+      }
+      latestOffsetShouldBe(envelopes.last.offset)
+    }
+
+    "store offset for failing events when using RecoveryStrategy.skip" in {
+      implicit val pid1 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid1, 6)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val bogusEventHandler = new TransactConcatHandler(_.sequenceNr == 6)
+
+      val projectionFailing =
+        DynamoDBProjection
+          .exactlyOnce(projectionId, Some(settings), sourceProvider, handler = () => bogusEventHandler)
+          .withRecoveryStrategy(HandlerRecoveryStrategy.skip)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projectionFailing) {
+        projectedTestValueShouldBe("e1|e2|e3|e4|e5")
+      }
+      eventually {
+        latestOffsetShouldBe(envelopes.last.offset)
+      }
+    }
+
+    "skip failing events after retrying when using RecoveryStrategy.retryAndSkip" in {
+      implicit val pid1 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid1, 6)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val statusProbe = createTestProbe[TestStatusObserver.Status]()
+      val progressProbe = createTestProbe[TestStatusObserver.OffsetProgress[Envelope]]()
+      val statusObserver = new DynamoDBTestStatusObserver(statusProbe.ref, progressProbe.ref)
+      val bogusEventHandler = new TransactConcatHandler(_.sequenceNr == 4)
+
+      val projectionFailing =
+        DynamoDBProjection
+          .exactlyOnce(projectionId, Some(settings), sourceProvider, handler = () => bogusEventHandler)
+          .withRecoveryStrategy(HandlerRecoveryStrategy.retryAndSkip(3, 10.millis))
+          .withStatusObserver(statusObserver)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projectionFailing) {
+        projectedTestValueShouldBe("e1|e2|e3|e5|e6")
+      }
+
+      // 1 + 3 => 1 original attempt and 3 retries
+      bogusEventHandler.attempts shouldBe 1 + 3
+
+      val someTestException = TestException("err")
+      statusProbe.expectMessage(TestStatusObserver.Err(Envelope(pid1, 4, "e4"), someTestException))
+      statusProbe.expectMessage(TestStatusObserver.Err(Envelope(pid1, 4, "e4"), someTestException))
+      statusProbe.expectMessage(TestStatusObserver.Err(Envelope(pid1, 4, "e4"), someTestException))
+      statusProbe.expectMessage(TestStatusObserver.Err(Envelope(pid1, 4, "e4"), someTestException))
+      statusProbe.expectNoMessage()
+      progressProbe.expectMessage(TestStatusObserver.OffsetProgress(Envelope(pid1, 1, "e1")))
+      progressProbe.expectMessage(TestStatusObserver.OffsetProgress(Envelope(pid1, 2, "e2")))
+      progressProbe.expectMessage(TestStatusObserver.OffsetProgress(Envelope(pid1, 3, "e3")))
+      // Offset 4 is stored even though it failed and was skipped
+      progressProbe.expectMessage(TestStatusObserver.OffsetProgress(Envelope(pid1, 4, "e4")))
+      progressProbe.expectMessage(TestStatusObserver.OffsetProgress(Envelope(pid1, 5, "e5")))
+      progressProbe.expectMessage(TestStatusObserver.OffsetProgress(Envelope(pid1, 6, "e6")))
+
+      latestOffsetShouldBe(envelopes.last.offset)
+    }
+
+    "fail after retrying when using RecoveryStrategy.retryAndFail" in {
+      implicit val pid1 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid1, 6)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val bogusEventHandler = new TransactConcatHandler(_.sequenceNr == 4)
+
+      val projectionFailing =
+        DynamoDBProjection
+          .exactlyOnce(projectionId, Some(settings), sourceProvider, handler = () => bogusEventHandler)
+          .withRecoveryStrategy(HandlerRecoveryStrategy.retryAndFail(3, 10.millis))
+
+      offsetShouldBeEmpty()
+      projectionTestKit.runWithTestSink(projectionFailing) { sinkProbe =>
+        sinkProbe.request(1000)
+        eventuallyExpectError(sinkProbe).getMessage should startWith(concatHandlerFail4Msg)
+      }
+      projectedTestValueShouldBe("e1|e2|e3")
+      // 1 + 3 => 1 original attempt and 3 retries
+      bogusEventHandler.attempts shouldBe 1 + 3
+
+      latestOffsetShouldBe(envelopes(2).offset) // <- offset is from e3
+    }
+
+    "restart from previous offset - fail with throwing an exception" in {
+      implicit val pid = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid, 6)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      def exactlyOnceProjection(failWhen: EventEnvelope[String] => Boolean = _ => false) = {
+        DynamoDBProjection.exactlyOnce(
+          projectionId,
+          Some(settings),
+          sourceProvider,
+          handler = () => new TransactConcatHandler(failWhen))
+      }
+
+      offsetShouldBeEmpty()
+      projectionTestKit.runWithTestSink(exactlyOnceProjection(_.sequenceNr == 4)) { sinkProbe =>
+        sinkProbe.request(1000)
+        eventuallyExpectError(sinkProbe).getMessage should startWith(concatHandlerFail4Msg)
+      }
+      projectedTestValueShouldBe("e1|e2|e3")
+      latestOffsetShouldBe(envelopes(2).offset)
+
+      // re-run projection without failing function
+      projectionTestKit.run(exactlyOnceProjection()) {
+        projectedTestValueShouldBe("e1|e2|e3|e4|e5|e6")
+      }
+      latestOffsetShouldBe(envelopes.last.offset)
+    }
+
+    "filter out duplicates" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopesWithDuplicates(pid1, pid2)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val projection =
+        DynamoDBProjection.exactlyOnce(
+          projectionId,
+          Some(settings),
+          sourceProvider,
+          handler = () => new TransactConcatHandler)
+
+      projectionTestKit.run(projection) {
+        projectedTestValueShouldBe("e1-1|e1-2|e1-3|e1-4")(pid1)
+        projectedTestValueShouldBe("e2-1|e2-2|e2-3")(pid2)
+      }
+      latestOffsetShouldBe(envelopes.last.offset)
+    }
+
+    "filter out unknown sequence numbers" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+
+      val startTime = TestClock.nowMicros().instant()
+      val envelopes1 = createEnvelopesUnknownSequenceNumbers(startTime, pid1, pid2)
+      val sourceProvider1 = createSourceProvider(envelopes1)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider1)
+
+      val projection1 =
+        DynamoDBProjection.exactlyOnce(
+          projectionId,
+          Some(settings),
+          sourceProvider1,
+          handler = () => new TransactConcatHandler)
+
+      projectionTestKit.run(projection1) {
+        projectedTestValueShouldBe("e1-1|e1-2|e1-3")(pid1)
+        projectedTestValueShouldBe("e2-1")(pid2)
+      }
+      latestOffsetShouldBe(envelopes1.collectFirst { case env if env.event == "e1-3" => env.offset }.get)
+
+      // simulate backtracking
+      logger.debug("Starting backtracking")
+      val envelopes2 = createEnvelopesBacktrackingUnknownSequenceNumbers(startTime, pid1, pid2)
+      val sourceProvider2 = createBacktrackingSourceProvider(envelopes2)
+      val projection2 =
+        DynamoDBProjection.exactlyOnce(
+          projectionId,
+          Some(settings),
+          sourceProvider2,
+          handler = () => new TransactConcatHandler)
+
+      projectionTestKit.run(projection2) {
+        projectedTestValueShouldBe("e1-1|e1-2|e1-3|e1-4|e1-5|e1-6")(pid1)
+        projectedTestValueShouldBe("e2-1|e2-2|e2-3|e2-4")(pid2)
+      }
+      latestOffsetShouldBe(envelopes2.last.offset)
+    }
+
+    "be able to skip envelopes but still store offset" in {
+      implicit val pid = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+
+      val envelopes = createEnvelopes(pid, 6).map { env =>
+        if (env.event == "e3" || env.event == "e4" || env.event == "e6")
+          markAsFilteredEvent(env)
+        else
+          env
+      }
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val projection =
+        DynamoDBProjection.exactlyOnce(
+          projectionId,
+          Some(settings),
+          sourceProvider,
+          handler = () => new TransactConcatHandler)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projection) {
+        projectedTestValueShouldBe("e1|e2|e5")
+      }
+      latestOffsetShouldBe(envelopes.last.offset)
     }
   }
 

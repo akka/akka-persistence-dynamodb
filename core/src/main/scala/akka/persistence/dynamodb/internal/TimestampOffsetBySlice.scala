@@ -24,4 +24,6 @@ import akka.persistence.query.TimestampOffset
 /**
  * INTERNAL API
  */
-@InternalApi private[akka] class TimestampOffsetBySlice(val offsets: Map[Int, TimestampOffset]) extends Offset
+@InternalApi private[akka] class TimestampOffsetBySlice(val offsets: Map[Int, TimestampOffset]) extends Offset {
+  override def toString = s"TimestampOffsetBySlice($offsets)"
+}

@@ -13,10 +13,12 @@ import akka.actor.typed.ActorSystem
 import akka.annotation.ApiMayChange
 import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
+import akka.projection.dynamodb.internal.DynamoDBTransactHandlerAdapter
 import akka.projection.dynamodb.scaladsl
 import akka.projection.internal.HandlerAdapter
 import akka.projection.internal.JavaToScalaBySliceSourceProviderAdapter
 import akka.projection.javadsl.AtLeastOnceProjection
+import akka.projection.javadsl.ExactlyOnceProjection
 import akka.projection.javadsl.Handler
 import akka.projection.javadsl.SourceProvider
 
@@ -47,6 +49,27 @@ object DynamoDBProjection {
         JavaToScalaBySliceSourceProviderAdapter(sourceProvider),
         () => HandlerAdapter(handler.get()))(system)
       .asInstanceOf[AtLeastOnceProjection[Offset, Envelope]]
+  }
+
+  /**
+   * Create a [[akka.projection.Projection]] with exactly-once processing semantics.
+   *
+   * The offset is stored in DynamoDB in the same transaction as the `TransactWriteItem`s returned by the `handler`.
+   */
+  def exactlyOnce[Offset, Envelope](
+      projectionId: ProjectionId,
+      settings: Optional[DynamoDBProjectionSettings],
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handler: Supplier[DynamoDBTransactHandler[Envelope]],
+      system: ActorSystem[_]): ExactlyOnceProjection[Offset, Envelope] = {
+
+    scaladsl.DynamoDBProjection
+      .exactlyOnce[Offset, Envelope](
+        projectionId,
+        settings.toScala,
+        JavaToScalaBySliceSourceProviderAdapter(sourceProvider),
+        () => new DynamoDBTransactHandlerAdapter(handler.get()))(system)
+      .asInstanceOf[ExactlyOnceProjection[Offset, Envelope]]
   }
 
 }

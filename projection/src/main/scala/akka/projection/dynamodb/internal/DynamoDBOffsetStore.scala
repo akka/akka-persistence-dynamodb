@@ -31,6 +31,7 @@ import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 
 /**
  * INTERNAL API
@@ -314,7 +315,19 @@ private[projection] class DynamoDBOffsetStore(
   def saveOffset(offset: OffsetPidSeqNr): Future[Done] =
     saveOffsets(Vector(offset))
 
-  def saveOffsets(offsets: IndexedSeq[OffsetPidSeqNr]): Future[Done] = {
+  def saveOffsets(offsets: IndexedSeq[OffsetPidSeqNr]): Future[Done] =
+    storeOffsets(offsets, dao.storeSequenceNumbers, canBeConcurrent = true)
+
+  def transactSaveOffset(writeItems: Iterable[TransactWriteItem], offset: OffsetPidSeqNr): Future[Done] =
+    transactSaveOffsets(writeItems, Vector(offset))
+
+  def transactSaveOffsets(writeItems: Iterable[TransactWriteItem], offsets: IndexedSeq[OffsetPidSeqNr]): Future[Done] =
+    storeOffsets(offsets, dao.transactStoreSequenceNumbers(writeItems), canBeConcurrent = false)
+
+  private def storeOffsets(
+      offsets: IndexedSeq[OffsetPidSeqNr],
+      storeSequenceNumbers: IndexedSeq[Record] => Future[Done],
+      canBeConcurrent: Boolean): Future[Done] = {
     if (offsets.isEmpty)
       FutureDone
     else if (offsets.head.offset.isInstanceOf[TimestampOffset]) {
@@ -328,13 +341,16 @@ private[projection] class DynamoDBOffsetStore(
           throw new IllegalArgumentException(
             "Mix of TimestampOffset and other offset type in same transaction is not supported")
       }
-      saveTimestampOffsets(records)
+      storeTimestampOffsets(records, storeSequenceNumbers, canBeConcurrent)
     } else {
       throw new IllegalStateException("TimestampOffset is required. Primitive offsets not supported.")
     }
   }
 
-  private def saveTimestampOffsets(records: IndexedSeq[Record]): Future[Done] = {
+  private def storeTimestampOffsets(
+      records: IndexedSeq[Record],
+      storeSequenceNumbers: IndexedSeq[Record] => Future[Done],
+      canBeConcurrent: Boolean): Future[Done] = {
     load(records.map(_.pid)).flatMap { _ =>
       val oldState = state.get()
       val filteredRecords = {
@@ -378,23 +394,24 @@ private[projection] class DynamoDBOffsetStore(
             newState
 
         // FIXME we probably don't have to store the latest offset per slice all the time, but can
-        // accumulate some changes and flush on size/time.
+        //       accumulate some changes and flush on size/time.
         val changedOffsetBySlice = evictedNewState.offsetBySlice.filter { case (slice, offset) =>
           offset != oldState.offsetBySlice.getOrElse(slice, TimestampOffset.Zero)
         }
 
-        dao.storeSequenceNumbers(filteredRecords).flatMap { _ =>
+        storeSequenceNumbers(filteredRecords).flatMap { _ =>
           val storeOffsetsResult =
             if (changedOffsetBySlice.isEmpty) FutureDone else dao.storeTimestampOffsets(changedOffsetBySlice)
           storeOffsetsResult.flatMap { _ =>
             if (state.compareAndSet(oldState, evictedNewState)) {
               cleanupInflight(evictedNewState)
               FutureDone
-            } else
-              saveTimestampOffsets(records) // CAS retry, concurrent update
+            } else { // concurrent update
+              if (canBeConcurrent) storeTimestampOffsets(records, storeSequenceNumbers, canBeConcurrent) // CAS retry
+              else throw new IllegalStateException("Unexpected concurrent modification of state in save offsets.")
+            }
           }
         }
-
       }
     }
   }
