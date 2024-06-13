@@ -39,8 +39,9 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 @InternalApi private[projection] object OffsetStoreDao {
   private val log: Logger = LoggerFactory.getLogger(classOf[OffsetStoreDao])
 
-  // Hard limit in DynamoDB
+  // Hard limits in DynamoDB
   private val MaxBatchSize = 25
+  private val MaxTransactItems = 100
 
   object OffsetStoreAttributes {
     // FIXME should attribute names be shorter?
@@ -65,6 +66,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     client: DynamoDbAsyncClient) {
   import OffsetStoreDao.log
   import OffsetStoreDao.MaxBatchSize
+  import OffsetStoreDao.MaxTransactItems
   import system.executionContext
 
   private def nameSlice(slice: Int): String = s"${projectionId.name}-$slice"
@@ -233,6 +235,11 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
   }
 
   def transactStoreSequenceNumbers(writeItems: Iterable[TransactWriteItem])(records: Seq[Record]): Future[Done] = {
+    if ((writeItems.size + records.size) > MaxTransactItems)
+      throw new IllegalArgumentException(
+        s"Too many transactional write items. Total limit is [${MaxTransactItems}], attempting to store " +
+        s"[${writeItems.size}] write items and [${records.size}] sequence numbers.")
+
     val writeSequenceNumbers = records.map { record =>
       TransactWriteItem.builder
         .put(
