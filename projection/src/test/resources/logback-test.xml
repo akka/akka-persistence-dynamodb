@@ -13,6 +13,7 @@
     </logger>
 
     <logger name="akka.projection" level="DEBUG" />
+    <logger name="akka.projection.dynamodb" level="TRACE" />
     <logger name="akka.persistence.dynamodb" level="DEBUG" />
 
 

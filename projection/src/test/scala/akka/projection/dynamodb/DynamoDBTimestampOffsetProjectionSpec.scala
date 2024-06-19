@@ -363,6 +363,40 @@ class DynamoDBTimestampOffsetProjectionSpec
     }
   }
 
+  class TransactGroupedConcatHandler(
+      probe: ActorRef[String],
+      failPredicate: EventEnvelope[String] => Boolean = _ => false)
+      extends DynamoDBTransactHandler[Seq[EventEnvelope[String]]] {
+
+    private val logger = LoggerFactory.getLogger(getClass)
+    private val _attempts = new AtomicInteger()
+    def attempts: Int = _attempts.get
+
+    override def process(envelopes: Seq[EventEnvelope[String]]): Future[Iterable[TransactWriteItem]] = {
+      probe ! "called"
+
+      // can only have one TransactWriteItem per key
+      val envelopesByPid = envelopes.groupBy(_.persistenceId)
+
+      Future.sequence(envelopesByPid.map { case (pid, pidEnvelopes) =>
+        TestTable.findById(pid)(client, system).map { current =>
+          val newConcatStr = pidEnvelopes.foldLeft(current.getOrElse(ConcatStr(pid, ""))) { (acc, env) =>
+            if (failPredicate(env)) {
+              _attempts.incrementAndGet()
+              throw TestException(concatHandlerFail4Msg + s" after $attempts attempts")
+            }
+            acc.concat(env.event)
+          }
+
+          val attributes = new JHashMap[String, AttributeValue]
+          attributes.put(TestTable.Attributes.Id, AttributeValue.fromS(pid))
+          attributes.put(TestTable.Attributes.Payload, AttributeValue.fromS(newConcatStr.text))
+          TransactWriteItem.builder().put(Put.builder().tableName(TestTable.name).item(attributes).build()).build()
+        }
+      })
+    }
+  }
+
   private val clock = TestClock.nowMicros()
   def tick(): TestClock = {
     clock.tick(JDuration.ofMillis(1))
@@ -1062,6 +1096,326 @@ class DynamoDBTimestampOffsetProjectionSpec
         projectedTestValueShouldBe("e1|e2|e5")
       }
       latestOffsetShouldBe(envelopes.last.offset)
+    }
+  }
+
+  "A DynamoDB grouped projection with TimestampOffset" must {
+    "persist projection and offset in the same write operation (transactional)" in {
+      implicit val pid = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid, 6)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val handlerProbe = createTestProbe[String]("calls-to-handler")
+
+      val projection =
+        DynamoDBProjection
+          .exactlyOnceGroupedWithin(
+            projectionId,
+            Some(settings),
+            sourceProvider,
+            handler = () => new TransactGroupedConcatHandler(handlerProbe.ref))
+          .withGroup(3, 3.seconds)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projection) {
+        projectedTestValueShouldBe("e1|e2|e3|e4|e5|e6")
+      }
+
+      // handler probe is called twice
+      handlerProbe.expectMessage("called")
+      handlerProbe.expectMessage("called")
+
+      latestOffsetShouldBe(envelopes.last.offset)
+    }
+
+    "filter duplicates" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopesWithDuplicates(pid1, pid2)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val handlerProbe = createTestProbe[String]("calls-to-handler")
+
+      val projection =
+        DynamoDBProjection
+          .exactlyOnceGroupedWithin(
+            projectionId,
+            Some(settings),
+            sourceProvider,
+            handler = () => new TransactGroupedConcatHandler(handlerProbe.ref))
+          .withGroup(3, 3.seconds)
+
+      projectionTestKit.run(projection) {
+        projectedTestValueShouldBe("e1-1|e1-2|e1-3|e1-4")(pid1)
+        projectedTestValueShouldBe("e2-1|e2-2|e2-3")(pid2)
+      }
+
+      // handler probe is called twice
+      handlerProbe.expectMessage("called")
+      handlerProbe.expectMessage("called")
+
+      latestOffsetShouldBe(envelopes.last.offset)
+    }
+
+    "filter out unknown sequence numbers" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+
+      val startTime = TestClock.nowMicros().instant()
+      val envelopes1 = createEnvelopesUnknownSequenceNumbers(startTime, pid1, pid2)
+      val sourceProvider1 = createBacktrackingSourceProvider(envelopes1)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider1)
+
+      val handlerProbe = createTestProbe[String]()
+
+      val projection1 =
+        DynamoDBProjection
+          .exactlyOnceGroupedWithin(
+            projectionId,
+            Some(settings),
+            sourceProvider1,
+            handler = () => new TransactGroupedConcatHandler(handlerProbe.ref))
+          .withGroup(3, 3.seconds)
+
+      projectionTestKit.run(projection1) {
+        projectedTestValueShouldBe("e1-1|e1-2|e1-3")(pid1)
+        projectedTestValueShouldBe("e2-1")(pid2)
+      }
+      latestOffsetShouldBe(envelopes1.collectFirst { case env if env.event == "e1-3" => env.offset }.get)
+
+      // simulate backtracking
+      logger.debug("Starting backtracking")
+      val envelopes2 = createEnvelopesBacktrackingUnknownSequenceNumbers(startTime, pid1, pid2)
+      val sourceProvider2 = createBacktrackingSourceProvider(envelopes2)
+      val projection2 =
+        DynamoDBProjection
+          .exactlyOnceGroupedWithin(
+            projectionId,
+            Some(settings),
+            sourceProvider2,
+            handler = () => new TransactGroupedConcatHandler(handlerProbe.ref))
+          .withGroup(3, 3.seconds)
+
+      projectionTestKit.run(projection2) {
+        projectedTestValueShouldBe("e1-1|e1-2|e1-3|e1-4|e1-5|e1-6")(pid1)
+        projectedTestValueShouldBe("e2-1|e2-2|e2-3|e2-4")(pid2)
+      }
+      latestOffsetShouldBe(envelopes2.last.offset)
+    }
+
+    "be able to skip envelopes but still store offset" in {
+      implicit val pid = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid, 6).map { env =>
+        if (env.event == "e3" || env.event == "e4" || env.event == "e6")
+          markAsFilteredEvent(env)
+        else
+          env
+      }
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val handlerProbe = createTestProbe[String]("calls-to-handler")
+
+      val projection =
+        DynamoDBProjection
+          .exactlyOnceGroupedWithin(
+            projectionId,
+            Some(settings),
+            sourceProvider,
+            handler = () => new TransactGroupedConcatHandler(handlerProbe.ref))
+          .withGroup(3, 3.seconds)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projection) {
+        projectedTestValueShouldBe("e1|e2|e5")
+      }
+
+      // handler probe is called twice
+      handlerProbe.expectMessage("called")
+      handlerProbe.expectMessage("called")
+
+      latestOffsetShouldBe(envelopes.last.offset)
+    }
+
+    "handle grouped async projection" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes1 = createEnvelopes(pid1, 3)
+      val envelopes2 = createEnvelopes(pid2, 3)
+      val envelopes = envelopes1.zip(envelopes2).flatMap { case (a, b) => List(a, b) }
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val result = new StringBuffer()
+
+      def handler(): Handler[immutable.Seq[EventEnvelope[String]]] =
+        new Handler[immutable.Seq[EventEnvelope[String]]] {
+          override def process(envelopes: immutable.Seq[EventEnvelope[String]]): Future[Done] = {
+            Future {
+              envelopes.foreach(env => result.append(env.persistenceId).append("_").append(env.event).append("|"))
+            }.map(_ => Done)
+          }
+        }
+
+      val projection =
+        DynamoDBProjection
+          .atLeastOnceGroupedWithin(projectionId, Some(settings), sourceProvider, handler = () => handler())
+          .withGroup(2, 3.seconds)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projection) {
+        result.toString shouldBe s"${pid1}_e1|${pid2}_e1|${pid1}_e2|${pid2}_e2|${pid1}_e3|${pid2}_e3|"
+      }
+
+      eventually {
+        latestOffsetShouldBe(envelopes.last.offset)
+      }
+      offsetStore.storedSeqNr(pid1).futureValue shouldBe 3
+      offsetStore.storedSeqNr(pid2).futureValue shouldBe 3
+    }
+
+    "filter duplicates for grouped async projection" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopesWithDuplicates(pid1, pid2)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val result1 = new StringBuffer()
+      val result2 = new StringBuffer()
+
+      def handler(): Handler[immutable.Seq[EventEnvelope[String]]] = new Handler[immutable.Seq[EventEnvelope[String]]] {
+        override def process(envelopes: immutable.Seq[EventEnvelope[String]]): Future[Done] = {
+          Future
+            .successful {
+              envelopes.foreach { envelope =>
+                if (envelope.persistenceId == pid1)
+                  result1.append(envelope.event).append("|")
+                else
+                  result2.append(envelope.event).append("|")
+              }
+            }
+            .map(_ => Done)
+        }
+      }
+
+      val projection =
+        DynamoDBProjection.atLeastOnceGroupedWithin(
+          projectionId,
+          Some(settings),
+          sourceProvider,
+          handler = () => handler())
+
+      projectionTestKit.run(projection) {
+        result1.toString shouldBe "e1-1|e1-2|e1-3|e1-4|"
+        result2.toString shouldBe "e2-1|e2-2|e2-3|"
+      }
+      eventually {
+        latestOffsetShouldBe(envelopes.last.offset)
+      }
+    }
+
+    "filter out unknown sequence numbers for grouped async projection" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+
+      val startTime = TestClock.nowMicros().instant()
+      val sourceProvider = new TestSourceProviderWithInput()
+      implicit val offsetStore: DynamoDBOffsetStore =
+        new DynamoDBOffsetStore(projectionId, Some(sourceProvider), system, settings, client)
+
+      val result1 = new StringBuffer()
+      val result2 = new StringBuffer()
+
+      def handler(): Handler[immutable.Seq[EventEnvelope[String]]] = new Handler[immutable.Seq[EventEnvelope[String]]] {
+        override def process(envelopes: immutable.Seq[EventEnvelope[String]]): Future[Done] = {
+          Future
+            .successful {
+              envelopes.foreach { envelope =>
+                if (envelope.persistenceId == pid1)
+                  result1.append(envelope.event).append("|")
+                else
+                  result2.append(envelope.event).append("|")
+              }
+            }
+            .map(_ => Done)
+        }
+      }
+
+      val projectionRef = spawn(
+        ProjectionBehavior(DynamoDBProjection
+          .atLeastOnceGroupedWithin(projectionId, Some(settings), sourceProvider, handler = () => handler())))
+      val input = sourceProvider.input.futureValue
+
+      val envelopes1 = createEnvelopesUnknownSequenceNumbers(startTime, pid1, pid2)
+      envelopes1.foreach(input ! _)
+
+      eventually {
+        result1.toString shouldBe "e1-1|e1-2|e1-3|"
+        result2.toString shouldBe "e2-1|"
+      }
+
+      // simulate backtracking
+      logger.debug("Starting backtracking")
+      val envelopes2 = createEnvelopesBacktrackingUnknownSequenceNumbers(startTime, pid1, pid2)
+      envelopes2.foreach(input ! _)
+
+      eventually {
+        result1.toString shouldBe "e1-1|e1-2|e1-3|e1-4|e1-5|e1-6|"
+        result2.toString shouldBe "e2-1|e2-2|e2-3|e2-4|"
+      }
+
+      eventually {
+        latestOffsetShouldBe(envelopes2.last.offset)
+      }
+      projectionRef ! ProjectionBehavior.Stop
+    }
+
+    "be able to skip envelopes but still store offset for grouped async projection" in {
+      implicit val pid = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid, 6).map { env =>
+        if (env.event == "e3" || env.event == "e4" || env.event == "e6")
+          markAsFilteredEvent(env)
+        else
+          env
+      }
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      val result = new StringBuffer()
+
+      def handler(): Handler[immutable.Seq[EventEnvelope[String]]] =
+        new Handler[immutable.Seq[EventEnvelope[String]]] {
+          override def process(envelopes: immutable.Seq[EventEnvelope[String]]): Future[Done] = {
+            Future {
+              envelopes.foreach(env => result.append(env.event).append("|"))
+            }.map(_ => Done)
+          }
+        }
+
+      val projection =
+        DynamoDBProjection
+          .atLeastOnceGroupedWithin(projectionId, Some(settings), sourceProvider, handler = () => handler())
+          .withGroup(2, 3.seconds)
+
+      offsetShouldBeEmpty()
+      projectionTestKit.run(projection) {
+        result.toString shouldBe "e1|e2|e5|"
+      }
+
+      eventually {
+        latestOffsetShouldBe(envelopes.last.offset)
+      }
     }
   }
 
