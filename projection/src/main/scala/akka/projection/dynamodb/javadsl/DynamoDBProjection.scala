@@ -13,12 +13,15 @@ import akka.actor.typed.ActorSystem
 import akka.annotation.ApiMayChange
 import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
+import akka.projection.dynamodb.internal.DynamoDBTransactGroupedHandlerAdapter
 import akka.projection.dynamodb.internal.DynamoDBTransactHandlerAdapter
 import akka.projection.dynamodb.scaladsl
+import akka.projection.internal.GroupedHandlerAdapter
 import akka.projection.internal.HandlerAdapter
 import akka.projection.internal.JavaToScalaBySliceSourceProviderAdapter
 import akka.projection.javadsl.AtLeastOnceProjection
 import akka.projection.javadsl.ExactlyOnceProjection
+import akka.projection.javadsl.GroupedProjection
 import akka.projection.javadsl.Handler
 import akka.projection.javadsl.SourceProvider
 
@@ -70,6 +73,54 @@ object DynamoDBProjection {
         JavaToScalaBySliceSourceProviderAdapter(sourceProvider),
         () => new DynamoDBTransactHandlerAdapter(handler.get()))(system)
       .asInstanceOf[ExactlyOnceProjection[Offset, Envelope]]
+  }
+
+  /**
+   * Create a [[akka.projection.Projection]] that groups envelopes and calls the `handler` with a group of `Envelopes`.
+   * The envelopes are grouped within a time window, or limited by a number of envelopes, whatever happens first. This
+   * window can be defined with [[GroupedProjection.withGroup]] of the returned `GroupedProjection`. The default
+   * settings for the window is defined in configuration section `akka.projection.grouped`.
+   *
+   * The offset is stored in DynamoDB in the same transaction as the `TransactWriteItem`s returned by the `handler`.
+   */
+  def exactlyOnceGroupedWithin[Offset, Envelope](
+      projectionId: ProjectionId,
+      settings: Optional[DynamoDBProjectionSettings],
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handler: Supplier[DynamoDBTransactHandler[java.util.List[Envelope]]],
+      system: ActorSystem[_]): GroupedProjection[Offset, Envelope] = {
+    scaladsl.DynamoDBProjection
+      .exactlyOnceGroupedWithin[Offset, Envelope](
+        projectionId,
+        settings.asScala,
+        JavaToScalaBySliceSourceProviderAdapter(sourceProvider),
+        () => new DynamoDBTransactGroupedHandlerAdapter(handler.get()))(system)
+      .asInstanceOf[GroupedProjection[Offset, Envelope]]
+  }
+
+  /**
+   * Create a [[akka.projection.Projection]] that groups envelopes and calls the `handler` with a group of `Envelopes`.
+   * The envelopes are grouped within a time window, or limited by a number of envelopes, whatever happens first. This
+   * window can be defined with [[GroupedProjection.withGroup]] of the returned `GroupedProjection`. The default
+   * settings for the window is defined in configuration section `akka.projection.grouped`.
+   *
+   * The offset is stored in DynamoDB immediately after the `handler` has processed the envelopes, but that is still
+   * with at-least-once processing semantics. This means that if the projection is restarted from previously stored
+   * offset the previous group of envelopes may be processed more than once.
+   */
+  def atLeastOnceGroupedWithin[Offset, Envelope](
+      projectionId: ProjectionId,
+      settings: Optional[DynamoDBProjectionSettings],
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handler: Supplier[Handler[java.util.List[Envelope]]],
+      system: ActorSystem[_]): GroupedProjection[Offset, Envelope] = {
+    scaladsl.DynamoDBProjection
+      .atLeastOnceGroupedWithin[Offset, Envelope](
+        projectionId,
+        settings.asScala,
+        JavaToScalaBySliceSourceProviderAdapter(sourceProvider),
+        () => new GroupedHandlerAdapter(handler.get()))(system)
+      .asInstanceOf[GroupedProjection[Offset, Envelope]]
   }
 
 }

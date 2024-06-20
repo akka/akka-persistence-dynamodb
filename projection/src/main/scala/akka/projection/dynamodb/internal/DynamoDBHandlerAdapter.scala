@@ -31,3 +31,20 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
   override def stop(): Future[Done] =
     delegate.stop().asScala
 }
+
+/**
+ * INTERNAL API: Adapter from javadsl.DynamoDBTransactHandler to scaladsl.DynamoDBTransactHandler
+ */
+@InternalApi private[projection] class DynamoDBTransactGroupedHandlerAdapter[Envelope](
+    delegate: javadsl.DynamoDBTransactHandler[java.util.List[Envelope]])
+    extends scaladsl.DynamoDBTransactHandler[Seq[Envelope]] {
+
+  override def process(envelopes: Seq[Envelope]): Future[Iterable[TransactWriteItem]] =
+    delegate.process(envelopes.asJava).asScala.map(_.asScala)(ExecutionContexts.parasitic)
+
+  override def start(): Future[Done] =
+    delegate.start().asScala
+
+  override def stop(): Future[Done] =
+    delegate.stop().asScala
+}

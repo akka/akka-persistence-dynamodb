@@ -248,6 +248,108 @@ private[projection] object DynamoDBProjectionImpl {
     }
   }
 
+  private[projection] def adaptedHandlerForExactlyOnceGrouped[Offset, Envelope](
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handlerFactory: () => DynamoDBTransactHandler[Seq[Envelope]],
+      offsetStore: DynamoDBOffsetStore)(implicit
+      ec: ExecutionContext,
+      system: ActorSystem[_]): () => Handler[Seq[Envelope]] = { () =>
+
+    new AdaptedDynamoDBTransactHandler(handlerFactory()) {
+      override def process(envelopes: Seq[Envelope]): Future[Done] = {
+        import DynamoDBOffsetStore.Validation._
+        offsetStore.validateAll(envelopes).flatMap { isAcceptedEnvelopes =>
+          val replayDone =
+            Future.sequence(isAcceptedEnvelopes.map {
+              case (env, RejectedSeqNr) =>
+                triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => Done)(ExecutionContexts.parasitic)
+              case (env, RejectedBacktrackingSeqNr) =>
+                triggerReplayIfPossible(sourceProvider, offsetStore, env).map {
+                  case true  => Done
+                  case false => throwRejectedEnvelope(sourceProvider, env)
+                }
+              case _ =>
+                FutureDone
+            })
+
+          replayDone.flatMap { _ =>
+            val acceptedEnvelopes = isAcceptedEnvelopes.collect { case (env, Accepted) =>
+              env
+            }
+
+            if (acceptedEnvelopes.isEmpty) {
+              FutureDone
+            } else {
+              Future.sequence(acceptedEnvelopes.map(env => loadEnvelope(env, sourceProvider))).flatMap {
+                loadedEnvelopes =>
+                  val offsets = loadedEnvelopes.iterator.map(extractOffsetPidSeqNr(sourceProvider, _)).toVector
+                  val filteredEnvelopes = loadedEnvelopes.filterNot(isFilteredEvent)
+                  if (filteredEnvelopes.isEmpty) {
+                    offsetStore.saveOffsets(offsets)
+                  } else {
+                    delegate.process(filteredEnvelopes).flatMap { writeItems =>
+                      offsetStore.transactSaveOffsets(writeItems, offsets)
+                    }
+                  }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private[projection] def adaptedHandlerForAtLeastOnceGrouped[Offset, Envelope](
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handlerFactory: () => Handler[Seq[Envelope]],
+      offsetStore: DynamoDBOffsetStore)(implicit
+      ec: ExecutionContext,
+      system: ActorSystem[_]): () => Handler[Seq[Envelope]] = { () =>
+
+    new AdaptedHandler(handlerFactory()) {
+      override def process(envelopes: Seq[Envelope]): Future[Done] = {
+        import DynamoDBOffsetStore.Validation._
+        offsetStore.validateAll(envelopes).flatMap { isAcceptedEnvelopes =>
+          val replayDone =
+            Future.sequence(isAcceptedEnvelopes.map {
+              case (env, RejectedSeqNr) =>
+                triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => Done)(ExecutionContexts.parasitic)
+              case (env, RejectedBacktrackingSeqNr) =>
+                triggerReplayIfPossible(sourceProvider, offsetStore, env).map {
+                  case true  => Done
+                  case false => throwRejectedEnvelope(sourceProvider, env)
+                }
+              case _ =>
+                FutureDone
+            })
+
+          replayDone.flatMap { _ =>
+            val acceptedEnvelopes = isAcceptedEnvelopes.collect { case (env, Accepted) =>
+              env
+            }
+
+            if (acceptedEnvelopes.isEmpty) {
+              FutureDone
+            } else {
+              Future.sequence(acceptedEnvelopes.map(env => loadEnvelope(env, sourceProvider))).flatMap {
+                loadedEnvelopes =>
+                  val offsets = loadedEnvelopes.iterator.map(extractOffsetPidSeqNr(sourceProvider, _)).toVector
+                  val filteredEnvelopes = loadedEnvelopes.filterNot(isFilteredEvent)
+                  if (filteredEnvelopes.isEmpty) {
+                    offsetStore.saveOffsets(offsets)
+                  } else {
+                    delegate.process(filteredEnvelopes).flatMap { _ =>
+                      offsetStore.saveOffsets(offsets)
+                    }
+                  }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   private def triggerReplayIfPossible[Offset, Envelope](
       sourceProvider: SourceProvider[Offset, Envelope],
       offsetStore: DynamoDBOffsetStore,
@@ -325,6 +427,8 @@ private[projection] class DynamoDBProjectionImpl[Offset, Envelope](
     with javadsl.AtLeastOnceProjection[Offset, Envelope]
     with scaladsl.ExactlyOnceProjection[Offset, Envelope]
     with javadsl.ExactlyOnceProjection[Offset, Envelope]
+    with scaladsl.GroupedProjection[Offset, Envelope]
+    with javadsl.GroupedProjection[Offset, Envelope]
     with SettingsImpl[DynamoDBProjectionImpl[Offset, Envelope]]
     with InternalProjection {
   import DynamoDBProjectionImpl.extractOffsetPidSeqNr

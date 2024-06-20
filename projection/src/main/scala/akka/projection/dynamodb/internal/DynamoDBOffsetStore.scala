@@ -280,15 +280,20 @@ private[projection] class DynamoDBOffsetStore(
 
   def load(pid: Pid): Future[Done] = {
     val oldState = state.get()
-    val slice = persistenceExt.sliceForPersistenceId(pid)
-    dao.loadSequenceNumber(slice, pid).flatMap {
-      case Some(record) =>
-        val newState = oldState.add(Vector(record))
-        if (state.compareAndSet(oldState, newState))
-          FutureDone
-        else
-          load(pid) // CAS retry, concurrent update
-      case None => FutureDone
+    if (oldState.contains(pid))
+      FutureDone
+    else {
+      val slice = persistenceExt.sliceForPersistenceId(pid)
+      logger.trace("{} load [{}]", logPrefix, pid)
+      dao.loadSequenceNumber(slice, pid).flatMap {
+        case Some(record) =>
+          val newState = oldState.add(Vector(record))
+          if (state.compareAndSet(oldState, newState))
+            FutureDone
+          else
+            load(pid) // CAS retry, concurrent update
+        case None => FutureDone
+      }
     }
   }
 
@@ -300,6 +305,7 @@ private[projection] class DynamoDBOffsetStore(
     else {
       val loadedRecords = pidsToLoad.map { pid =>
         val slice = persistenceExt.sliceForPersistenceId(pid)
+        logger.trace("{} load [{}]", logPrefix, pid)
         dao.loadSequenceNumber(slice, pid)
       }
       Future.sequence(loadedRecords).flatMap { records =>
