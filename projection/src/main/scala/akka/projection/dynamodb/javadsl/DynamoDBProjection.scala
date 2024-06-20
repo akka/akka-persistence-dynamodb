@@ -104,9 +104,9 @@ object DynamoDBProjection {
    * window can be defined with [[GroupedProjection.withGroup]] of the returned `GroupedProjection`. The default
    * settings for the window is defined in configuration section `akka.projection.grouped`.
    *
-   * It stores the offset in a relational database table using R2DBC immediately after the `handler` has processed the
-   * envelopes, but that is still with at-least-once processing semantics. This means that if the projection is
-   * restarted from previously stored offset the previous group of envelopes may be processed more than once.
+   * The offset is stored in DynamoDB immediately after the `handler` has processed the envelopes, but that is still
+   * with at-least-once processing semantics. This means that if the projection is restarted from previously stored
+   * offset the previous group of envelopes may be processed more than once.
    */
   def atLeastOnceGroupedWithin[Offset, Envelope](
       projectionId: ProjectionId,

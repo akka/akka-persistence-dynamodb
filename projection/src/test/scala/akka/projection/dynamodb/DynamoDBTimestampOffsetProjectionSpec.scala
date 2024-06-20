@@ -1243,7 +1243,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       latestOffsetShouldBe(envelopes.last.offset)
     }
 
-    "handle grouped async projection" in {
+    "handle at-least-once grouped projection" in {
       val pid1 = UUID.randomUUID().toString
       val pid2 = UUID.randomUUID().toString
       val projectionId = genRandomProjectionId()
@@ -1281,7 +1281,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       offsetStore.storedSeqNr(pid2).futureValue shouldBe 3
     }
 
-    "filter duplicates for grouped async projection" in {
+    "filter duplicates for at-least-once grouped projection" in {
       val pid1 = UUID.randomUUID().toString
       val pid2 = UUID.randomUUID().toString
       val projectionId = genRandomProjectionId()
@@ -1323,7 +1323,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       }
     }
 
-    "filter out unknown sequence numbers for grouped async projection" in {
+    "filter out unknown sequence numbers for at-least-once grouped projection" in {
       val pid1 = UUID.randomUUID().toString
       val pid2 = UUID.randomUUID().toString
       val projectionId = genRandomProjectionId()
@@ -1380,7 +1380,7 @@ class DynamoDBTimestampOffsetProjectionSpec
       projectionRef ! ProjectionBehavior.Stop
     }
 
-    "be able to skip envelopes but still store offset for grouped async projection" in {
+    "be able to skip envelopes but still store offset for at-least-once grouped projection" in {
       implicit val pid = UUID.randomUUID().toString
       val projectionId = genRandomProjectionId()
       val envelopes = createEnvelopes(pid, 6).map { env =>
