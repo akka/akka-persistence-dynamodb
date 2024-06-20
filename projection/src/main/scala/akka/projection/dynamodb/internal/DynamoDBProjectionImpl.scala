@@ -30,6 +30,7 @@ import akka.projection.BySlicesSourceProvider
 import akka.projection.HandlerRecoveryStrategy
 import akka.projection.HandlerRecoveryStrategy.Internal.RetryAndSkip
 import akka.projection.HandlerRecoveryStrategy.Internal.Skip
+import akka.projection.ProjectionContext
 import akka.projection.ProjectionId
 import akka.projection.RunningProjection
 import akka.projection.RunningProjection.AbortProjectionException
@@ -58,6 +59,7 @@ import akka.projection.scaladsl
 import akka.projection.scaladsl.Handler
 import akka.projection.scaladsl.SourceProvider
 import akka.stream.RestartSettings
+import akka.stream.scaladsl.FlowWithContext
 import akka.stream.scaladsl.Source
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -350,6 +352,44 @@ private[projection] object DynamoDBProjectionImpl {
     }
   }
 
+  private[projection] def adaptedHandlerForFlow[Offset, Envelope](
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handler: FlowWithContext[Envelope, ProjectionContext, Done, ProjectionContext, _],
+      offsetStore: DynamoDBOffsetStore,
+      settings: DynamoDBProjectionSettings)(implicit
+      system: ActorSystem[_]): FlowWithContext[Envelope, ProjectionContext, Done, ProjectionContext, _] = {
+    import DynamoDBOffsetStore.Validation._
+    implicit val ec: ExecutionContext = system.executionContext
+    FlowWithContext[Envelope, ProjectionContext]
+      .mapAsync(1) { env =>
+        offsetStore
+          .validate(env)
+          .flatMap {
+            case Accepted =>
+              if (isFilteredEvent(env) && settings.warnAboutFilteredEventsInFlow) {
+                log.info("atLeastOnceFlow doesn't support of skipping envelopes. Envelope [{}] still emitted.", env)
+              }
+              loadEnvelope(env, sourceProvider).map { loadedEnvelope =>
+                offsetStore.addInflight(loadedEnvelope)
+                Some(loadedEnvelope)
+              }
+            case Duplicate =>
+              Future.successful(None)
+            case RejectedSeqNr =>
+              triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => None)(ExecutionContexts.parasitic)
+            case RejectedBacktrackingSeqNr =>
+              triggerReplayIfPossible(sourceProvider, offsetStore, env).map {
+                case true  => None
+                case false => throwRejectedEnvelope(sourceProvider, env)
+              }
+          }
+      }
+      .collect { case Some(env) =>
+        env
+      }
+      .via(handler)
+  }
+
   private def triggerReplayIfPossible[Offset, Envelope](
       sourceProvider: SourceProvider[Offset, Envelope],
       offsetStore: DynamoDBOffsetStore,
@@ -429,6 +469,8 @@ private[projection] class DynamoDBProjectionImpl[Offset, Envelope](
     with javadsl.ExactlyOnceProjection[Offset, Envelope]
     with scaladsl.GroupedProjection[Offset, Envelope]
     with javadsl.GroupedProjection[Offset, Envelope]
+    with scaladsl.AtLeastOnceFlowProjection[Offset, Envelope]
+    with javadsl.AtLeastOnceFlowProjection[Offset, Envelope]
     with SettingsImpl[DynamoDBProjectionImpl[Offset, Envelope]]
     with InternalProjection {
   import DynamoDBProjectionImpl.extractOffsetPidSeqNr

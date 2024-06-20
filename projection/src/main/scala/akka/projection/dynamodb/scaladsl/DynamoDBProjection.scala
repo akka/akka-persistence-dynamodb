@@ -4,24 +4,29 @@
 
 package akka.projection.dynamodb.scaladsl
 
+import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.ApiMayChange
 import akka.persistence.dynamodb.util.ClientProvider
 import akka.projection.BySlicesSourceProvider
+import akka.projection.ProjectionContext
 import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import akka.projection.dynamodb.internal.DynamoDBProjectionImpl
 import akka.projection.internal.AtLeastOnce
 import akka.projection.internal.ExactlyOnce
+import akka.projection.internal.FlowHandlerStrategy
 import akka.projection.internal.GroupedHandlerStrategy
 import akka.projection.internal.NoopStatusObserver
 import akka.projection.internal.OffsetStoredByHandler
 import akka.projection.internal.SingleHandlerStrategy
+import akka.projection.scaladsl.AtLeastOnceFlowProjection
 import akka.projection.scaladsl.AtLeastOnceProjection
 import akka.projection.scaladsl.ExactlyOnceProjection
 import akka.projection.scaladsl.GroupedProjection
 import akka.projection.scaladsl.Handler
 import akka.projection.scaladsl.SourceProvider
+import akka.stream.scaladsl.FlowWithContext
 
 @ApiMayChange
 object DynamoDBProjection {
@@ -189,6 +194,59 @@ object DynamoDBProjection {
       restartBackoffOpt = None,
       offsetStrategy = OffsetStoredByHandler(),
       handlerStrategy = GroupedHandlerStrategy(adaptedHandler),
+      NoopStatusObserver,
+      offsetStore)
+  }
+
+  /**
+   * Create a [[akka.projection.Projection]] with a [[FlowWithContext]] as the envelope handler. It has at-least-once
+   * processing semantics.
+   *
+   * The flow should emit a `Done` element for each completed envelope. The offset of the envelope is carried in the
+   * context of the `FlowWithContext` and is stored in the database when corresponding `Done` is emitted. Since the
+   * offset is stored after processing the envelope it means that if the projection is restarted from previously stored
+   * offset then some envelopes may be processed more than once.
+   *
+   * If the flow filters out envelopes the corresponding offset will not be stored, and such envelope will be processed
+   * again if the projection is restarted and no later offset was stored.
+   *
+   * The flow should not duplicate emitted envelopes (`mapConcat`) with same offset, because then it can result in that
+   * the first offset is stored and when the projection is restarted that offset is considered completed even though
+   * more of the duplicated enveloped were never processed.
+   *
+   * The flow must not reorder elements, because the offsets may be stored in the wrong order and and when the
+   * projection is restarted all envelopes up to the latest stored offset are considered completed even though some of
+   * them may not have been processed. This is the reason the flow is restricted to `FlowWithContext` rather than
+   * ordinary `Flow`.
+   */
+  def atLeastOnceFlow[Offset, Envelope](
+      projectionId: ProjectionId,
+      settings: Option[DynamoDBProjectionSettings],
+      sourceProvider: SourceProvider[Offset, Envelope],
+      handler: FlowWithContext[Envelope, ProjectionContext, Done, ProjectionContext, _])(implicit
+      system: ActorSystem[_]): AtLeastOnceFlowProjection[Offset, Envelope] = {
+
+    val dynamodbSettings = settings.getOrElse(DynamoDBProjectionSettings(system))
+    val client = ClientProvider(system).clientFor(dynamodbSettings.useClient)
+
+    val offsetStore =
+      DynamoDBProjectionImpl.createOffsetStore(
+        projectionId,
+        timestampOffsetBySlicesSourceProvider(sourceProvider),
+        dynamodbSettings,
+        client)
+
+    val adaptedHandler =
+      DynamoDBProjectionImpl.adaptedHandlerForFlow(sourceProvider, handler, offsetStore, dynamodbSettings)(system)
+
+    new DynamoDBProjectionImpl(
+      projectionId,
+      dynamodbSettings,
+      settingsOpt = None,
+      sourceProvider,
+      restartBackoffOpt = None,
+      offsetStrategy = AtLeastOnce(),
+      handlerStrategy = FlowHandlerStrategy(adaptedHandler),
       NoopStatusObserver,
       offsetStore)
   }

@@ -41,6 +41,7 @@ import akka.persistence.typed.PersistenceId
 import akka.projection.BySlicesSourceProvider
 import akka.projection.HandlerRecoveryStrategy
 import akka.projection.ProjectionBehavior
+import akka.projection.ProjectionContext
 import akka.projection.ProjectionId
 import akka.projection.TestStatusObserver
 import akka.projection.TestStatusObserver.Err
@@ -54,6 +55,7 @@ import akka.projection.scaladsl.Handler
 import akka.projection.scaladsl.SourceProvider
 import akka.projection.testkit.scaladsl.ProjectionTestKit
 import akka.projection.testkit.scaladsl.TestSourceProvider
+import akka.stream.scaladsl.FlowWithContext
 import akka.stream.scaladsl.Source
 import akka.stream.testkit.TestSubscriber
 import org.scalatest.wordspec.AnyWordSpecLike
@@ -1413,6 +1415,151 @@ class DynamoDBTimestampOffsetProjectionSpec
         result.toString shouldBe "e1|e2|e5|"
       }
 
+      eventually {
+        latestOffsetShouldBe(envelopes.last.offset)
+      }
+    }
+  }
+
+  "A DynamoDB flow projection with TimestampOffset" must {
+
+    "persist projection and offset" in {
+      implicit val pid = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid, 6)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      offsetShouldBeEmpty()
+
+      val flowHandler =
+        FlowWithContext[EventEnvelope[String], ProjectionContext]
+          .mapAsync(1) { env =>
+            repository.concatToText(env.persistenceId, env.event)
+          }
+
+      val projection =
+        DynamoDBProjection
+          .atLeastOnceFlow(projectionId, Some(settings), sourceProvider, handler = flowHandler)
+          .withSaveOffset(1, 1.minute)
+
+      projectionTestKit.run(projection) {
+        projectedValueShouldBe("e1|e2|e3|e4|e5|e6")
+      }
+      eventually {
+        latestOffsetShouldBe(envelopes.last.offset)
+      }
+    }
+
+    "filter duplicates" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopesWithDuplicates(pid1, pid2)
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      info(s"pid1 [$pid1], pid2 [$pid2]")
+
+      val flowHandler =
+        FlowWithContext[EventEnvelope[String], ProjectionContext]
+          .mapAsync(1) { env =>
+            repository.concatToText(env.persistenceId, env.event)
+          }
+
+      val projection =
+        DynamoDBProjection
+          .atLeastOnceFlow(projectionId, Some(settings), sourceProvider, handler = flowHandler)
+          .withSaveOffset(2, 1.minute)
+
+      projectionTestKit.run(projection) {
+        projectedValueShouldBe("e1-1|e1-2|e1-3|e1-4")(pid1)
+        projectedValueShouldBe("e2-1|e2-2|e2-3")(pid2)
+      }
+      eventually {
+        latestOffsetShouldBe(envelopes.last.offset)
+      }
+    }
+
+    "filter out unknown sequence numbers" in {
+      val pid1 = UUID.randomUUID().toString
+      val pid2 = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+
+      val startTime = TestClock.nowMicros().instant()
+      val sourceProvider = new TestSourceProviderWithInput()
+      implicit val offsetStore: DynamoDBOffsetStore =
+        new DynamoDBOffsetStore(projectionId, Some(sourceProvider), system, settings, client)
+
+      val flowHandler =
+        FlowWithContext[EventEnvelope[String], ProjectionContext]
+          .mapAsync(1) { env =>
+            repository.concatToText(env.persistenceId, env.event)
+          }
+
+      val projectionRef = spawn(
+        ProjectionBehavior(
+          DynamoDBProjection
+            .atLeastOnceFlow(projectionId, Some(settings), sourceProvider, handler = flowHandler)
+            .withSaveOffset(2, 1.minute)))
+      val input = sourceProvider.input.futureValue
+
+      val envelopes1 = createEnvelopesUnknownSequenceNumbers(startTime, pid1, pid2)
+      envelopes1.foreach(input ! _)
+
+      eventually {
+        projectedValueShouldBe("e1-1|e1-2|e1-3")(pid1)
+        projectedValueShouldBe("e2-1")(pid2)
+      }
+
+      // simulate backtracking
+      logger.debug("Starting backtracking")
+      val envelopes2 = createEnvelopesBacktrackingUnknownSequenceNumbers(startTime, pid1, pid2)
+      envelopes2.foreach(input ! _)
+
+      eventually {
+        projectedValueShouldBe("e1-1|e1-2|e1-3|e1-4|e1-5|e1-6")(pid1)
+        projectedValueShouldBe("e2-1|e2-2|e2-3|e2-4")(pid2)
+      }
+
+      eventually {
+        latestOffsetShouldBe(envelopes2.last.offset)
+      }
+      projectionRef ! ProjectionBehavior.Stop
+    }
+
+    "not support skipping envelopes but still store offset" in {
+      // This is a limitation for atLeastOnceFlow and this test is just
+      // capturing current behavior of not supporting the feature of skipping
+      // envelopes that are marked with NotUsed in the eventMetadata.
+      implicit val pid = UUID.randomUUID().toString
+      val projectionId = genRandomProjectionId()
+      val envelopes = createEnvelopes(pid, 6).map { env =>
+        if (env.event == "e3" || env.event == "e4" || env.event == "e6")
+          markAsFilteredEvent(env)
+        else
+          env
+      }
+      val sourceProvider = createSourceProvider(envelopes)
+      implicit val offsetStore = createOffsetStore(projectionId, sourceProvider)
+
+      offsetShouldBeEmpty()
+
+      val flowHandler =
+        FlowWithContext[EventEnvelope[String], ProjectionContext]
+          .mapAsync(1) { env =>
+            repository.concatToText(env.persistenceId, env.event)
+          }
+
+      val projection =
+        DynamoDBProjection
+          .atLeastOnceFlow(projectionId, Some(settings), sourceProvider, handler = flowHandler)
+          .withSaveOffset(1, 1.minute)
+
+      projectionTestKit.run(projection) {
+        // e3, e4, e6 are still included
+        projectedValueShouldBe("e1|e2|e3|e4|e5|e6")
+      }
       eventually {
         latestOffsetShouldBe(envelopes.last.offset)
       }
