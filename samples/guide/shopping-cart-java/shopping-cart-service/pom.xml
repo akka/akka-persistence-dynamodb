@@ -17,7 +17,7 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <akka.version>2.9.3+16-ae4ba35e-SNAPSHOT</akka.version> <!-- FIXME stable version-->
+        <akka.version>2.9.4</akka.version>
         <akka-projection.version>1.5.4</akka-projection.version>
         <akka-management.version>1.5.1</akka-management.version>
         <akka-diagnostics.version>2.1.0</akka-diagnostics.version>
