@@ -115,9 +115,10 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
   @InternalApi private[dynamodb] def internalCurrentEventsByPersistenceId(
       persistenceId: String,
       fromSequenceNr: Long,
-      toSequenceNr: Long): Source[SerializedJournalItem, NotUsed] = {
+      toSequenceNr: Long,
+      includeDeleted: Boolean): Source[SerializedJournalItem, NotUsed] = {
 
-    queryDao.eventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr)
+    queryDao.eventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted)
   }
 
   override def sliceForPersistenceId(persistenceId: String): Int = {

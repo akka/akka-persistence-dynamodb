@@ -26,13 +26,12 @@ inThisBuild(
       else Some(url(s"https://github.com/akka/akka-persistence-dynamodb/releases/tag/v${version.value}"))
     ),
     licenses := Seq(("BUSL-1.1", url("https://raw.githubusercontent.com/akka/akka-persistence-dynamodb/main/LICENSE"))),
-    description := "An Akka Persistence backed by Amazon DynamoDB",
+    description := "An Akka Persistence plugin backed by Amazon DynamoDB",
     // append -SNAPSHOT to version when isSnapshot
     dynverSonatypeSnapshots := true,
     resolvers += "Akka library repository".at("https://repo.akka.io/maven"),
-    // add snapshot repo when Akka version overriden
     resolvers ++=
-      (if (System.getProperty("override.akka.version") != null)
+      (if (Dependencies.AkkaVersion.endsWith("-SNAPSHOT"))
          Seq("Akka library snapshot repository".at("https://repo.akka.io/snapshots"))
        else Seq.empty)))
 

@@ -9,7 +9,7 @@ object Dependencies {
   val Scala3 = "3.3.3"
   val Scala2Versions = Seq(Scala213)
   val ScalaVersions = Dependencies.Scala2Versions :+ Dependencies.Scala3
-  val AkkaVersion = System.getProperty("override.akka.version", "2.9.3")
+  val AkkaVersion = System.getProperty("override.akka.version", "2.9.4")
   val AkkaVersionInDocs = VersionNumber(AkkaVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
   val AkkaProjectionVersion = "1.5.4"
   val AkkaProjectionVersionInDocs = "current"
@@ -58,8 +58,9 @@ object Dependencies {
 
   val projection = Seq(
     dynamodbSdk.exclude("software.amazon.awssdk", "apache-client"),
-    Compile.akkaProjectionEventsourced,
-    Compile.akkaPersistenceTyped,
+    akkaProjectionEventsourced,
+    akkaPersistenceQuery,
+    akkaPersistenceTyped,
     TestDeps.akkaStreamTestkit,
     TestDeps.akkaTestkit,
     TestDeps.akkaProjectionTestkit,
