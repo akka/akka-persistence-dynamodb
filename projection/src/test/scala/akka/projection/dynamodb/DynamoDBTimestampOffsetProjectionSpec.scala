@@ -262,7 +262,8 @@ class DynamoDBTimestampOffsetProjectionSpec
   private val repository = new TestRepository()
 
   override protected def beforeAll(): Unit = {
-    Await.result(TestTable.create(client, system), 10.seconds)
+    if (localDynamoDB)
+      Await.result(TestTable.create(client, system), 10.seconds)
     super.beforeAll()
   }
 

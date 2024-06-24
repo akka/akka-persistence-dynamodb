@@ -36,19 +36,23 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
 
   lazy val client: DynamoDbAsyncClient = ClientProvider(typedSystem).clientFor(settings.useClient)
 
+  lazy val localDynamoDB = ClientProvider(typedSystem).clientSettingsFor(settings.useClient).local.isDefined
+
   private lazy val log = LoggerFactory.getLogger(getClass)
 
   override protected def beforeAll(): Unit = {
-    try {
-      Await.result(
-        akka.persistence.dynamodb.util.scaladsl.CreateTables
-          .createJournalTable(typedSystem, dynamoDBSettings, client, deleteIfExists = true),
-        10.seconds)
-      Await.result(
-        CreateTables.createTimestampOffsetStoreTable(typedSystem, settings, client, deleteIfExists = true),
-        10.seconds)
-    } catch {
-      case NonFatal(ex) => throw new RuntimeException(s"Test db creation failed", ex)
+    if (localDynamoDB) {
+      try {
+        Await.result(
+          akka.persistence.dynamodb.util.scaladsl.CreateTables
+            .createJournalTable(typedSystem, dynamoDBSettings, client, deleteIfExists = true),
+          10.seconds)
+        Await.result(
+          CreateTables.createTimestampOffsetStoreTable(typedSystem, settings, client, deleteIfExists = true),
+          10.seconds)
+      } catch {
+        case NonFatal(ex) => throw new RuntimeException(s"Test db creation failed", ex)
+      }
     }
 
     super.beforeAll()
