@@ -33,6 +33,7 @@ import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Validation.Duplicat
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Validation.RejectedBacktrackingSeqNr
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Validation.RejectedSeqNr
 import akka.projection.dynamodb.internal.OffsetPidSeqNr
+import akka.projection.internal.ManagementState
 import com.typesafe.config.ConfigFactory
 import org.scalatest.wordspec.AnyWordSpecLike
 import org.slf4j.LoggerFactory
@@ -972,10 +973,29 @@ class DynamoDBTimestampOffsetStoreSpec
       TimestampOffset.toTimestampOffset(offsetStore3.getOffset().futureValue.get).timestamp shouldBe time4
     }
 
+    "read and save paused" in {
+      val projectionId = genRandomProjectionId()
+      val offsetStore = createOffsetStore(projectionId)
+
+      offsetStore.readManagementState().futureValue shouldBe None
+
+      offsetStore.savePaused(paused = true).futureValue
+      offsetStore.readManagementState().futureValue shouldBe Some(ManagementState(paused = true))
+
+      offsetStore.savePaused(paused = false).futureValue
+      offsetStore.readManagementState().futureValue shouldBe Some(ManagementState(paused = false))
+
+      val offset1 = TimestampOffset(clock.instant(), Map("p1" -> 3L))
+      offsetStore.saveOffset(OffsetPidSeqNr(offset1, "p1", 3L)).futureValue
+      offsetStore.savePaused(paused = true).futureValue
+      val readOffset1 = offsetStore.readOffset[TimestampOffsetBySlice]().futureValue
+      readOffset1.get.offsets(slice("p1")) shouldBe offset1
+      offsetStore.readManagementState().futureValue shouldBe Some(ManagementState(paused = true))
+    }
+
     // FIXME more tests, see r2dbc
     //    "set offset" in {
     //    "clear offset" in {
-    //    "read and save paused" in {
 
   }
 }

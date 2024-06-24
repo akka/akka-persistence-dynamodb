@@ -29,6 +29,7 @@ import akka.persistence.query.typed.scaladsl.EventTimestampQuery
 import akka.projection.BySlicesSourceProvider
 import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
+import akka.projection.internal.ManagementState
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
@@ -721,5 +722,11 @@ private[projection] class DynamoDBOffsetStore(
       case _ => None
     }
   }
+
+  def readManagementState(): Future[Option[ManagementState]] =
+    dao.readManagementState(minSlice)
+
+  def savePaused(paused: Boolean): Future[Done] =
+    dao.updateManagementState(minSlice, maxSlice, paused)
 
 }
