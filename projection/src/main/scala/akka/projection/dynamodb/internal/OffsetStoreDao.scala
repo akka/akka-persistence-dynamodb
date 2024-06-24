@@ -20,6 +20,7 @@ import akka.persistence.query.TimestampOffset
 import akka.projection.ProjectionId
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Record
+import akka.projection.internal.ManagementState
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
@@ -50,9 +51,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     val NameSlice = "name_slice"
     val Timestamp = "ts"
     val Seen = "seen"
+    val Paused = "paused"
 
-    // FIXME empty string not allowed
     val timestampBySlicePid = AttributeValue.fromS("_")
+    val managementStateBySlicePid = AttributeValue.fromS("_mgmt")
   }
 }
 
@@ -285,5 +287,85 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
 
     attributes
+  }
+
+  def readManagementState(slice: Int): Future[Option[ManagementState]] = {
+    import OffsetStoreDao.OffsetStoreAttributes._
+    val expressionAttributeValues =
+      Map(":nameSlice" -> AttributeValue.fromS(nameSlice(slice)), ":pid" -> managementStateBySlicePid).asJava
+
+    val req = QueryRequest.builder
+      .tableName(settings.timestampOffsetTable)
+      .consistentRead(true)
+      .keyConditionExpression(s"$NameSlice = :nameSlice AND $Pid = :pid")
+      .expressionAttributeValues(expressionAttributeValues)
+      .projectionExpression(s"$Paused")
+      .build()
+
+    client.query(req).asScala.map { response =>
+      val items = response.items()
+      if (items.isEmpty)
+        None
+      else {
+        val item = items.get(0)
+        val paused =
+          if (item.containsKey(Paused))
+            item.get(Paused).bool().booleanValue()
+          else
+            false
+
+        Some(ManagementState(paused))
+      }
+    }
+  }
+
+  def updateManagementState(minSlice: Int, maxSlice: Int, paused: Boolean): Future[Done] = {
+    import OffsetStoreDao.OffsetStoreAttributes._
+
+    def writeBatch(slices: Vector[Int]): Future[Done] = {
+      val writeItems =
+        slices.map { slice =>
+          val attributes = new JHashMap[String, AttributeValue]
+          attributes.put(NameSlice, AttributeValue.fromS(nameSlice(slice)))
+          attributes.put(Pid, managementStateBySlicePid)
+          attributes.put(Paused, AttributeValue.fromBool(paused))
+
+          WriteRequest.builder
+            .putRequest(
+              PutRequest
+                .builder()
+                .item(attributes)
+                .build())
+            .build()
+        }.asJava
+
+      val req = BatchWriteItemRequest
+        .builder()
+        .requestItems(Collections.singletonMap(settings.timestampOffsetTable, writeItems))
+        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+        .build()
+
+      val result = client.batchWriteItem(req).asScala
+
+      if (log.isDebugEnabled()) {
+        result.foreach { response =>
+          log.debug(
+            "Wrote management state for [{}] slices, consumed [{}] WCU",
+            slices.size,
+            response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
+        }
+      }
+      result.map(_ => Done)(ExecutionContexts.parasitic)
+    }
+
+    val sliceRange = (minSlice to maxSlice).toVector
+    if (sliceRange.size <= MaxBatchSize) {
+      writeBatch(sliceRange)
+    } else {
+      val batches = sliceRange.sliding(MaxBatchSize, MaxBatchSize)
+      Future
+        .sequence(batches.map(writeBatch))
+        .map(_ => Done)(ExecutionContexts.parasitic)
+    }
   }
 }
