@@ -13,7 +13,7 @@
     </logger>
 
     <logger name="akka.persistence.dynamodb" level="DEBUG" />
-    <logger name="software.amazon.awssdk" level="DEBUG" />
+    <logger name="software.amazon.awssdk.request" level="DEBUG" />
 
     <root level="INFO">
         <appender-ref ref="CapturingAppender"/>
