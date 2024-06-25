@@ -83,7 +83,10 @@ object ClientSettings {
   }
 
   def apply(config: Config): ClientSettings =
-    new ClientSettings(region = optString(config, "region"), local = LocalSettings.get(config))
+    new ClientSettings(
+      callTimeout = config.getDuration("call-timeout").toScala,
+      region = optString(config, "region"),
+      local = LocalSettings.get(config))
 
   private def optString(config: Config, path: String): Option[String] = {
     if (config.hasPath(path)) {
@@ -93,8 +96,11 @@ object ClientSettings {
   }
 }
 
-final class ClientSettings(val region: Option[String], val local: Option[ClientSettings.LocalSettings]) {
-  override def toString = s"ClientSettings(region=$region, local=$local)"
+final class ClientSettings(
+    val callTimeout: FiniteDuration,
+    val region: Option[String],
+    val local: Option[ClientSettings.LocalSettings]) {
+  override def toString = s"ClientSettings(${callTimeout.toCoarsest},$region,$local)"
 }
 
 /**

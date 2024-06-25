@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
+import scala.jdk.DurationConverters._
 
 import akka.Done
 import akka.actor.CoordinatedShutdown
@@ -18,6 +19,7 @@ import akka.actor.typed.ExtensionId
 import akka.persistence.dynamodb.ClientSettings
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
@@ -63,6 +65,11 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
     // FIXME more config
     var clientBuilder = DynamoDbAsyncClient.builder
       .httpClientBuilder(NettyNioAsyncHttpClient.builder)
+      .overrideConfiguration(
+        ClientOverrideConfiguration
+          .builder()
+          .apiCallTimeout(settings.callTimeout.toJava)
+          .build())
 
     // otherwise default region lookup
     settings.region.foreach { region =>
