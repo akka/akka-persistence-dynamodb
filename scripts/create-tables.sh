@@ -13,22 +13,22 @@ aws dynamodb create-table \
     --provisioned-throughput \
         ReadCapacityUnits=5,WriteCapacityUnits=5 \
     --global-secondary-indexes \
-            "[
-                {
-                    \"IndexName\": \"event_journal_slice_idx\",
-                    \"KeySchema\": [
-                        {\"AttributeName\":\"entity_type_slice\",\"KeyType\":\"HASH\"},
-                        {\"AttributeName\":\"ts\",\"KeyType\":\"RANGE\"}
-                    ],
-                    \"Projection\": {
-                        \"ProjectionType\":\"ALL\"
-                    },
-                    \"ProvisionedThroughput\": {
-                        \"ReadCapacityUnits\": 5,
-                        \"WriteCapacityUnits\": 5
-                    }
-                }
-            ]"
+      '[
+         {
+           "IndexName": "event_journal_slice_idx",
+           "KeySchema": [
+             {"AttributeName": "entity_type_slice", "KeyType": "HASH"},
+             {"AttributeName": "ts", "KeyType": "RANGE"}
+           ],
+           "Projection": {
+             "ProjectionType": "ALL"
+           },
+           "ProvisionedThroughput": {
+             "ReadCapacityUnits": 5,
+             "WriteCapacityUnits": 5
+           }
+        }
+      ]'
 
 
 aws dynamodb create-table \
