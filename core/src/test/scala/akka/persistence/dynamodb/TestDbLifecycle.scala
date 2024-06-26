@@ -39,14 +39,20 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
 
   lazy val client: DynamoDbAsyncClient = ClientProvider(typedSystem).clientFor(testConfigPath + ".client")
 
+  lazy val localDynamoDB = ClientProvider(typedSystem).clientSettingsFor(testConfigPath + ".client").local.isDefined
+
   private lazy val log = LoggerFactory.getLogger(getClass)
 
   override protected def beforeAll(): Unit = {
-    try {
-      Await.result(CreateTables.createJournalTable(typedSystem, settings, client, deleteIfExists = true), 10.seconds)
-      Await.result(CreateTables.createSnapshotsTable(typedSystem, settings, client, deleteIfExists = true), 10.seconds)
-    } catch {
-      case NonFatal(ex) => throw new RuntimeException(s"Test db creation failed", ex)
+    if (localDynamoDB) {
+      try {
+        Await.result(CreateTables.createJournalTable(typedSystem, settings, client, deleteIfExists = true), 10.seconds)
+        Await.result(
+          CreateTables.createSnapshotsTable(typedSystem, settings, client, deleteIfExists = true),
+          10.seconds)
+      } catch {
+        case NonFatal(ex) => throw new RuntimeException(s"Test db creation failed", ex)
+      }
     }
 
     super.beforeAll()

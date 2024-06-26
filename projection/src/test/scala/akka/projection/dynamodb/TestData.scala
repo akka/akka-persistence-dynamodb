@@ -17,11 +17,9 @@ import akka.projection.ProjectionId
 object TestData {
   private val start = 0L // could be something more unique, like currentTimeMillis
   private val pidCounter = new AtomicLong(start)
-  private val entityTypeCounter = new AtomicLong(start)
 }
 
 trait TestData {
-  import TestData.entityTypeCounter
   import TestData.pidCounter
 
   def typedSystem: ActorSystem[_]
@@ -30,7 +28,7 @@ trait TestData {
 
   def nextPid(): String = s"p-${pidCounter.incrementAndGet()}"
 
-  def nextEntityType(): String = s"TestEntity-${entityTypeCounter.incrementAndGet()}"
+  def nextEntityType(): String = s"TestEntity-${UUID.randomUUID()}"
 
   def nextPersistenceId(entityType: String): PersistenceId =
     PersistenceId.of(entityType, s"${pidCounter.incrementAndGet()}")
