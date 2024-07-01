@@ -5,6 +5,7 @@
 package akka.persistence.dynamodb.internal
 
 import java.time.Instant
+import java.util.concurrent.CompletionException
 import java.util.{ Map => JMap }
 
 import scala.concurrent.Future
@@ -14,6 +15,7 @@ import scala.jdk.FutureConverters._
 import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
+import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.stream.scaladsl.Source
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
@@ -73,44 +75,49 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
       val publisher = client.queryPaginator(reqBuilder.build())
 
-      Source.fromPublisher(publisher).mapConcat { response =>
-        response.items().iterator().asScala.map { item =>
-          if (includeDeleted && item.get(Deleted) != null) {
-            // deleted item
-            SerializedJournalItem(
-              persistenceId = persistenceId,
-              seqNr = item.get(SeqNr).n().toLong,
-              writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-              readTimestamp = InstantFactory.EmptyTimestamp,
-              payload = None,
-              serId = 0,
-              serManifest = "",
-              writerUuid = "",
-              tags = Set.empty,
-              metadata = None)
+      Source
+        .fromPublisher(publisher)
+        .mapConcat { response =>
+          response.items().iterator().asScala.map { item =>
+            if (includeDeleted && item.get(Deleted) != null) {
+              // deleted item
+              SerializedJournalItem(
+                persistenceId = persistenceId,
+                seqNr = item.get(SeqNr).n().toLong,
+                writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
+                readTimestamp = InstantFactory.EmptyTimestamp,
+                payload = None,
+                serId = 0,
+                serManifest = "",
+                writerUuid = "",
+                tags = Set.empty,
+                metadata = None)
 
-          } else {
-            val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
-              SerializedEventMetadata(
-                serId = item.get(MetaSerId).n().toInt,
-                serManifest = item.get(MetaSerManifest).s(),
-                payload = metaPayload.b().asByteArray())
+            } else {
+              val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
+                SerializedEventMetadata(
+                  serId = item.get(MetaSerId).n().toInt,
+                  serManifest = item.get(MetaSerManifest).s(),
+                  payload = metaPayload.b().asByteArray())
+              }
+
+              SerializedJournalItem(
+                persistenceId = persistenceId,
+                seqNr = item.get(SeqNr).n().toLong,
+                writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
+                readTimestamp = InstantFactory.EmptyTimestamp,
+                payload = Some(item.get(EventPayload).b().asByteArray()),
+                serId = item.get(EventSerId).n().toInt,
+                serManifest = item.get(EventSerManifest).s(),
+                writerUuid = item.get(Writer).s(),
+                tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
+                metadata = metadata)
             }
-
-            SerializedJournalItem(
-              persistenceId = persistenceId,
-              seqNr = item.get(SeqNr).n().toLong,
-              writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-              readTimestamp = InstantFactory.EmptyTimestamp,
-              payload = Some(item.get(EventPayload).b().asByteArray()),
-              serId = item.get(EventSerId).n().toInt,
-              serManifest = item.get(EventSerManifest).s(),
-              writerUuid = item.get(Writer).s(),
-              tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-              metadata = metadata)
           }
         }
-      }
+        .mapError { case c: CompletionException =>
+          c.getCause
+        }
     }
   }
 
@@ -155,25 +162,30 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
     val publisher = client.queryPaginator(req)
 
-    Source.fromPublisher(publisher).mapConcat { response =>
-      response.items().iterator().asScala.map { item =>
-        if (backtracking) {
-          SerializedJournalItem(
-            persistenceId = item.get(Pid).s(),
-            seqNr = item.get(SeqNr).n().toLong,
-            writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-            readTimestamp = InstantFactory.now(),
-            payload = None, // lazy loaded for backtracking
-            serId = item.get(EventSerId).n().toInt,
-            serManifest = "",
-            writerUuid = "", // not need in this query
-            tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-            metadata = None)
-        } else {
-          createSerializedJournalItem(item, includePayload = true)
+    Source
+      .fromPublisher(publisher)
+      .mapConcat { response =>
+        response.items().iterator().asScala.map { item =>
+          if (backtracking) {
+            SerializedJournalItem(
+              persistenceId = item.get(Pid).s(),
+              seqNr = item.get(SeqNr).n().toLong,
+              writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
+              readTimestamp = InstantFactory.now(),
+              payload = None, // lazy loaded for backtracking
+              serId = item.get(EventSerId).n().toInt,
+              serManifest = "",
+              writerUuid = "", // not need in this query
+              tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
+              metadata = None)
+          } else {
+            createSerializedJournalItem(item, includePayload = true)
+          }
         }
       }
-    }
+      .mapError { case c: CompletionException =>
+        c.getCause
+      }
   }
 
   private def createSerializedJournalItem(
@@ -215,15 +227,21 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       .projectionExpression(Timestamp)
       .build()
 
-    client.query(req).asScala.map { response =>
-      val items = response.items()
-      if (items.isEmpty)
-        None
-      else {
-        val timestampMicros = items.get(0).get(Timestamp).n().toLong
-        Some(InstantFactory.fromEpochMicros(timestampMicros))
+    client
+      .query(req)
+      .asScala
+      .map { response =>
+        val items = response.items()
+        if (items.isEmpty)
+          None
+        else {
+          val timestampMicros = items.get(0).get(Timestamp).n().toLong
+          Some(InstantFactory.fromEpochMicros(timestampMicros))
+        }
       }
-    }
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
   def loadEvent(persistenceId: String, seqNr: Long, includePayload: Boolean): Future[Option[SerializedJournalItem]] = {
@@ -244,13 +262,19 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       .projectionExpression(projectionExpression)
       .build()
 
-    client.query(req).asScala.map { response =>
-      val items = response.items()
-      if (items.isEmpty)
-        None
-      else
-        Some(createSerializedJournalItem(items.get(0), includePayload))
-    }
+    client
+      .query(req)
+      .asScala
+      .map { response =>
+        val items = response.items()
+        if (items.isEmpty)
+          None
+        else
+          Some(createSerializedJournalItem(items.get(0), includePayload))
+      }
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
 
   }
 

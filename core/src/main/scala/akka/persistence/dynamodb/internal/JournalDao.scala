@@ -4,6 +4,7 @@
 
 package akka.persistence.dynamodb.internal
 
+import java.util.concurrent.CompletionException
 import java.util.{ HashMap => JHashMap }
 
 import scala.concurrent.ExecutionContext
@@ -133,7 +134,11 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
         }
       }
-      result.map(_ => Done)(ExecutionContexts.parasitic)
+      result
+        .map(_ => Done)(ExecutionContexts.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
 
   }
@@ -162,6 +167,9 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       result.foreach(seqNr => log.debug("Highest sequence nr for persistenceId [{}]: [{}]", persistenceId, seqNr))
 
     result
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
   def readLowestSequenceNr(persistenceId: String): Future[Long] = {
@@ -188,6 +196,9 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       result.foreach(seqNr => log.debug("Lowest sequence nr for persistenceId [{}]: [{}]", persistenceId, seqNr))
 
     result
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
   def deleteEventsTo(persistenceId: String, toSequenceNr: Long, resetSequenceNumber: Boolean): Future[Unit] = {
@@ -250,7 +261,11 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
         }
       }
-      result.map(_ => ())(ExecutionContexts.parasitic)
+      result
+        .map(_ => ())(ExecutionContexts.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
 
     // TransactWriteItems has a limit of 100
@@ -270,11 +285,17 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       if (toSequenceNr == Long.MaxValue) readHighestSequenceNr(persistenceId)
       else Future.successful(toSequenceNr)
 
-    for {
-      fromSeqNr <- lowestSequenceNrForDelete
-      toSeqNr <- highestSeqNrForDelete
-      _ <- deleteInBatches(fromSeqNr, toSeqNr)
-    } yield ()
+    val result =
+      for {
+        fromSeqNr <- lowestSequenceNrForDelete
+        toSeqNr <- highestSeqNrForDelete
+        _ <- deleteInBatches(fromSeqNr, toSeqNr)
+      } yield ()
+
+    result
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
 }
