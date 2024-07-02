@@ -14,6 +14,7 @@ import scala.util.Success
 
 import akka.Done
 import akka.actor.typed.ActorSystem
+import akka.dispatch.ExecutionContexts
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
@@ -51,12 +52,24 @@ object CreateTables {
         .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
         .build()
 
-      client.createTable(req).asScala.map(_ => Done)
+      client
+        .createTable(req)
+        .asScala
+        .map(_ => Done)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
 
     def delete(): Future[Done] = {
       val req = DeleteTableRequest.builder().tableName(settings.timestampOffsetTable).build()
-      client.deleteTable(req).asScala.map(_ => Done)
+      client
+        .deleteTable(req)
+        .asScala
+        .map(_ => Done)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
 
     existingTable.transformWith {
@@ -67,7 +80,7 @@ object CreateTables {
       case Failure(exception: CompletionException) =>
         exception.getCause match {
           case _: ResourceNotFoundException => create()
-          case failure                      => Future.failed[Done](failure)
+          case cause                        => Future.failed[Done](cause)
         }
       case Failure(exc) =>
         Future.failed[Done](exc)

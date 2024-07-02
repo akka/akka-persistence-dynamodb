@@ -5,6 +5,7 @@
 package akka.projection.dynamodb.internal
 
 import java.util.Collections
+import java.util.concurrent.CompletionException
 import java.util.{ HashMap => JHashMap }
 
 import scala.concurrent.Future
@@ -86,19 +87,25 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       .projectionExpression(s"$Timestamp, $Seen")
       .build()
 
-    client.query(req).asScala.map { response =>
-      val items = response.items()
-      if (items.isEmpty)
-        None
-      else {
-        val item = items.get(0)
-        val timestampMicros = item.get(Timestamp).n().toLong
-        val timestamp = InstantFactory.fromEpochMicros(timestampMicros)
-        val seen = item.get(Seen).m().asScala.iterator.map { case (pid, attr) => pid -> attr.n().toLong }.toMap
-        val timestampOffset = TimestampOffset(timestamp, seen)
-        Some(timestampOffset)
+    client
+      .query(req)
+      .asScala
+      .map { response =>
+        val items = response.items()
+        if (items.isEmpty)
+          None
+        else {
+          val item = items.get(0)
+          val timestampMicros = item.get(Timestamp).n().toLong
+          val timestamp = InstantFactory.fromEpochMicros(timestampMicros)
+          val seen = item.get(Seen).m().asScala.iterator.map { case (pid, attr) => pid -> attr.n().toLong }.toMap
+          val timestampOffset = TimestampOffset(timestamp, seen)
+          Some(timestampOffset)
+        }
       }
-    }
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
   def storeTimestampOffsets(offsetsBySlice: Map[Int, TimestampOffset]): Future[Done] = {
@@ -150,7 +157,11 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
             response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
         }
       }
-      result.map(_ => Done)(ExecutionContexts.parasitic)
+      result
+        .map(_ => Done)(ExecutionContexts.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
 
     if (offsetsBySlice.size <= MaxBatchSize) {
@@ -160,6 +171,9 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       Future
         .sequence(batches.map(writeBatch))
         .map(_ => Done)(ExecutionContexts.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
   }
 
@@ -222,18 +236,24 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       .projectionExpression(s"$SeqNr, $Timestamp")
       .build()
 
-    client.query(req).asScala.map { response =>
-      val items = response.items()
-      if (items.isEmpty)
-        None
-      else {
-        val item = items.get(0)
-        val seqNr = item.get(SeqNr).n().toLong
-        val timestampMicros = item.get(Timestamp).n().toLong
-        val timestamp = InstantFactory.fromEpochMicros(timestampMicros)
-        Some(DynamoDBOffsetStore.Record(slice, pid, seqNr, timestamp))
+    client
+      .query(req)
+      .asScala
+      .map { response =>
+        val items = response.items()
+        if (items.isEmpty)
+          None
+        else {
+          val item = items.get(0)
+          val seqNr = item.get(SeqNr).n().toLong
+          val timestampMicros = item.get(Timestamp).n().toLong
+          val timestamp = InstantFactory.fromEpochMicros(timestampMicros)
+          Some(DynamoDBOffsetStore.Record(slice, pid, seqNr, timestamp))
+        }
       }
-    }
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
   def transactStoreSequenceNumbers(writeItems: Iterable[TransactWriteItem])(records: Seq[Record]): Future[Done] = {
@@ -273,7 +293,12 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       }
     }
 
-    result.map(_ => Done)(ExecutionContexts.parasitic)
+    result
+      .map(_ => Done)(ExecutionContexts.parasitic)
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
+
   }
 
   private def sequenceNumberAttributes(record: Record): JHashMap[String, AttributeValue] = {
@@ -302,21 +327,27 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       .projectionExpression(s"$Paused")
       .build()
 
-    client.query(req).asScala.map { response =>
-      val items = response.items()
-      if (items.isEmpty)
-        None
-      else {
-        val item = items.get(0)
-        val paused =
-          if (item.containsKey(Paused))
-            item.get(Paused).bool().booleanValue()
-          else
-            false
+    client
+      .query(req)
+      .asScala
+      .map { response =>
+        val items = response.items()
+        if (items.isEmpty)
+          None
+        else {
+          val item = items.get(0)
+          val paused =
+            if (item.containsKey(Paused))
+              item.get(Paused).bool().booleanValue()
+            else
+              false
 
-        Some(ManagementState(paused))
+          Some(ManagementState(paused))
+        }
       }
-    }
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
   def updateManagementState(minSlice: Int, maxSlice: Int, paused: Boolean): Future[Done] = {
@@ -355,7 +386,11 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
             response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
         }
       }
-      result.map(_ => Done)(ExecutionContexts.parasitic)
+      result
+        .map(_ => Done)(ExecutionContexts.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
 
     val sliceRange = (minSlice to maxSlice).toVector

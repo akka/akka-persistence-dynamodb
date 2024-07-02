@@ -73,39 +73,45 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
       }
     }
 
-    client.query(request).asScala.map { response =>
-      val items = response.items()
-      if (items.isEmpty) {
-        None
-      } else {
-        val item = response.items.get(0)
+    client
+      .query(request)
+      .asScala
+      .map { response =>
+        val items = response.items()
+        if (items.isEmpty) {
+          None
+        } else {
+          val item = response.items.get(0)
 
-        val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
-          SerializedSnapshotMetadata(
-            serId = item.get(MetaSerId).n().toInt,
-            serManifest = item.get(MetaSerManifest).s(),
-            payload = metaPayload.b().asByteArray())
+          val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
+            SerializedSnapshotMetadata(
+              serId = item.get(MetaSerId).n().toInt,
+              serManifest = item.get(MetaSerManifest).s(),
+              payload = metaPayload.b().asByteArray())
+          }
+
+          val snapshot = SerializedSnapshotItem(
+            persistenceId = item.get(Pid).s(),
+            seqNr = item.get(SeqNr).n().toLong,
+            writeTimestamp = Instant.ofEpochMilli(item.get(WriteTimestamp).n().toLong),
+            eventTimestamp = InstantFactory.fromEpochMicros(item.get(EventTimestamp).n().toLong),
+            payload = item.get(SnapshotPayload).b().asByteArray(),
+            serId = item.get(SnapshotSerId).n().toInt,
+            serManifest = item.get(SnapshotSerManifest).s(),
+            tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
+            metadata = metadata)
+
+          log.debug(
+            "Loaded snapshot for persistenceId [{}], consumed [{}] RCU",
+            persistenceId,
+            response.consumedCapacity.capacityUnits)
+
+          Some(snapshot)
         }
-
-        val snapshot = SerializedSnapshotItem(
-          persistenceId = item.get(Pid).s(),
-          seqNr = item.get(SeqNr).n().toLong,
-          writeTimestamp = Instant.ofEpochMilli(item.get(WriteTimestamp).n().toLong),
-          eventTimestamp = InstantFactory.fromEpochMicros(item.get(EventTimestamp).n().toLong),
-          payload = item.get(SnapshotPayload).b().asByteArray(),
-          serId = item.get(SnapshotSerId).n().toInt,
-          serManifest = item.get(SnapshotSerManifest).s(),
-          tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-          metadata = metadata)
-
-        log.debug(
-          "Loaded snapshot for persistenceId [{}], consumed [{}] RCU",
-          persistenceId,
-          response.consumedCapacity.capacityUnits)
-
-        Some(snapshot)
       }
-    }
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
   def store(snapshot: SerializedSnapshotItem): Future[Unit] = {
@@ -156,7 +162,11 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
       }
     }
 
-    result.map(_ => ())(ExecutionContexts.parasitic)
+    result
+      .map(_ => ())(ExecutionContexts.parasitic)
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
   }
 
   def delete(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Unit] = {
@@ -199,7 +209,7 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
         case e: CompletionException =>
           e.getCause match {
             case _: ConditionalCheckFailedException => ()
-            case failure                            => throw failure
+            case cause                              => throw cause
           }
       }(ExecutionContexts.parasitic)
   }

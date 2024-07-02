@@ -7,6 +7,7 @@ package akka.projection.dynamodb
 import java.time.Instant
 import java.time.{ Duration => JDuration }
 import java.util.UUID
+import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -30,6 +31,7 @@ import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorRef
 import akka.actor.typed.ActorSystem
+import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
 import akka.persistence.query.Offset
@@ -215,7 +217,13 @@ object DynamoDBTimestampOffsetProjectionSpec {
               AttributeDefinition.builder().attributeName(Attributes.Id).attributeType(ScalarAttributeType.S).build())
             .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
             .build()
-          client.createTable(request).asScala.map(_ => Done)
+          client
+            .createTable(request)
+            .asScala
+            .map(_ => Done)
+            .recoverWith { case c: CompletionException =>
+              Future.failed(c.getCause)
+            }(ExecutionContexts.parasitic)
       }
     }
 
@@ -236,6 +244,9 @@ object DynamoDBTimestampOffsetProjectionSpec {
             Some(ConcatStr(id, response.item.get(Attributes.Payload).s()))
           else None
         }
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
   }
 
