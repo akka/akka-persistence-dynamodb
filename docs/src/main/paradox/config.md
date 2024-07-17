@@ -54,3 +54,6 @@ Scala
 For queries and projection `SourceProvider` you would use `"second-dynamodb.query"` instead of the default
 @scala[`DynamoDBReadJournal.Identifier`]@java[`DynamoDBReadJournal.Identifier()`]
 (`"akka.persistence.dynamodb.query"`).
+
+For additional details on multiple plugin configuration for projections see the @ref:[Akka Projection DynamoDB
+docs](projection.md#multiple-plugins).

@@ -43,6 +43,7 @@ aws dynamodb create-table \
         ReadCapacityUnits=5,WriteCapacityUnits=5
 #create-snapshot-table
 
+#create-timestamp-offset-table
 aws dynamodb create-table \
     --table-name timestamp_offset \
     --attribute-definitions \
@@ -53,6 +54,7 @@ aws dynamodb create-table \
         AttributeName=pid,KeyType=RANGE \
     --provisioned-throughput \
         ReadCapacityUnits=5,WriteCapacityUnits=5
+#create-timestamp-offset-table
 
 aws dynamodb create-table \
     --table-name projection_spec \
