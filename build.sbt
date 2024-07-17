@@ -106,7 +106,7 @@ lazy val docs = project
   .in(file("docs"))
   .enablePlugins(AkkaParadoxPlugin, ParadoxSitePlugin, PreprocessPlugin, PublishRsyncPlugin)
   .disablePlugins(MimaPlugin, CiReleasePlugin)
-  .dependsOn(core % "compile;test->test")
+  .dependsOn(core % "compile;test->test", projection)
   .settings(common)
   .settings(dontPublish)
   .settings(
