@@ -1,5 +1,6 @@
 #!/bin/sh
 
+#create-event-journal-table
 aws dynamodb create-table \
     --table-name event_journal \
     --attribute-definitions \
@@ -29,8 +30,9 @@ aws dynamodb create-table \
            }
         }
       ]'
+#create-event-journal-table
 
-
+#create-snapshot-table
 aws dynamodb create-table \
     --table-name snapshot \
     --attribute-definitions \
@@ -39,6 +41,7 @@ aws dynamodb create-table \
         AttributeName=pid,KeyType=HASH \
     --provisioned-throughput \
         ReadCapacityUnits=5,WriteCapacityUnits=5
+#create-snapshot-table
 
 aws dynamodb create-table \
     --table-name timestamp_offset \

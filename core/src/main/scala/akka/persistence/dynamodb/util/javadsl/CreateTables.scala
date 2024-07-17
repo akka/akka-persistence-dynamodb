@@ -22,4 +22,10 @@ object CreateTables {
       deleteIfExists: Boolean): CompletionStage[Done] =
     scaladsl.CreateTables.createJournalTable(system, settings, client, deleteIfExists).asJava
 
+  def createSnapshotsTable(
+      system: ActorSystem[_],
+      settings: DynamoDBSettings,
+      client: DynamoDbAsyncClient,
+      deleteIfExists: Boolean): CompletionStage[Done] =
+    scaladsl.CreateTables.createSnapshotsTable(system, settings, client, deleteIfExists).asJava
 }

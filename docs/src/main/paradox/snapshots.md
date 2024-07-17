@@ -3,9 +3,25 @@
 The snapshot plugin enables storing and loading snapshots for
 @extref:[event sourced persistent actors](akka:typed/persistence.html).
 
-## Schema
+## Tables
 
-TODO not schema, but maybe table provisioning and such
+The snapshot plugin requires a snapshot table to be created in DynamoDB. The default table name is `snapshot` and this
+can be configured (see the @ref:[reference configuration](#reference-configuration) for all settings). The table should
+be created with the following attributes and key schema:
+
+| Attribute name | Attribute type | Key type |
+| -------------- | -------------- | -------- |
+| pid            | S (String)     | HASH     |
+
+Read capacity units should be based on expected entity recoveries. Write capacity units should be based on expected
+rates for persisting snapshots.
+
+An example `aws` CLI command for creating the snapshot table:
+
+@@snip [aws create snapshot table](/scripts/create-tables.sh) { #create-snapshot-table }
+
+For creating tables with DynamoDB local for testing, see the
+@ref:[CreateTables utility](getting-started.md#creating-tables-locally).
 
 ## Configuration
 
