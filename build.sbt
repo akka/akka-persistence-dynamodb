@@ -106,7 +106,7 @@ lazy val docs = project
   .in(file("docs"))
   .enablePlugins(AkkaParadoxPlugin, ParadoxSitePlugin, PreprocessPlugin, PublishRsyncPlugin)
   .disablePlugins(MimaPlugin, CiReleasePlugin)
-  .dependsOn(core)
+  .dependsOn(core % "compile;test->test")
   .settings(common)
   .settings(dontPublish)
   .settings(
@@ -117,9 +117,7 @@ lazy val docs = project
     Preprocess / siteSubdirName := s"api/akka-persistence-dynamodb/${projectInfoVersion.value}",
     Preprocess / sourceDirectory := (LocalRootProject / ScalaUnidoc / unidoc / target).value,
     Paradox / siteSubdirName := s"docs/akka-persistence-dynamodb/${projectInfoVersion.value}",
-    paradoxGroups := Map(
-      "Language" -> Seq("Java", "Scala"),
-      "Dialect" -> Seq("Postgres", "Yugabyte", "H2", "SQLServer")),
+    paradoxGroups := Map("Language" -> Seq("Java", "Scala")),
     Compile / paradoxProperties ++= Map(
       "project.url" -> "https://doc.akka.io/docs/akka-persistence-dynamodb/current/",
       "canonical.base_url" -> "https://doc.akka.io/docs/akka-persistence-dynamodb/current",

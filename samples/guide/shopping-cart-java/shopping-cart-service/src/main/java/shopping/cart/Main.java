@@ -80,6 +80,16 @@ public class Main {
     }
 
     try {
+      akka.persistence.dynamodb.util.javadsl.CreateTables.createSnapshotsTable(
+                      system, DynamoDBSettings.create(system), client, false)
+              .toCompletableFuture().get(10, TimeUnit.SECONDS);
+    } catch (Exception e) {
+      logger.info(e.toString());
+      // FIXME could be better error handling
+      // continue anyway, table may exist
+    }
+
+    try {
       akka.projection.dynamodb.javadsl.CreateTables.createTimestampOffsetStoreTable(
               system, DynamoDBProjectionSettings.create(system), client, false)
           .toCompletableFuture().get(10, TimeUnit.SECONDS);

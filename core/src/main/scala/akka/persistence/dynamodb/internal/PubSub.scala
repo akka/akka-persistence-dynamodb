@@ -88,7 +88,7 @@ import org.slf4j.LoggerFactory
           .find(_.contains(slice))
           .getOrElse(throw new IllegalArgumentException(s"Slice [$slice] not found in " +
           s"slice ranges [${sliceRanges.mkString(", ")}]")))
-    URLEncoder.encode(s"r2dbc-$entityType-${range.min}-${range.max}", StandardCharsets.UTF_8.name())
+    URLEncoder.encode(s"dynamodb-$entityType-${range.min}-${range.max}", StandardCharsets.UTF_8.name())
   }
 
   def publish(pr: PersistentRepr, timestamp: Instant): Unit = {

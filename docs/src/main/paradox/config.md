@@ -32,4 +32,25 @@ See @ref:[Query plugin configuration](query.md#configuration).
 
 ## Multiple plugins
 
-TODO see r2dbc docs
+To enable the DynamoDB plugins to be used by default, add the following lines to your `application.conf`:
+
+@@snip [default plugins](/docs/src/test/scala/docs/scaladsl/MultiPluginDocExample.scala) { #default-config }
+
+Note that all plugins have a shared root config section `akka.persistence.dynamodb`, which also contains the
+@ref:[DynamoDB client configuration](#dynamodb-client-configuration).
+
+You can use additional plugins with different configuration. For example, a second configuration could be defined:
+
+@@snip [second config](/docs/src/test/scala/docs/scaladsl/MultiPluginDocExample.scala) { #second-config }
+
+To use the additional plugin you would @scala[define]@java[override] the plugin id:
+
+Java
+: @@snip [with plugins](/docs/src/test/java/docs/javadsl/MultiPluginDocExample.java) { #with-plugins }
+
+Scala
+: @@snip [with plugins](/docs/src/test/scala/docs/scaladsl/MultiPluginDocExample.scala) { #with-plugins }
+
+For queries and projection `SourceProvider` you would use `"second-dynamodb.query"` instead of the default
+@scala[`DynamoDBReadJournal.Identifier`]@java[`DynamoDBReadJournal.Identifier()`]
+(`"akka.persistence.dynamodb.query"`).

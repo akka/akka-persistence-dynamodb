@@ -69,6 +69,10 @@ object Dependencies {
     TestDeps.logback,
     TestDeps.scalaTest)
 
-  val docs =
-    Seq(TestDeps.akkaPersistenceTyped)
+  val docs = Seq(
+    TestDeps.akkaPersistenceTyped,
+    TestDeps.akkaShardingTyped,
+    TestDeps.akkaJackson,
+    TestDeps.akkaTestkit,
+    TestDeps.scalaTest)
 }
