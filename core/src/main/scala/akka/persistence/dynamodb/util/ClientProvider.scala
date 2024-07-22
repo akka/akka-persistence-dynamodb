@@ -19,7 +19,9 @@ import akka.actor.typed.ExtensionId
 import akka.persistence.dynamodb.ClientSettings
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.core.CompressionConfiguration
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration
+import software.amazon.awssdk.core.retry.RetryPolicy
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
@@ -62,14 +64,46 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
   }
 
   private def createClient(settings: ClientSettings): DynamoDbAsyncClient = {
-    // FIXME more config
+    val httpClientBuilder = NettyNioAsyncHttpClient.builder
+      .maxConcurrency(settings.http.maxConcurrency)
+      .maxPendingConnectionAcquires(settings.http.maxPendingConnectionAcquires)
+      .readTimeout(settings.http.readTimeout.toJava)
+      .writeTimeout(settings.http.writeTimeout.toJava)
+      .connectionTimeout(settings.http.connectionTimeout.toJava)
+      .connectionAcquisitionTimeout(settings.http.connectionAcquisitionTimeout.toJava)
+      .connectionTimeToLive(settings.http.connectionTimeToLive.toJava)
+      .useIdleConnectionReaper(settings.http.useIdleConnectionReaper)
+      .connectionMaxIdleTime(settings.http.connectionMaxIdleTime.toJava)
+      .tlsNegotiationTimeout(settings.http.tlsNegotiationTimeout.toJava)
+      .tcpKeepAlive(settings.http.tcpKeepAlive)
+
+    val overrideConfiguration = {
+      val retryPolicy = settings.retry.fold(RetryPolicy.none()) { retrySettings =>
+        val builder = RetryPolicy.builder(retrySettings.mode)
+        retrySettings.numRetries.foreach(numRetries => builder.numRetries(numRetries))
+        builder.build()
+      }
+
+      val compressionConfiguration = CompressionConfiguration.builder
+        .requestCompressionEnabled(settings.compression.enabled)
+        .minimumCompressionThresholdInBytes(settings.compression.thresholdBytes)
+        .build()
+
+      var overrideConfigurationBuilder = ClientOverrideConfiguration.builder
+        .apiCallTimeout(settings.callTimeout.toJava)
+        .retryPolicy(retryPolicy)
+        .compressionConfiguration(compressionConfiguration)
+
+      settings.callAttemptTimeout.foreach { timeout =>
+        overrideConfigurationBuilder = overrideConfigurationBuilder.apiCallAttemptTimeout(timeout.toJava)
+      }
+
+      overrideConfigurationBuilder.build()
+    }
+
     var clientBuilder = DynamoDbAsyncClient.builder
-      .httpClientBuilder(NettyNioAsyncHttpClient.builder)
-      .overrideConfiguration(
-        ClientOverrideConfiguration
-          .builder()
-          .apiCallTimeout(settings.callTimeout.toJava)
-          .build())
+      .httpClientBuilder(httpClientBuilder)
+      .overrideConfiguration(overrideConfiguration)
 
     // otherwise default region lookup
     settings.region.foreach { region =>
