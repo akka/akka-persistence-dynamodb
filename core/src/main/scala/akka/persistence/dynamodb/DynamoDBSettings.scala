@@ -39,7 +39,9 @@ object DynamoDBSettings {
 
     val querySettings = new QuerySettings(config.getConfig("query"))
 
-    new DynamoDBSettings(journalTable, journalPublishEvents, snapshotTable, querySettings)
+    val cleanupSettings = new CleanupSettings(config.getConfig("cleanup"))
+
+    new DynamoDBSettings(journalTable, journalPublishEvents, snapshotTable, querySettings, cleanupSettings)
   }
 
   /**
@@ -54,7 +56,8 @@ final class DynamoDBSettings private (
     val journalTable: String,
     val journalPublishEvents: Boolean,
     val snapshotTable: String,
-    val querySettings: QuerySettings) {
+    val querySettings: QuerySettings,
+    val cleanupSettings: CleanupSettings) {
 
   val journalBySliceGsi: String = journalTable + "_slice_idx"
   val snapshotBySliceGsi: String = snapshotTable + "_slice_idx"
@@ -228,4 +231,12 @@ final class ClientSettings(
 final class PublishEventsDynamicSettings(config: Config) {
   val throughputThreshold: Int = config.getInt("throughput-threshold")
   val throughputCollectInterval: FiniteDuration = config.getDuration("throughput-collect-interval").toScala
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalStableApi
+final class CleanupSettings(config: Config) {
+  val logProgressEvery: Int = config.getInt("log-progress-every")
 }

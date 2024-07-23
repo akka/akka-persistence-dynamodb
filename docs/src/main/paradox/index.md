@@ -13,6 +13,7 @@ This Akka Persistence plugin allows for using Amazon DynamoDB as a backend for A
 * [Query Plugin](query.md)
 * [Projection](projection.md)
 * [Configuration](config.md)
+* [Database cleanup](cleanup.md)
 * [Contributing](contributing.md)
 
 @@@
