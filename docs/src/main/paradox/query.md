@@ -73,6 +73,26 @@ timestamp are ordered by sequence number.
 `currentEventsBySlices` doesn't perform backtracking queries, will not emit duplicates, and the event payload is always
 fully loaded.
 
+### eventsBySlicesStartingFromSnapshots
+
+The `eventsBySlicesStartingFromSnapshots` and `currentEventsBySlicesStartingFromSnapshots` queries are like the
+@ref:[eventsBySlices](#eventsbyslices) queries, but use snapshots as starting points to reduce the number of events
+that need to be loaded. This can be useful if a consumer starts from zero without any previously processed offsets, or
+if it has been disconnected for a long while and its offsets are far behind.
+
+These queries first load all snapshots with timestamps greater than or equal to the offset timestamp. There is at most
+one snapshot per persistenceId. The snapshots are transformed into events with the given `transformSnapshot` function.
+After emitting the snapshot events, the ordinary events with sequence numbers after the snapshots are emitted.
+
+To use the start-from-snapshot queries you must also enable configuration:
+
+```
+akka.persistence.dynamodb.query.start-from-snapshot.enabled = true
+```
+
+The @ref:[snapshot table](snapshots.md#tables) must be created with a global secondary index, to index snapshots by
+slice.
+
 ### Publish events for lower latency of eventsBySlices
 
 The `eventsBySlices` query polls the database periodically to find new events. By default, this interval is a few

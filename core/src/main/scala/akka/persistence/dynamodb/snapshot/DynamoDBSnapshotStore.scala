@@ -85,9 +85,8 @@ private[dynamodb] final class DynamoDBSnapshotStore(cfg: Config, cfgPath: String
       SerializedSnapshotMetadata(metaSerializer.identifier, metaManifest, serializedMeta)
     }
 
-    // TODO: support start from snapshot
     val correspondingEvent: Future[Option[SerializedJournalItem]] =
-      if (false) // if (settings.querySettings.startFromSnapshotEnabled)
+      if (settings.querySettings.startFromSnapshotEnabled)
         queryDao.loadEvent(metadata.persistenceId, metadata.sequenceNr, includePayload = false)
       else
         Future.successful(None)

@@ -37,10 +37,29 @@ aws dynamodb create-table \
     --table-name snapshot \
     --attribute-definitions \
         AttributeName=pid,AttributeType=S \
+        AttributeName=entity_type_slice,AttributeType=S \
+        AttributeName=event_timestamp,AttributeType=N \
     --key-schema \
         AttributeName=pid,KeyType=HASH \
     --provisioned-throughput \
         ReadCapacityUnits=5,WriteCapacityUnits=5
+    --global-secondary-indexes \
+      '[
+         {
+           "IndexName": "snapshot_slice_idx",
+           "KeySchema": [
+             {"AttributeName": "entity_type_slice", "KeyType": "HASH"},
+             {"AttributeName": "event_timestamp", "KeyType": "RANGE"}
+           ],
+           "Projection": {
+             "ProjectionType": "ALL"
+           },
+           "ProvisionedThroughput": {
+             "ReadCapacityUnits": 5,
+             "WriteCapacityUnits": 5
+           }
+        }
+      ]'
 #create-snapshot-table
 
 #create-timestamp-offset-table

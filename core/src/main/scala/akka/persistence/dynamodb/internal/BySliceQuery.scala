@@ -61,7 +61,7 @@ import org.slf4j.Logger
   trait SerializedItem {
     def persistenceId: String
     def seqNr: Long
-    def writeTimestamp: Instant
+    def eventTimestamp: Instant
     def readTimestamp: Instant
     def source: String
   }
@@ -346,7 +346,7 @@ import org.slf4j.Logger
       var currentTimestamp = timestampOffset.timestamp
       var currentSequenceNrs: Map[String, Long] = timestampOffset.seen
       item => {
-        if (item.writeTimestamp == currentTimestamp) {
+        if (item.eventTimestamp == currentTimestamp) {
           // has this already been seen?
           if (currentSequenceNrs.get(item.persistenceId).exists(_ >= item.seqNr)) {
             if (currentSequenceNrs.size >= settings.querySettings.bufferSize) {
@@ -362,14 +362,14 @@ import org.slf4j.Logger
           } else {
             currentSequenceNrs = currentSequenceNrs.updated(item.persistenceId, item.seqNr)
             val offset =
-              TimestampOffset(item.writeTimestamp, item.readTimestamp, currentSequenceNrs)
+              TimestampOffset(item.eventTimestamp, item.readTimestamp, currentSequenceNrs)
             createEnvelope(offset, item) :: Nil
           }
         } else {
           // ne timestamp, reset currentSequenceNrs
-          currentTimestamp = item.writeTimestamp
+          currentTimestamp = item.eventTimestamp
           currentSequenceNrs = Map(item.persistenceId -> item.seqNr)
-          val offset = TimestampOffset(item.writeTimestamp, item.readTimestamp, currentSequenceNrs)
+          val offset = TimestampOffset(item.eventTimestamp, item.readTimestamp, currentSequenceNrs)
           createEnvelope(offset, item) :: Nil
         }
       }

@@ -16,7 +16,20 @@ be created with the following attributes and key schema:
 Read capacity units should be based on expected entity recoveries. Write capacity units should be based on expected
 rates for persisting snapshots.
 
-An example `aws` CLI command for creating the snapshot table:
+If @ref:[start-from-snapshot queries](query.md#eventsbyslicesstartingfromsnapshots) are being used, then a global
+secondary index needs to be added to the snapshot table, to index snapshots by slice. The default name for the
+secondary index is `snapshot_slice_idx`. The following attribute definitions should be added to the snapshot table,
+with key schema for the snapshot slice index:
+
+| Attribute name    | Attribute type | Key type |
+| ----------------- | -------------- | -------- |
+| entity_type_slice | S (String)     | HASH     |
+| event_timestamp   | N (Number)     | RANGE    |
+
+Write capacity units for the index should be aligned with the snapshot table. Read capacity units should be based on
+expected queries.
+
+An example `aws` CLI command for creating the snapshot table and slice index:
 
 @@snip [aws create snapshot table](/scripts/create-tables.sh) { #create-snapshot-table }
 

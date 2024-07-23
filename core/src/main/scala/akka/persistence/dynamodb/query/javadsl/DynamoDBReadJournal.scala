@@ -21,8 +21,10 @@ import akka.persistence.query.Offset
 import akka.persistence.query.javadsl._
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.javadsl.CurrentEventsBySliceQuery
+import akka.persistence.query.typed.javadsl.CurrentEventsBySliceStartingFromSnapshotsQuery
 import akka.persistence.query.typed.javadsl.EventTimestampQuery
 import akka.persistence.query.typed.javadsl.EventsBySliceQuery
+import akka.persistence.query.typed.javadsl.EventsBySliceStartingFromSnapshotsQuery
 import akka.persistence.query.typed.javadsl.LoadEventQuery
 import akka.stream.javadsl.Source
 
@@ -34,6 +36,8 @@ final class DynamoDBReadJournal(delegate: scaladsl.DynamoDBReadJournal)
     extends ReadJournal
     with CurrentEventsBySliceQuery
     with EventsBySliceQuery
+    with CurrentEventsBySliceStartingFromSnapshotsQuery
+    with EventsBySliceStartingFromSnapshotsQuery
     with EventTimestampQuery
     with LoadEventQuery {
 
@@ -86,6 +90,50 @@ final class DynamoDBReadJournal(delegate: scaladsl.DynamoDBReadJournal)
       maxSlice: Int,
       offset: Offset): Source[EventEnvelope[Event], NotUsed] =
     delegate.eventsBySlices(entityType, minSlice, maxSlice, offset).asJava
+
+  /**
+   * Same as `currentEventsBySlices` but with the purpose to use snapshots as starting points and thereby reducing the
+   * number of events that have to be loaded. This can be useful if the consumer starts from zero without any previously
+   * processed offset or if it has been disconnected for a long while and its offset is far behind.
+   *
+   * First it loads all snapshots with timestamps greater than or equal to the offset timestamp. There is at most one
+   * snapshot per persistenceId. The snapshots are transformed to events with the given `transformSnapshot` function.
+   *
+   * After emitting the snapshot events the ordinary events with sequence numbers after the snapshots are emitted.
+   *
+   * To use `currentEventsBySlicesStartingFromSnapshots` you must enable configuration
+   * `akka.persistence.dynamodb.query.start-from-snapshot.enabled`.
+   */
+  override def currentEventsBySlicesStartingFromSnapshots[Snapshot, Event](
+      entityType: String,
+      minSlice: Int,
+      maxSlice: Int,
+      offset: Offset,
+      transformSnapshot: java.util.function.Function[Snapshot, Event]): Source[EventEnvelope[Event], NotUsed] =
+    delegate
+      .currentEventsBySlicesStartingFromSnapshots(entityType, minSlice, maxSlice, offset, transformSnapshot(_))
+      .asJava
+
+  /**
+   * Same as `eventsBySlices` but with the purpose to use snapshots as starting points and thereby reducing the number
+   * of events that have to be loaded. This can be useful if the consumer starts from zero without any previously
+   * processed offset or if it has been disconnected for a long while and its offset is far behind.
+   *
+   * First it loads all snapshots with timestamps greater than or equal to the offset timestamp. There is at most one
+   * snapshot per persistenceId. The snapshots are transformed to events with the given `transformSnapshot` function.
+   *
+   * After emitting the snapshot events the ordinary events with sequence numbers after the snapshots are emitted.
+   *
+   * To use `eventsBySlicesStartingFromSnapshots` you must enable configuration
+   * `akka.persistence.dynamodb.query.start-from-snapshot.enabled`.
+   */
+  override def eventsBySlicesStartingFromSnapshots[Snapshot, Event](
+      entityType: String,
+      minSlice: Int,
+      maxSlice: Int,
+      offset: Offset,
+      transformSnapshot: java.util.function.Function[Snapshot, Event]): Source[EventEnvelope[Event], NotUsed] =
+    delegate.eventsBySlicesStartingFromSnapshots(entityType, minSlice, maxSlice, offset, transformSnapshot(_)).asJava
 
   override def timestampOf(persistenceId: String, sequenceNr: Long): CompletionStage[Optional[Instant]] =
     delegate.timestampOf(persistenceId, sequenceNr).map(_.toJava)(ExecutionContexts.parasitic).asJava

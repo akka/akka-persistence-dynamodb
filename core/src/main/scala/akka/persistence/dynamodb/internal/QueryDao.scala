@@ -130,62 +130,68 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       backtracking: Boolean): Source[SerializedJournalItem, NotUsed] = {
     import JournalAttributes._
 
-    val entityTypeSlice = s"$entityType-$slice"
+    if (toTimestamp.isBefore(fromTimestamp)) {
+      // possible with start-from-snapshot queries
+      Source.empty
+    } else {
+      val entityTypeSlice = s"$entityType-$slice"
 
-    // FIXME we could look into using response.lastEvaluatedKey and use that as exclusiveStartKey in query,
-    // instead of the timestamp for subsequent queries. Not sure how that works with GSI where the
-    // sort key isn't unique (same timestamp). If DynamoDB can keep track of the exact offset and
-    // not emit duplicates would not need the seen Map and that filter.
-    // Well, we still need it for the first query because we want the external offset to be TimestampOffset
-    // and that can include seen Map.
+      // FIXME we could look into using response.lastEvaluatedKey and use that as exclusiveStartKey in query,
+      // instead of the timestamp for subsequent queries. Not sure how that works with GSI where the
+      // sort key isn't unique (same timestamp). If DynamoDB can keep track of the exact offset and
+      // not emit duplicates would not need the seen Map and that filter.
+      // Well, we still need it for the first query because we want the external offset to be TimestampOffset
+      // and that can include seen Map.
 
-    val expressionAttributeValues =
-      Map(
-        ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
-        ":from" -> AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString),
-        ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString)).asJava
+      val expressionAttributeValues =
+        Map(
+          ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
+          ":from" -> AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString),
+          ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString)).asJava
 
-    val projectionExpression = if (backtracking) bySliceProjectionExpression else bySliceWithPayloadProjectionExpression
+      val projectionExpression =
+        if (backtracking) bySliceProjectionExpression else bySliceWithPayloadProjectionExpression
 
-    val req = QueryRequest.builder
-      .tableName(settings.journalTable)
-      .indexName(settings.journalBySliceGsi)
-      .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $Timestamp BETWEEN :from AND :to")
-      .filterExpression(s"attribute_not_exists($Deleted)")
-      .expressionAttributeValues(expressionAttributeValues)
-      .projectionExpression(projectionExpression)
-      // Limit won't limit the number of results you get with the paginator.
-      // It only limits the number of results in each page
-      // Limit is ignored by local DynamoDB.
-      .limit(settings.querySettings.bufferSize)
-      .build()
+      val req = QueryRequest.builder
+        .tableName(settings.journalTable)
+        .indexName(settings.journalBySliceGsi)
+        .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $Timestamp BETWEEN :from AND :to")
+        .filterExpression(s"attribute_not_exists($Deleted)")
+        .expressionAttributeValues(expressionAttributeValues)
+        .projectionExpression(projectionExpression)
+        // Limit won't limit the number of results you get with the paginator.
+        // It only limits the number of results in each page
+        // Limit is ignored by local DynamoDB.
+        .limit(settings.querySettings.bufferSize)
+        .build()
 
-    val publisher = client.queryPaginator(req)
+      val publisher = client.queryPaginator(req)
 
-    Source
-      .fromPublisher(publisher)
-      .mapConcat { response =>
-        response.items().iterator().asScala.map { item =>
-          if (backtracking) {
-            SerializedJournalItem(
-              persistenceId = item.get(Pid).s(),
-              seqNr = item.get(SeqNr).n().toLong,
-              writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-              readTimestamp = InstantFactory.now(),
-              payload = None, // lazy loaded for backtracking
-              serId = item.get(EventSerId).n().toInt,
-              serManifest = "",
-              writerUuid = "", // not need in this query
-              tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-              metadata = None)
-          } else {
-            createSerializedJournalItem(item, includePayload = true)
+      Source
+        .fromPublisher(publisher)
+        .mapConcat { response =>
+          response.items().iterator().asScala.map { item =>
+            if (backtracking) {
+              SerializedJournalItem(
+                persistenceId = item.get(Pid).s(),
+                seqNr = item.get(SeqNr).n().toLong,
+                writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
+                readTimestamp = InstantFactory.now(),
+                payload = None, // lazy loaded for backtracking
+                serId = item.get(EventSerId).n().toInt,
+                serManifest = "",
+                writerUuid = "", // not need in this query
+                tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
+                metadata = None)
+            } else {
+              createSerializedJournalItem(item, includePayload = true)
+            }
           }
         }
-      }
-      .mapError { case c: CompletionException =>
-        c.getCause
-      }
+        .mapError { case c: CompletionException =>
+          c.getCause
+        }
+    }
   }
 
   private def createSerializedJournalItem(

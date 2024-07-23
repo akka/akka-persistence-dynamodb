@@ -14,6 +14,7 @@ import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.ReplicaId
 import akka.persistence.typed.ReplicationId
+import akka.persistence.typed.SnapshotCompleted
 import akka.persistence.typed.scaladsl.EventSourcedBehavior
 import akka.persistence.typed.scaladsl.ReplicatedEventSourcing
 
@@ -103,6 +104,30 @@ object TestActors {
           }
         },
         (state, event) => if (state == "") event.toString else s"$state|$event")
+    }
+
+    def withSnapshotAck(pid: PersistenceId, tags: Set[String], snapshotProbe: ActorRef[Long]): Behavior[Command] =
+      withSnapshotAck(pid, "", "", tags, snapshotProbe)
+
+    def withSnapshotAck(
+        pid: PersistenceId,
+        journalPluginId: String,
+        snapshotPluginId: String,
+        tags: Set[String],
+        snapshotProbe: ActorRef[Long]): Behavior[Command] = {
+      Behaviors.setup { context =>
+        eventSourcedBehavior(pid, context)
+          .withJournalPluginId(journalPluginId)
+          .withSnapshotPluginId(snapshotPluginId)
+          .snapshotWhen { case (_, event, _) =>
+            event.toString.contains("snap")
+          }
+          .withTagger(_ => tags)
+          .receiveSignal { case (_, SnapshotCompleted(metadata)) =>
+            snapshotProbe ! metadata.sequenceNr
+            Behaviors.same
+          }
+      }
     }
   }
 
