@@ -8,8 +8,8 @@ snapshot](./query.md#eventsbyslicesstartingfromsnapshots), and then events can b
 
 In some cases keeping all events is not possible, or data must be removed for regulatory reasons, such as compliance
 with GDPR. `EventSourcedBehavior`s can also automatically
-@extref:[delete events](akka:typed/persistence-snapshot.html#event-deletion). Snapshotting is useful even if events
-aren't deleted as it speeds up recovery.
+@extref:[delete events on snapshot](akka:typed/persistence-snapshot.html#event-deletion). Snapshotting is useful even
+if events aren't deleted as it speeds up recovery.
 
 Deleting all events immediately when an entity has reached its terminal deleted state would have the consequence that
 Projections may not have consumed all previous events yet and will not be notified of the deleted event. Instead, it's
@@ -36,3 +36,9 @@ stored events have been deleted. Deleting events before snapshot can still be us
 
 <!-- TODO: current persistence ids queries not currently supported. -->
 <!-- The cleanup tool can be combined with the @ref[query plugin](./query.md) which has a query to get all persistence ids. -->
+
+## Reference configuration
+
+The following can be overridden in your `application.conf` for cleanup specific settings:
+
+@@snip [reference.conf](/core/src/main/resources/reference.conf) { #cleanup-settings }
