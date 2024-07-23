@@ -73,6 +73,13 @@ timestamp are ordered by sequence number.
 `currentEventsBySlices` doesn't perform backtracking queries, will not emit duplicates, and the event payload is always
 fully loaded.
 
+@@@ note
+
+The @ref:[journal table](journal.md#tables) must be created with a global secondary index to @ref:[index events
+by slice](journal.md#indexes).
+
+@@@
+
 ### eventsBySlicesStartingFromSnapshots
 
 The `eventsBySlicesStartingFromSnapshots` and `currentEventsBySlicesStartingFromSnapshots` queries are like the
@@ -90,8 +97,12 @@ To use the start-from-snapshot queries you must also enable configuration:
 akka.persistence.dynamodb.query.start-from-snapshot.enabled = true
 ```
 
-The @ref:[snapshot table](snapshots.md#tables) must be created with a global secondary index, to index snapshots by
-slice.
+@@@ note
+
+The @ref:[snapshot table](snapshots.md#tables) must be created with a global secondary index to @ref:[index snapshots
+by slice](snapshots.md#indexes).
+
+@@@
 
 ### Publish events for lower latency of eventsBySlices
 

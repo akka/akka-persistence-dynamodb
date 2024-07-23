@@ -17,6 +17,12 @@ table should be created with the following attributes and key schema:
 Read capacity units should be based on expected entity recoveries. Write capacity units should be based on expected
 rates for persisting events.
 
+An example `aws` CLI command for creating the event journal table:
+
+@@snip [aws create event journal table](/scripts/create-tables.sh) { #create-event-journal-table }
+
+### Indexes
+
 If @ref:[queries](query.md) or @ref:[projections](projection.md) are being used, then a global secondary index needs to
 be added to the event journal table, to index events by slice. The default name for the secondary index is
 `event_journal_slice_idx`. The following attribute definitions should be added to the event journal table, with key
@@ -32,7 +38,9 @@ expected queries.
 
 An example `aws` CLI command for creating the event journal table and slice index:
 
-@@snip [aws create event journal table](/scripts/create-tables.sh) { #create-event-journal-table }
+@@snip [aws create event journal table](/scripts/create-tables.sh) { #create-event-journal-table-with-slice-index }
+
+### Creating tables locally
 
 For creating tables with DynamoDB local for testing, see the
 @ref:[CreateTables utility](getting-started.md#creating-tables-locally).
