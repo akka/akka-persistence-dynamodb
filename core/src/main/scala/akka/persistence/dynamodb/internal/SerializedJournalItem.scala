@@ -21,6 +21,8 @@ final case class SerializedJournalItem(
     metadata: Option[SerializedEventMetadata])
     extends BySliceQuery.SerializedItem {
 
+  override def eventTimestamp: Instant = writeTimestamp
+
   override def source: String =
     if (payload.isDefined) EnvelopeOrigin.SourceQuery else EnvelopeOrigin.SourceBacktracking
 }

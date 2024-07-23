@@ -109,14 +109,28 @@ object CreateTables {
       client.describeTable(DescribeTableRequest.builder().tableName(settings.snapshotTable).build()).asScala
 
     def create(): Future[Done] = {
+      val sliceIndex = GlobalSecondaryIndex
+        .builder()
+        .indexName(settings.snapshotBySliceGsi)
+        .keySchema(
+          KeySchemaElement.builder().attributeName(EntityTypeSlice).keyType(KeyType.HASH).build(),
+          KeySchemaElement.builder().attributeName(EventTimestamp).keyType(KeyType.RANGE).build())
+        .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
+        // FIXME config
+        .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
+        .build()
+
       val request = CreateTableRequest
         .builder()
         .tableName(settings.snapshotTable)
         .keySchema(KeySchemaElement.builder().attributeName(Pid).keyType(KeyType.HASH).build())
         .attributeDefinitions(
-          AttributeDefinition.builder().attributeName(Pid).attributeType(ScalarAttributeType.S).build())
+          AttributeDefinition.builder().attributeName(Pid).attributeType(ScalarAttributeType.S).build(),
+          AttributeDefinition.builder().attributeName(EntityTypeSlice).attributeType(ScalarAttributeType.S).build(),
+          AttributeDefinition.builder().attributeName(EventTimestamp).attributeType(ScalarAttributeType.N).build())
         // FIXME config
         .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
+        .globalSecondaryIndexes(sliceIndex)
         .build()
 
       client

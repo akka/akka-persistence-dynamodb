@@ -7,12 +7,14 @@ package akka.persistence.dynamodb.internal
 import java.time.Instant
 import java.util.concurrent.CompletionException
 import java.util.{ HashMap => JHashMap }
+import java.util.{ Map => JMap }
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
 
+import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
 import akka.dispatch.ExecutionContexts
@@ -20,6 +22,7 @@ import akka.persistence.Persistence
 import akka.persistence.SnapshotSelectionCriteria
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
+import akka.stream.scaladsl.Source
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.SdkBytes
@@ -44,7 +47,8 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
 @InternalApi private[akka] class SnapshotDao(
     system: ActorSystem[_],
     settings: DynamoDBSettings,
-    client: DynamoDbAsyncClient) {
+    client: DynamoDbAsyncClient)
+    extends BySliceQuery.Dao[SerializedSnapshotItem] {
   import SnapshotDao._
 
   private val persistenceExt: Persistence = Persistence(system)
@@ -82,24 +86,7 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
           None
         } else {
           val item = response.items.get(0)
-
-          val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
-            SerializedSnapshotMetadata(
-              serId = item.get(MetaSerId).n().toInt,
-              serManifest = item.get(MetaSerManifest).s(),
-              payload = metaPayload.b().asByteArray())
-          }
-
-          val snapshot = SerializedSnapshotItem(
-            persistenceId = item.get(Pid).s(),
-            seqNr = item.get(SeqNr).n().toLong,
-            writeTimestamp = Instant.ofEpochMilli(item.get(WriteTimestamp).n().toLong),
-            eventTimestamp = InstantFactory.fromEpochMicros(item.get(EventTimestamp).n().toLong),
-            payload = item.get(SnapshotPayload).b().asByteArray(),
-            serId = item.get(SnapshotSerId).n().toInt,
-            serManifest = item.get(SnapshotSerManifest).s(),
-            tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-            metadata = metadata)
+          val snapshot = createSerializedSnapshotItem(item)
 
           log.debug(
             "Loaded snapshot for persistenceId [{}], consumed [{}] RCU",
@@ -212,6 +199,68 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
             case cause                              => throw cause
           }
       }(ExecutionContexts.parasitic)
+  }
+
+  // Used from `BySliceQuery` (only if settings.querySettings.startFromSnapshotEnabled).
+  override def itemsBySlice(
+      entityType: String,
+      slice: Int,
+      fromTimestamp: Instant,
+      toTimestamp: Instant,
+      backtracking: Boolean): Source[SerializedSnapshotItem, NotUsed] = {
+    import SnapshotAttributes._
+
+    val entityTypeSlice = s"$entityType-$slice"
+
+    val expressionAttributeValues =
+      Map(
+        ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
+        ":from" -> AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString),
+        ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString)).asJava
+
+    val req = QueryRequest.builder
+      .tableName(settings.snapshotTable)
+      .indexName(settings.snapshotBySliceGsi)
+      .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $EventTimestamp BETWEEN :from AND :to")
+      .expressionAttributeValues(expressionAttributeValues)
+      // Limit won't limit the number of results you get with the paginator.
+      // It only limits the number of results in each page
+      // Limit is ignored by local DynamoDB.
+      .limit(settings.querySettings.bufferSize)
+      .build()
+
+    val publisher = client.queryPaginator(req)
+
+    Source
+      .fromPublisher(publisher)
+      .mapConcat { response =>
+        response.items().iterator().asScala.map(createSerializedSnapshotItem)
+      }
+      .mapError { case c: CompletionException =>
+        c.getCause
+      }
+  }
+
+  private def createSerializedSnapshotItem(item: JMap[String, AttributeValue]): SerializedSnapshotItem = {
+    import SnapshotAttributes._
+
+    val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
+      SerializedSnapshotMetadata(
+        serId = item.get(MetaSerId).n().toInt,
+        serManifest = item.get(MetaSerManifest).s(),
+        payload = metaPayload.b().asByteArray())
+    }
+
+    SerializedSnapshotItem(
+      persistenceId = item.get(Pid).s(),
+      seqNr = item.get(SeqNr).n().toLong,
+      writeTimestamp = Instant.ofEpochMilli(item.get(WriteTimestamp).n().toLong),
+      eventTimestamp = InstantFactory.fromEpochMicros(item.get(EventTimestamp).n().toLong),
+      payload = item.get(SnapshotPayload).b().asByteArray(),
+      serId = item.get(SnapshotSerId).n().toInt,
+      serManifest = item.get(SnapshotSerManifest).s(),
+      tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
+      metadata = metadata)
   }
 
   // optional condition expression and attribute values, based on selection criteria

@@ -57,7 +57,7 @@ final class DynamoDBSettings private (
     val querySettings: QuerySettings) {
 
   val journalBySliceGsi: String = journalTable + "_slice_idx"
-
+  val snapshotBySliceGsi: String = snapshotTable + "_slice_idx"
 }
 
 final class QuerySettings(config: Config) {
@@ -68,6 +68,7 @@ final class QuerySettings(config: Config) {
   val backtrackingBehindCurrentTime: FiniteDuration = config.getDuration("backtracking.behind-current-time").toScala
   val bufferSize: Int = config.getInt("buffer-size")
   val deduplicateCapacity: Int = config.getInt("deduplicate-capacity")
+  val startFromSnapshotEnabled: Boolean = config.getBoolean("start-from-snapshot.enabled")
 }
 
 object ClientSettings {

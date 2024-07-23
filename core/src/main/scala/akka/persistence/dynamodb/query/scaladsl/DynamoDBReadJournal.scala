@@ -24,6 +24,9 @@ import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.dynamodb.internal.PubSub
 import akka.persistence.dynamodb.internal.QueryDao
 import akka.persistence.dynamodb.internal.SerializedJournalItem
+import akka.persistence.dynamodb.internal.SerializedSnapshotItem
+import akka.persistence.dynamodb.internal.SnapshotDao
+import akka.persistence.dynamodb.internal.StartingFromSnapshotStage
 import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
 import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.query.NoOffset
@@ -32,8 +35,10 @@ import akka.persistence.query.TimestampOffset
 import akka.persistence.query.scaladsl._
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.CurrentEventsBySliceQuery
+import akka.persistence.query.typed.scaladsl.CurrentEventsBySliceStartingFromSnapshotsQuery
 import akka.persistence.query.typed.scaladsl.EventTimestampQuery
 import akka.persistence.query.typed.scaladsl.EventsBySliceQuery
+import akka.persistence.query.typed.scaladsl.EventsBySliceStartingFromSnapshotsQuery
 import akka.persistence.query.typed.scaladsl.LoadEventQuery
 import akka.persistence.typed.PersistenceId
 import akka.serialization.SerializationExtension
@@ -51,6 +56,8 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     extends ReadJournal
     with CurrentEventsBySliceQuery
     with EventsBySliceQuery
+    with CurrentEventsBySliceStartingFromSnapshotsQuery
+    with EventsBySliceStartingFromSnapshotsQuery
     with EventTimestampQuery
     with LoadEventQuery {
 
@@ -66,6 +73,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   private val client = ClientProvider(typedSystem).clientFor(sharedConfigPath + ".client")
   private val queryDao = new QueryDao(typedSystem, settings, client)
+  private val snapshotDao = new SnapshotDao(typedSystem, settings, client)
 
   private val filteredPayloadSerId = SerializationExtension(system).findSerializerFor(FilteredPayload).identifier
 
@@ -79,6 +87,38 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   private def bySlice[Event]: BySliceQuery[SerializedJournalItem, EventEnvelope[Event]] =
     _bySlice.asInstanceOf[BySliceQuery[SerializedJournalItem, EventEnvelope[Event]]]
+
+  private def snapshotsBySlice[Snapshot, Event](
+      transformSnapshot: Snapshot => Event): BySliceQuery[SerializedSnapshotItem, EventEnvelope[Event]] = {
+    val createEnvelope: (TimestampOffset, SerializedSnapshotItem) => EventEnvelope[Event] =
+      (offset, row) => createEnvelopeFromSnapshot(row, offset, transformSnapshot)
+
+    val extractOffset: EventEnvelope[Event] => TimestampOffset = env => env.offset.asInstanceOf[TimestampOffset]
+
+    new BySliceQuery(snapshotDao, createEnvelope, extractOffset, settings, log)(typedSystem.executionContext)
+  }
+
+  private def createEnvelopeFromSnapshot[Snapshot, Event](
+      item: SerializedSnapshotItem,
+      offset: TimestampOffset,
+      transformSnapshot: Snapshot => Event): EventEnvelope[Event] = {
+    val snapshot = serialization.deserialize(item.payload, item.serId, item.serManifest).get
+    val event = transformSnapshot(snapshot.asInstanceOf[Snapshot])
+    val metadata = item.metadata.map(meta => serialization.deserialize(meta.payload, meta.serId, meta.serManifest).get)
+
+    new EventEnvelope[Event](
+      offset,
+      item.persistenceId,
+      item.seqNr,
+      Option(event),
+      item.eventTimestamp.toEpochMilli,
+      metadata,
+      PersistenceId.extractEntityType(item.persistenceId),
+      persistenceExt.sliceForPersistenceId(item.persistenceId),
+      filtered = false,
+      source = EnvelopeOrigin.SourceSnapshot,
+      tags = item.tags)
+  }
 
   private def deserializePayload[Event](item: SerializedJournalItem): Option[Event] =
     item.payload.map(payload =>
@@ -173,7 +213,6 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
 
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-
       bySlice[Event].liveBySlice("eventsBySlices", entityType, slice, sliceStartOffset(slice, offset))
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
@@ -192,6 +231,165 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       case _                                     => offset
     }
   }
+
+  /**
+   * Same as `currentEventsBySlices` but with the purpose to use snapshots as starting points and thereby reducing the
+   * number of events that have to be loaded. This can be useful if the consumer starts from zero without any previously
+   * processed offset or if it has been disconnected for a long while and its offset is far behind.
+   *
+   * First it loads all snapshots with timestamps greater than or equal to the offset timestamp. There is at most one
+   * snapshot per persistenceId. The snapshots are transformed to events with the given `transformSnapshot` function.
+   *
+   * After emitting the snapshot events the ordinary events with sequence numbers after the snapshots are emitted.
+   *
+   * To use `currentEventsBySlicesStartingFromSnapshots` you must enable configuration
+   * `akka.persistence.dynamodb.query.start-from-snapshot.enabled`.
+   */
+  override def currentEventsBySlicesStartingFromSnapshots[Snapshot, Event](
+      entityType: String,
+      minSlice: Int,
+      maxSlice: Int,
+      offset: Offset,
+      transformSnapshot: Snapshot => Event): Source[EventEnvelope[Event], NotUsed] = {
+    checkStartFromSnapshotEnabled("currentEventsBySlicesStartingFromSnapshots")
+
+    val bySliceQueries = (minSlice to maxSlice).map { slice =>
+      val timestampOffset = TimestampOffset.toTimestampOffset(sliceStartOffset(slice, offset))
+
+      val snapshotSource = snapshotsBySlice[Snapshot, Event](transformSnapshot)
+        .currentBySlice("currentSnapshotsBySlice", entityType, slice, timestampOffset)
+
+      Source.fromGraph(
+        new StartingFromSnapshotStage[Event](
+          snapshotSource,
+          { snapshotOffsets =>
+            val initOffset =
+              if (timestampOffset == TimestampOffset.Zero && snapshotOffsets.nonEmpty) {
+                val minTimestamp = snapshotOffsets.valuesIterator.minBy { case (_, timestamp) => timestamp }._2
+                TimestampOffset(minTimestamp, Map.empty)
+              } else {
+                // don't adjust because then there is a risk that there was no found snapshot for a persistenceId
+                // but there can still be events between the given `offset` parameter and the min timestamp of the
+                // snapshots and those would then be missed
+                offset
+              }
+
+            log.debug(
+              "currentEventsBySlicesStartingFromSnapshots for slice [{}] and initOffset [{}] with [{}] snapshots",
+              slice,
+              initOffset,
+              snapshotOffsets.size)
+
+            bySlice[Event].currentBySlice(
+              "currentEventsBySlice",
+              entityType,
+              slice,
+              initOffset,
+              filterEventsBeforeSnapshots(snapshotOffsets, backtrackingEnabled = false))
+          }))
+    }
+
+    require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
+
+    bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
+  }
+
+  /**
+   * Same as `eventsBySlices` but with the purpose to use snapshots as starting points and thereby reducing the number
+   * of events that have to be loaded. This can be useful if the consumer starts from zero without any previously
+   * processed offset or if it has been disconnected for a long while and its offset is far behind.
+   *
+   * First it loads all snapshots with timestamps greater than or equal to the offset timestamp. There is at most one
+   * snapshot per persistenceId. The snapshots are transformed to events with the given `transformSnapshot` function.
+   *
+   * After emitting the snapshot events the ordinary events with sequence numbers after the snapshots are emitted.
+   *
+   * To use `eventsBySlicesStartingFromSnapshots` you must enable configuration
+   * `akka.persistence.dynamodb.query.start-from-snapshot.enabled`.
+   */
+  override def eventsBySlicesStartingFromSnapshots[Snapshot, Event](
+      entityType: String,
+      minSlice: Int,
+      maxSlice: Int,
+      offset: Offset,
+      transformSnapshot: Snapshot => Event): Source[EventEnvelope[Event], NotUsed] = {
+    checkStartFromSnapshotEnabled("eventsBySlicesStartingFromSnapshots")
+
+    val bySliceQueries = (minSlice to maxSlice).map { slice =>
+      val timestampOffset = TimestampOffset.toTimestampOffset(sliceStartOffset(slice, offset))
+
+      val snapshotSource = snapshotsBySlice[Snapshot, Event](transformSnapshot)
+        .currentBySlice("snapshotsBySlice", entityType, slice, timestampOffset)
+
+      Source.fromGraph(
+        new StartingFromSnapshotStage[Event](
+          snapshotSource,
+          { snapshotOffsets =>
+            val initOffset =
+              if (timestampOffset == TimestampOffset.Zero && snapshotOffsets.nonEmpty) {
+                val minTimestamp = snapshotOffsets.valuesIterator.minBy { case (_, timestamp) => timestamp }._2
+                TimestampOffset(minTimestamp, Map.empty)
+              } else {
+                // don't adjust because then there is a risk that there was no found snapshot for a persistenceId
+                // but there can still be events between the given `offset` parameter and the min timestamp of the
+                // snapshots and those would then be missed
+                offset
+              }
+
+            log.debug(
+              "eventsBySlicesStartingFromSnapshots for slice [{}] and initOffset [{}] with [{}] snapshots",
+              slice,
+              initOffset,
+              snapshotOffsets.size)
+
+            bySlice[Event].liveBySlice(
+              "eventsBySlice",
+              entityType,
+              slice,
+              initOffset,
+              filterEventsBeforeSnapshots(snapshotOffsets, settings.querySettings.backtrackingEnabled))
+          }))
+    }
+
+    require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
+
+    val dbSource = bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
+    if (settings.journalPublishEvents) {
+      val pubSubSource = eventsBySlicesPubSubSource[Event](entityType, minSlice, maxSlice)
+      mergeDbAndPubSubSources(dbSource, pubSubSource)
+    } else
+      dbSource
+  }
+
+  // Stateful filter function that decides if (persistenceId, seqNr, source) should be emitted by
+  // `eventsBySlicesStartingFromSnapshots` and `currentEventsBySlicesStartingFromSnapshots`.
+  private def filterEventsBeforeSnapshots(
+      snapshotOffsets: Map[String, (Long, Instant)],
+      backtrackingEnabled: Boolean): (String, Long, String) => Boolean = {
+    var _snapshotOffsets = snapshotOffsets
+    (persistenceId, seqNr, source) => {
+      if (_snapshotOffsets.isEmpty)
+        true
+      else
+        _snapshotOffsets.get(persistenceId) match {
+          case None                     => true
+          case Some((snapshotSeqNr, _)) =>
+            //  release memory by removing from the _snapshotOffsets Map
+            if (seqNr == snapshotSeqNr &&
+              ((backtrackingEnabled && source == EnvelopeOrigin.SourceBacktracking) ||
+              (!backtrackingEnabled && source == EnvelopeOrigin.SourceQuery))) {
+              _snapshotOffsets -= persistenceId
+            }
+
+            seqNr > snapshotSeqNr
+        }
+    }
+  }
+
+  private def checkStartFromSnapshotEnabled(methodName: String): Unit =
+    if (!settings.querySettings.startFromSnapshotEnabled)
+      throw new IllegalArgumentException(
+        s"To use $methodName you must enable configuration `akka.persistence.dynamodb.query.start-from-snapshot.enabled`")
 
   private def eventsBySlicesPubSubSource[Event](
       entityType: String,
