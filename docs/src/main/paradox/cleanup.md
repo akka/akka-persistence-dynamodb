@@ -4,7 +4,7 @@
 
 If possible, it is best to keep all events in an event sourced system. That way new @ref:[Projections](projection.md)
 can be re-built. A @ref[Projection can also start or continue from a
-snapshot](./query.md#eventsbyslicesstartingfromsnapshots), and then events can be deleted before the snapshot.
+snapshot](query.md#eventsbyslicesstartingfromsnapshots), and then events can be deleted before the snapshot.
 
 In some cases keeping all events is not possible, or data must be removed for regulatory reasons, such as compliance
 with GDPR. `EventSourcedBehavior`s can also automatically
