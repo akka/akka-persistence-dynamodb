@@ -11,6 +11,8 @@ import scala.jdk.FutureConverters._
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.persistence.dynamodb.DynamoDBSettings
+import akka.persistence.dynamodb.util.IndexSettings
+import akka.persistence.dynamodb.util.TableSettings
 import akka.persistence.dynamodb.util.scaladsl
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 
@@ -20,12 +22,34 @@ object CreateTables {
       settings: DynamoDBSettings,
       client: DynamoDbAsyncClient,
       deleteIfExists: Boolean): CompletionStage[Done] =
-    scaladsl.CreateTables.createJournalTable(system, settings, client, deleteIfExists).asJava
+    createJournalTable(system, settings, client, deleteIfExists, TableSettings.Local, IndexSettings.Local)
+
+  def createJournalTable(
+      system: ActorSystem[_],
+      settings: DynamoDBSettings,
+      client: DynamoDbAsyncClient,
+      deleteIfExists: Boolean,
+      tableSettings: TableSettings,
+      sliceIndexSettings: IndexSettings): CompletionStage[Done] =
+    scaladsl.CreateTables
+      .createJournalTable(system, settings, client, deleteIfExists, tableSettings, sliceIndexSettings)
+      .asJava
 
   def createSnapshotsTable(
       system: ActorSystem[_],
       settings: DynamoDBSettings,
       client: DynamoDbAsyncClient,
       deleteIfExists: Boolean): CompletionStage[Done] =
-    scaladsl.CreateTables.createSnapshotsTable(system, settings, client, deleteIfExists).asJava
+    createSnapshotsTable(system, settings, client, deleteIfExists, TableSettings.Local, IndexSettings.Local)
+
+  def createSnapshotsTable(
+      system: ActorSystem[_],
+      settings: DynamoDBSettings,
+      client: DynamoDbAsyncClient,
+      deleteIfExists: Boolean,
+      tableSettings: TableSettings,
+      sliceIndexSettings: IndexSettings): CompletionStage[Done] =
+    scaladsl.CreateTables
+      .createSnapshotsTable(system, settings, client, deleteIfExists, tableSettings, sliceIndexSettings)
+      .asJava
 }

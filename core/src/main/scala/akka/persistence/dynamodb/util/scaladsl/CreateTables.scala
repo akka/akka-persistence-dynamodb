@@ -16,6 +16,10 @@ import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.DynamoDBSettings
+import akka.persistence.dynamodb.util.IndexSettings
+import akka.persistence.dynamodb.util.OnDemandThroughputSettings
+import akka.persistence.dynamodb.util.ProvisionedThroughputSettings
+import akka.persistence.dynamodb.util.TableSettings
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
 import software.amazon.awssdk.services.dynamodb.model.CreateTableRequest
@@ -24,6 +28,7 @@ import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest
 import software.amazon.awssdk.services.dynamodb.model.GlobalSecondaryIndex
 import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
 import software.amazon.awssdk.services.dynamodb.model.KeyType
+import software.amazon.awssdk.services.dynamodb.model.OnDemandThroughput
 import software.amazon.awssdk.services.dynamodb.model.Projection
 import software.amazon.awssdk.services.dynamodb.model.ProjectionType
 import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughput
@@ -36,7 +41,9 @@ object CreateTables {
       system: ActorSystem[_],
       settings: DynamoDBSettings,
       client: DynamoDbAsyncClient,
-      deleteIfExists: Boolean): Future[Done] = {
+      deleteIfExists: Boolean,
+      tableSettings: TableSettings = TableSettings.Local,
+      sliceIndexSettings: IndexSettings = IndexSettings.Local): Future[Done] = {
     import akka.persistence.dynamodb.internal.JournalAttributes._
     implicit val ec: ExecutionContext = system.executionContext
 
@@ -44,41 +51,89 @@ object CreateTables {
       client.describeTable(DescribeTableRequest.builder().tableName(settings.journalTable).build()).asScala
 
     def create(): Future[Done] = {
-      val sliceIndex = GlobalSecondaryIndex
-        .builder()
-        .indexName(settings.journalBySliceGsi)
-        .keySchema(
-          KeySchemaElement.builder().attributeName(EntityTypeSlice).keyType(KeyType.HASH).build(),
-          KeySchemaElement.builder().attributeName(Timestamp).keyType(KeyType.RANGE).build())
-        .projection(
-          // FIXME we could skip a few attributes
-          Projection.builder().projectionType(ProjectionType.ALL).build())
-        // FIXME config
-        .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(10L).writeCapacityUnits(10L).build())
-        .build()
+      val sliceIndex = if (sliceIndexSettings.enabled) {
+        var indexBuilder =
+          GlobalSecondaryIndex.builder
+            .indexName(settings.journalBySliceGsi)
+            .keySchema(
+              KeySchemaElement.builder().attributeName(EntityTypeSlice).keyType(KeyType.HASH).build(),
+              KeySchemaElement.builder().attributeName(Timestamp).keyType(KeyType.RANGE).build())
+            .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
 
-      val req = CreateTableRequest
-        .builder()
+        indexBuilder = sliceIndexSettings.throughput match {
+          case provisioned: ProvisionedThroughputSettings =>
+            indexBuilder.provisionedThroughput(
+              ProvisionedThroughput.builder
+                .readCapacityUnits(provisioned.readCapacityUnits)
+                .writeCapacityUnits(provisioned.writeCapacityUnits)
+                .build())
+          case onDemand: OnDemandThroughputSettings =>
+            indexBuilder.onDemandThroughput(
+              OnDemandThroughput.builder
+                .maxReadRequestUnits(onDemand.maxReadRequestUnits)
+                .maxWriteRequestUnits(onDemand.maxWriteRequestUnits)
+                .build())
+        }
+
+        Some(indexBuilder.build())
+      } else None
+
+      var requestBuilder = CreateTableRequest.builder
         .tableName(settings.journalTable)
         .keySchema(
           KeySchemaElement.builder().attributeName(Pid).keyType(KeyType.HASH).build(),
           KeySchemaElement.builder().attributeName(SeqNr).keyType(KeyType.RANGE).build())
-        .attributeDefinitions(
-          AttributeDefinition.builder().attributeName(Pid).attributeType(ScalarAttributeType.S).build(),
-          AttributeDefinition.builder().attributeName(SeqNr).attributeType(ScalarAttributeType.N).build(),
-          AttributeDefinition.builder().attributeName(EntityTypeSlice).attributeType(ScalarAttributeType.S).build(),
-          AttributeDefinition.builder().attributeName(Timestamp).attributeType(ScalarAttributeType.N).build())
-        // FIXME config
-        .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
-        .globalSecondaryIndexes(sliceIndex)
-        .build()
 
-      client.createTable(req).asScala.map(_ => Done)
+      val tableAttributes = Seq(
+        AttributeDefinition.builder().attributeName(Pid).attributeType(ScalarAttributeType.S).build(),
+        AttributeDefinition.builder().attributeName(SeqNr).attributeType(ScalarAttributeType.N).build())
+
+      val tableWithIndexAttributes = tableAttributes ++ Seq(
+        AttributeDefinition.builder().attributeName(EntityTypeSlice).attributeType(ScalarAttributeType.S).build(),
+        AttributeDefinition.builder().attributeName(Timestamp).attributeType(ScalarAttributeType.N).build())
+
+      requestBuilder = sliceIndex match {
+        case Some(index) =>
+          requestBuilder
+            .attributeDefinitions(tableWithIndexAttributes: _*)
+            .globalSecondaryIndexes(index)
+        case None =>
+          requestBuilder.attributeDefinitions(tableAttributes: _*)
+      }
+
+      requestBuilder = tableSettings.throughput match {
+        case provisioned: ProvisionedThroughputSettings =>
+          requestBuilder.provisionedThroughput(
+            ProvisionedThroughput.builder
+              .readCapacityUnits(provisioned.readCapacityUnits)
+              .writeCapacityUnits(provisioned.writeCapacityUnits)
+              .build())
+        case onDemand: OnDemandThroughputSettings =>
+          requestBuilder.onDemandThroughput(
+            OnDemandThroughput.builder
+              .maxReadRequestUnits(onDemand.maxReadRequestUnits)
+              .maxWriteRequestUnits(onDemand.maxWriteRequestUnits)
+              .build())
+      }
+
+      client
+        .createTable(requestBuilder.build())
+        .asScala
+        .map(_ => Done)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
 
     def delete(): Future[Done] = {
       val req = DeleteTableRequest.builder().tableName(settings.journalTable).build()
-      client.deleteTable(req).asScala.map(_ => Done)
+      client
+        .deleteTable(req)
+        .asScala
+        .map(_ => Done)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
     }
 
     existingTable.transformWith {
@@ -100,7 +155,9 @@ object CreateTables {
       system: ActorSystem[_],
       settings: DynamoDBSettings,
       client: DynamoDbAsyncClient,
-      deleteIfExists: Boolean): Future[Done] = {
+      deleteIfExists: Boolean,
+      tableSettings: TableSettings = TableSettings.Local,
+      sliceIndexSettings: IndexSettings = IndexSettings.Local): Future[Done] = {
     import akka.persistence.dynamodb.internal.SnapshotAttributes._
 
     implicit val ec: ExecutionContext = system.executionContext
@@ -109,32 +166,70 @@ object CreateTables {
       client.describeTable(DescribeTableRequest.builder().tableName(settings.snapshotTable).build()).asScala
 
     def create(): Future[Done] = {
-      val sliceIndex = GlobalSecondaryIndex
-        .builder()
-        .indexName(settings.snapshotBySliceGsi)
-        .keySchema(
-          KeySchemaElement.builder().attributeName(EntityTypeSlice).keyType(KeyType.HASH).build(),
-          KeySchemaElement.builder().attributeName(EventTimestamp).keyType(KeyType.RANGE).build())
-        .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
-        // FIXME config
-        .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
-        .build()
+      val sliceIndex = if (sliceIndexSettings.enabled) {
+        var indexBuilder =
+          GlobalSecondaryIndex.builder
+            .indexName(settings.snapshotBySliceGsi)
+            .keySchema(
+              KeySchemaElement.builder().attributeName(EntityTypeSlice).keyType(KeyType.HASH).build(),
+              KeySchemaElement.builder().attributeName(EventTimestamp).keyType(KeyType.RANGE).build())
+            .projection(Projection.builder().projectionType(ProjectionType.ALL).build())
 
-      val request = CreateTableRequest
-        .builder()
+        indexBuilder = sliceIndexSettings.throughput match {
+          case provisioned: ProvisionedThroughputSettings =>
+            indexBuilder.provisionedThroughput(
+              ProvisionedThroughput.builder
+                .readCapacityUnits(provisioned.readCapacityUnits)
+                .writeCapacityUnits(provisioned.writeCapacityUnits)
+                .build())
+          case onDemand: OnDemandThroughputSettings =>
+            indexBuilder.onDemandThroughput(
+              OnDemandThroughput.builder
+                .maxReadRequestUnits(onDemand.maxReadRequestUnits)
+                .maxWriteRequestUnits(onDemand.maxWriteRequestUnits)
+                .build())
+        }
+
+        Some(indexBuilder.build())
+      } else None
+
+      var requestBuilder = CreateTableRequest.builder
         .tableName(settings.snapshotTable)
         .keySchema(KeySchemaElement.builder().attributeName(Pid).keyType(KeyType.HASH).build())
-        .attributeDefinitions(
-          AttributeDefinition.builder().attributeName(Pid).attributeType(ScalarAttributeType.S).build(),
-          AttributeDefinition.builder().attributeName(EntityTypeSlice).attributeType(ScalarAttributeType.S).build(),
-          AttributeDefinition.builder().attributeName(EventTimestamp).attributeType(ScalarAttributeType.N).build())
-        // FIXME config
-        .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
-        .globalSecondaryIndexes(sliceIndex)
-        .build()
+
+      val tableAttributes =
+        Seq(AttributeDefinition.builder().attributeName(Pid).attributeType(ScalarAttributeType.S).build())
+
+      val tableWithIndexAttributes = tableAttributes ++ Seq(
+        AttributeDefinition.builder().attributeName(EntityTypeSlice).attributeType(ScalarAttributeType.S).build(),
+        AttributeDefinition.builder().attributeName(EventTimestamp).attributeType(ScalarAttributeType.N).build())
+
+      requestBuilder = sliceIndex match {
+        case Some(index) =>
+          requestBuilder
+            .attributeDefinitions(tableWithIndexAttributes: _*)
+            .globalSecondaryIndexes(index)
+        case None =>
+          requestBuilder.attributeDefinitions(tableAttributes: _*)
+      }
+
+      requestBuilder = tableSettings.throughput match {
+        case provisioned: ProvisionedThroughputSettings =>
+          requestBuilder.provisionedThroughput(
+            ProvisionedThroughput.builder
+              .readCapacityUnits(provisioned.readCapacityUnits)
+              .writeCapacityUnits(provisioned.writeCapacityUnits)
+              .build())
+        case onDemand: OnDemandThroughputSettings =>
+          requestBuilder.onDemandThroughput(
+            OnDemandThroughput.builder
+              .maxReadRequestUnits(onDemand.maxReadRequestUnits)
+              .maxWriteRequestUnits(onDemand.maxWriteRequestUnits)
+              .build())
+      }
 
       client
-        .createTable(request)
+        .createTable(requestBuilder.build())
         .asScala
         .map(_ => Done)
         .recoverWith { case c: CompletionException =>
