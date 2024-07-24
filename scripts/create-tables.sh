@@ -1,7 +1,37 @@
-#!/bin/sh
+#!/usr/bin/env bash
 
-#create-event-journal-table
-aws dynamodb create-table \
+function fail {
+  echo "$@"
+  exit 1
+}
+
+declare no_journal_index=false
+declare no_snapshot_index=false
+
+while [[ $# -gt 0 ]] ; do
+  case "$1" in
+    --no-journal-index  ) no_journal_index=true  ; shift ;;
+    --no-snapshot-index ) no_snapshot_index=true ; shift ;;
+    *                   ) fail "unknown option: $1"    ;
+  esac
+done
+
+if $no_journal_index ; then
+  #create-event-journal-table
+  aws dynamodb create-table \
+    --table-name event_journal \
+    --attribute-definitions \
+        AttributeName=pid,AttributeType=S \
+        AttributeName=seq_nr,AttributeType=N \
+    --key-schema \
+        AttributeName=pid,KeyType=HASH \
+        AttributeName=seq_nr,KeyType=RANGE \
+    --provisioned-throughput \
+        ReadCapacityUnits=5,WriteCapacityUnits=5 \
+  #create-event-journal-table
+else
+  #create-event-journal-table-with-slice-index
+  aws dynamodb create-table \
     --table-name event_journal \
     --attribute-definitions \
         AttributeName=pid,AttributeType=S \
@@ -30,10 +60,23 @@ aws dynamodb create-table \
            }
         }
       ]'
-#create-event-journal-table
+  #create-event-journal-table-with-slice-index
+fi
 
-#create-snapshot-table
-aws dynamodb create-table \
+if $no_snapshot_index ; then
+  #create-snapshot-table
+  aws dynamodb create-table \
+    --table-name snapshot \
+    --attribute-definitions \
+        AttributeName=pid,AttributeType=S \
+    --key-schema \
+        AttributeName=pid,KeyType=HASH \
+    --provisioned-throughput \
+        ReadCapacityUnits=5,WriteCapacityUnits=5
+  #create-snapshot-table
+else
+  #create-snapshot-table-with-slice-index
+  aws dynamodb create-table \
     --table-name snapshot \
     --attribute-definitions \
         AttributeName=pid,AttributeType=S \
@@ -42,7 +85,7 @@ aws dynamodb create-table \
     --key-schema \
         AttributeName=pid,KeyType=HASH \
     --provisioned-throughput \
-        ReadCapacityUnits=5,WriteCapacityUnits=5
+        ReadCapacityUnits=5,WriteCapacityUnits=5 \
     --global-secondary-indexes \
       '[
          {
@@ -60,26 +103,27 @@ aws dynamodb create-table \
            }
         }
       ]'
-#create-snapshot-table
+  #create-snapshot-table-with-slice-index
+fi
 
 #create-timestamp-offset-table
 aws dynamodb create-table \
-    --table-name timestamp_offset \
-    --attribute-definitions \
-        AttributeName=name_slice,AttributeType=S \
-        AttributeName=pid,AttributeType=S \
-    --key-schema \
-        AttributeName=name_slice,KeyType=HASH \
-        AttributeName=pid,KeyType=RANGE \
-    --provisioned-throughput \
-        ReadCapacityUnits=5,WriteCapacityUnits=5
+  --table-name timestamp_offset \
+  --attribute-definitions \
+      AttributeName=name_slice,AttributeType=S \
+      AttributeName=pid,AttributeType=S \
+  --key-schema \
+      AttributeName=name_slice,KeyType=HASH \
+      AttributeName=pid,KeyType=RANGE \
+  --provisioned-throughput \
+      ReadCapacityUnits=5,WriteCapacityUnits=5
 #create-timestamp-offset-table
 
 aws dynamodb create-table \
-    --table-name projection_spec \
-    --attribute-definitions \
-        AttributeName=id,AttributeType=S \
-    --key-schema \
-        AttributeName=id,KeyType=HASH \
-    --provisioned-throughput \
-        ReadCapacityUnits=5,WriteCapacityUnits=5
+  --table-name projection_spec \
+  --attribute-definitions \
+      AttributeName=id,AttributeType=S \
+  --key-schema \
+      AttributeName=id,KeyType=HASH \
+  --provisioned-throughput \
+      ReadCapacityUnits=5,WriteCapacityUnits=5

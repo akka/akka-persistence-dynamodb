@@ -16,6 +16,12 @@ be created with the following attributes and key schema:
 Read capacity units should be based on expected entity recoveries. Write capacity units should be based on expected
 rates for persisting snapshots.
 
+An example `aws` CLI command for creating the snapshot table:
+
+@@snip [aws create snapshot table](/scripts/create-tables.sh) { #create-snapshot-table }
+
+### Indexes
+
 If @ref:[start-from-snapshot queries](query.md#eventsbyslicesstartingfromsnapshots) are being used, then a global
 secondary index needs to be added to the snapshot table, to index snapshots by slice. The default name for the
 secondary index is `snapshot_slice_idx`. The following attribute definitions should be added to the snapshot table,
@@ -31,7 +37,9 @@ expected queries.
 
 An example `aws` CLI command for creating the snapshot table and slice index:
 
-@@snip [aws create snapshot table](/scripts/create-tables.sh) { #create-snapshot-table }
+@@snip [aws create snapshot table](/scripts/create-tables.sh) { #create-snapshot-table-with-slice-index }
+
+### Creating tables locally
 
 For creating tables with DynamoDB local for testing, see the
 @ref:[CreateTables utility](getting-started.md#creating-tables-locally).
