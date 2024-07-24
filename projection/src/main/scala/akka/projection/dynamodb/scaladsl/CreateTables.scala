@@ -15,6 +15,9 @@ import scala.util.Success
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.dispatch.ExecutionContexts
+import akka.persistence.dynamodb.util.OnDemandThroughputSettings
+import akka.persistence.dynamodb.util.ProvisionedThroughputSettings
+import akka.persistence.dynamodb.util.TableSettings
 import akka.projection.dynamodb.DynamoDBProjectionSettings
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeDefinition
@@ -23,6 +26,7 @@ import software.amazon.awssdk.services.dynamodb.model.DeleteTableRequest
 import software.amazon.awssdk.services.dynamodb.model.DescribeTableRequest
 import software.amazon.awssdk.services.dynamodb.model.KeySchemaElement
 import software.amazon.awssdk.services.dynamodb.model.KeyType
+import software.amazon.awssdk.services.dynamodb.model.OnDemandThroughput
 import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughput
 import software.amazon.awssdk.services.dynamodb.model.ResourceNotFoundException
 import software.amazon.awssdk.services.dynamodb.model.ScalarAttributeType
@@ -32,7 +36,8 @@ object CreateTables {
       system: ActorSystem[_],
       settings: DynamoDBProjectionSettings,
       client: DynamoDbAsyncClient,
-      deleteIfExists: Boolean): Future[Done] = {
+      deleteIfExists: Boolean,
+      tableSettings: TableSettings = TableSettings.Local): Future[Done] = {
     import akka.projection.dynamodb.internal.OffsetStoreDao.OffsetStoreAttributes._
     implicit val ec: ExecutionContext = system.executionContext
 
@@ -40,8 +45,7 @@ object CreateTables {
       client.describeTable(DescribeTableRequest.builder().tableName(settings.timestampOffsetTable).build()).asScala
 
     def create(): Future[Done] = {
-      val req = CreateTableRequest
-        .builder()
+      var requestBuilder = CreateTableRequest.builder
         .tableName(settings.timestampOffsetTable)
         .keySchema(
           KeySchemaElement.builder().attributeName(NameSlice).keyType(KeyType.HASH).build(),
@@ -49,11 +53,24 @@ object CreateTables {
         .attributeDefinitions(
           AttributeDefinition.builder().attributeName(NameSlice).attributeType(ScalarAttributeType.S).build(),
           AttributeDefinition.builder().attributeName(Pid).attributeType(ScalarAttributeType.S).build())
-        .provisionedThroughput(ProvisionedThroughput.builder().readCapacityUnits(5L).writeCapacityUnits(5L).build())
-        .build()
+
+      requestBuilder = tableSettings.throughput match {
+        case provisioned: ProvisionedThroughputSettings =>
+          requestBuilder.provisionedThroughput(
+            ProvisionedThroughput.builder
+              .readCapacityUnits(provisioned.readCapacityUnits)
+              .writeCapacityUnits(provisioned.writeCapacityUnits)
+              .build())
+        case onDemand: OnDemandThroughputSettings =>
+          requestBuilder.onDemandThroughput(
+            OnDemandThroughput.builder
+              .maxReadRequestUnits(onDemand.maxReadRequestUnits)
+              .maxWriteRequestUnits(onDemand.maxWriteRequestUnits)
+              .build())
+      }
 
       client
-        .createTable(req)
+        .createTable(requestBuilder.build())
         .asScala
         .map(_ => Done)
         .recoverWith { case c: CompletionException =>
