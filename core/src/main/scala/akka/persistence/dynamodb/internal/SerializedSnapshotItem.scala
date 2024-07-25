@@ -42,4 +42,5 @@ final case class SerializedSnapshotMetadata(serId: Int, serManifest: String, pay
   val MetaSerId = "meta_ser_id"
   val MetaSerManifest = "meta_ser_manifest"
   val MetaPayload = "meta_payload"
+  val Expiry = "expiry"
 }

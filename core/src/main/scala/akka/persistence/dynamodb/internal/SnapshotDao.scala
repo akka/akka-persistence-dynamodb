@@ -33,6 +33,7 @@ import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
+import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
 
 /**
  * INTERNAL API
@@ -184,6 +185,57 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
         log.debug(
           "Deleted snapshot for persistenceId [{}], consumed [{}] WCU",
           persistenceId,
+          response.consumedCapacity.capacityUnits)
+      }
+    }
+
+    result
+      .map(_ => ())(ExecutionContexts.parasitic)
+      // ignore if the criteria conditional check failed
+      .recover {
+        case _: ConditionalCheckFailedException => ()
+        case e: CompletionException =>
+          e.getCause match {
+            case _: ConditionalCheckFailedException => ()
+            case cause                              => throw cause
+          }
+      }(ExecutionContexts.parasitic)
+  }
+
+  def updateExpiry(
+      persistenceId: String,
+      criteria: SnapshotSelectionCriteria,
+      expiryTimestamp: Instant): Future[Unit] = {
+    import SnapshotAttributes._
+
+    val (condition, attributes) = criteriaCondition(criteria)
+
+    attributes.put(":expiry", AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
+
+    val request = {
+      val builder = UpdateItemRequest.builder
+        .tableName(settings.snapshotTable)
+        .key(Map(Pid -> AttributeValue.fromS(persistenceId)).asJava)
+        .updateExpression(s"SET $Expiry = :expiry")
+        .expressionAttributeValues(attributes)
+        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+      if (condition.nonEmpty) {
+        builder
+          .conditionExpression(condition)
+          .build()
+      } else {
+        builder.build()
+      }
+    }
+
+    val result = client.updateItem(request).asScala
+
+    if (log.isDebugEnabled()) {
+      result.foreach { response =>
+        log.debug(
+          "Updated expiry of snapshot for persistenceId [{}], expiring at [{}], consumed [{}] WCU",
+          persistenceId,
+          expiryTimestamp,
           response.consumedCapacity.capacityUnits)
       }
     }
