@@ -4,8 +4,11 @@
 
 package akka.persistence.dynamodb.cleanup.scaladsl
 
+import java.time.Instant
+
 import scala.collection.immutable
 import scala.concurrent.Future
+import scala.concurrent.duration.FiniteDuration
 import scala.util.Failure
 import scala.util.Success
 
@@ -23,8 +26,8 @@ import akka.persistence.dynamodb.util.ClientProvider
 import org.slf4j.LoggerFactory
 
 /**
- * Scala API: Tool for deleting events and/or snapshots for a given list of `persistenceIds` without using persistent
- * actors.
+ * Scala API: Tool for deleting or setting expiration (time to live) of events and/or snapshots for a given list of
+ * `persistenceIds` without using persistent actors.
  *
  * When running an operation with `EventSourcedCleanup` that deletes all events for a persistence id, the actor with
  * that persistence id must not be running! If the actor is restarted it would in that case be recovered to the wrong
@@ -81,6 +84,11 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
 
   /**
    * Delete all events related to one single `persistenceId`. Snapshots are not deleted.
+   *
+   * @param persistenceId
+   *   the persistence id to delete for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
    */
   def deleteAllEvents(persistenceId: String, resetSequenceNumber: Boolean): Future[Done] = {
     journalDao
@@ -90,6 +98,11 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
 
   /**
    * Delete all events related to the given list of `persistenceIds`. Snapshots are not deleted.
+   *
+   * @param persistenceIds
+   *   the persistence ids to delete for
+   * @param resetSequenceNumber
+   *   whether the entities will start from zero again, or continue from highest sequence number
    */
   def deleteAllEvents(persistenceIds: immutable.Seq[String], resetSequenceNumber: Boolean): Future[Done] = {
     foreach(persistenceIds, "deleteAllEvents", pid => deleteAllEvents(pid, resetSequenceNumber))
@@ -147,6 +160,9 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
 
   /**
    * Delete snapshots related to one single `persistenceId`. Events are not deleted.
+   *
+   * @param persistenceId
+   *   the persistence id to delete for
    */
   def deleteSnapshot(persistenceId: String): Future[Done] = {
     snapshotDao
@@ -156,6 +172,9 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
 
   /**
    * Delete all snapshots related to the given list of `persistenceIds`. Events are not deleted.
+   *
+   * @param persistenceIds
+   *   the persistence ids to delete for
    */
   def deleteSnapshots(persistenceIds: immutable.Seq[String]): Future[Done] = {
     foreach(persistenceIds, "deleteSnapshots", pid => deleteSnapshot(pid))
@@ -164,6 +183,9 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
   /**
    * Deletes all events for the given persistence id from before the snapshot. The snapshot is not deleted. The event
    * with the same sequence number as the remaining snapshot is deleted.
+   *
+   * @param persistenceId
+   *   the persistence id to delete for
    */
   def cleanupBeforeSnapshot(persistenceId: String): Future[Done] = {
     snapshotDao.load(persistenceId, SnapshotSelectionCriteria.Latest).flatMap {
@@ -175,6 +197,9 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
 
   /**
    * See single persistenceId overload for what is done for each persistence id.
+   *
+   * @param persistenceIds
+   *   the persistence ids to delete for
    */
   def cleanupBeforeSnapshot(persistenceIds: immutable.Seq[String]): Future[Done] = {
     foreach(persistenceIds, "cleanupBeforeSnapshot", pid => cleanupBeforeSnapshot(pid))
@@ -182,6 +207,11 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
 
   /**
    * Delete everything related to one single `persistenceId`. All events and snapshots are deleted.
+   *
+   * @param persistenceId
+   *   the persistence id to delete for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
    */
   def deleteAll(persistenceId: String, resetSequenceNumber: Boolean): Future[Done] = {
     for {
@@ -192,9 +222,318 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
 
   /**
    * Delete everything related to the given list of `persistenceIds`. All events and snapshots are deleted.
+   *
+   * @param persistenceIds
+   *   the persistence ids to delete for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
    */
   def deleteAll(persistenceIds: immutable.Seq[String], resetSequenceNumber: Boolean): Future[Done] = {
     foreach(persistenceIds, "deleteAll", pid => deleteAll(pid, resetSequenceNumber))
+  }
+
+  /**
+   * Set expiry (time to live) for all events up to a sequence number for the given persistence id. Snapshots do not
+   * have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to set expiry for
+   * @param toSequenceNr
+   *   sequence number (inclusive) to set expiry
+   * @param expiryTimestamp
+   *   expiration timestamp to set on selected events
+   */
+  def setExpiryForEvents(persistenceId: String, toSequenceNr: Long, expiryTimestamp: Instant): Future[Done] = {
+    journalDao
+      .updateEventExpiry(persistenceId, toSequenceNr, resetSequenceNumber = false, expiryTimestamp)
+      .map(_ => Done)
+  }
+
+  /**
+   * Set expiry (time to live) for all events up to a sequence number for the given persistence id. Snapshots do not
+   * have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to set expiry for
+   * @param toSequenceNr
+   *   sequence number (inclusive) to set expiry
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForEvents(persistenceId: String, toSequenceNr: Long, timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForEvents(persistenceId, toSequenceNr, expiryTimestamp)
+  }
+
+  /**
+   * Set expiry (time to live) for all events related to a single persistence id. Snapshots do not have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to set expiry for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
+   * @param expiryTimestamp
+   *   expiration timestamp to set on all events
+   */
+  def setExpiryForAllEvents(
+      persistenceId: String,
+      resetSequenceNumber: Boolean,
+      expiryTimestamp: Instant): Future[Done] = {
+    journalDao
+      .updateEventExpiry(persistenceId, toSequenceNr = Long.MaxValue, resetSequenceNumber, expiryTimestamp)
+      .map(_ => Done)
+  }
+
+  /**
+   * Set expiry (time to live) for all events related to a single persistence id. Snapshots do not have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to set expiry for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForAllEvents(
+      persistenceId: String,
+      resetSequenceNumber: Boolean,
+      timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForAllEvents(persistenceId, resetSequenceNumber, expiryTimestamp)
+  }
+
+  /**
+   * Set expiry (time to live) for all events related to the given list of `persistenceIds`. Snapshots do not have
+   * expiry set.
+   *
+   * @param persistenceIds
+   *   the persistence ids to delete for
+   * @param resetSequenceNumber
+   *   whether the entities will start from zero again, or continue from highest sequence number
+   * @param expiryTimestamp
+   *   expiration timestamp to set on all events
+   */
+  def setExpiryForAllEvents(
+      persistenceIds: immutable.Seq[String],
+      resetSequenceNumber: Boolean,
+      expiryTimestamp: Instant): Future[Done] = {
+    foreach(
+      persistenceIds,
+      "setExpiryForAllEvents",
+      pid => setExpiryForAllEvents(pid, resetSequenceNumber, expiryTimestamp))
+  }
+
+  /**
+   * Set expiry (time to live) for all events related to the given list of `persistenceIds`. Snapshots do not have
+   * expiry set.
+   *
+   * @param persistenceIds
+   *   the persistence ids to delete for
+   * @param resetSequenceNumber
+   *   whether the entities will start from zero again, or continue from highest sequence number
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForAllEvents(
+      persistenceIds: immutable.Seq[String],
+      resetSequenceNumber: Boolean,
+      timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForAllEvents(persistenceIds, resetSequenceNumber, expiryTimestamp)
+  }
+
+  /**
+   * Set expiry (time to live) for the snapshot related to a single persistence id. Events do not have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to set expiry for
+   * @param expiryTimestamp
+   *   expiration timestamp to set on the snapshot
+   */
+  def setExpiryForSnapshot(persistenceId: String, expiryTimestamp: Instant): Future[Done] = {
+    snapshotDao
+      .updateExpiry(persistenceId, SnapshotSelectionCriteria(maxSequenceNr = Long.MaxValue), expiryTimestamp)
+      .map(_ => Done)
+  }
+
+  /**
+   * Set expiry (time to live) for the snapshot related to a single persistence id. Events do not have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to set expiry for
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForSnapshot(persistenceId: String, timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForSnapshot(persistenceId, expiryTimestamp)
+  }
+
+  /**
+   * Set expiry (time to live) for all snapshots related to the given list of persistence ids. Events do not have expiry
+   * set.
+   *
+   * @param persistenceIds
+   *   the persistence ids to set expiry for
+   * @param expiryTimestamp
+   *   expiration timestamp to set on all snapshots
+   */
+  def setExpiryForSnapshots(persistenceIds: immutable.Seq[String], expiryTimestamp: Instant): Future[Done] = {
+    foreach(persistenceIds, "setExpiryForSnapshots", pid => setExpiryForSnapshot(pid, expiryTimestamp))
+  }
+
+  /**
+   * Set expiry (time to live) for all snapshots related to the given list of persistence ids. Events do not have expiry
+   * set.
+   *
+   * @param persistenceIds
+   *   the persistence ids to set expiry for
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForSnapshots(persistenceIds: immutable.Seq[String], timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForSnapshots(persistenceIds, expiryTimestamp)
+  }
+
+  /**
+   * Set expiry (time to live) for all events for the given persistence id from before its snapshot. The snapshot does
+   * not have expiry set. The event with the same sequence number as the snapshot does have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to set expiry for
+   * @param expiryTimestamp
+   *   expiration timestamp to set on all events before snapshot
+   */
+  def setExpiryForEventsBeforeSnapshot(persistenceId: String, expiryTimestamp: Instant): Future[Done] = {
+    snapshotDao.load(persistenceId, SnapshotSelectionCriteria.Latest).flatMap {
+      case None           => Future.successful(Done)
+      case Some(snapshot) => setExpiryForEvents(persistenceId, snapshot.seqNr, expiryTimestamp)
+    }
+  }
+
+  /**
+   * Set expiry (time to live) for all events for the given persistence id from before its snapshot. The snapshot does
+   * not have expiry set. The event with the same sequence number as the snapshot does have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to set expiry for
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForEventsBeforeSnapshot(persistenceId: String, timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForEventsBeforeSnapshot(persistenceId, expiryTimestamp)
+  }
+
+  /**
+   * Set expiry (time to live) for all events for the given persistence ids from before their snapshots. The snapshots
+   * do not have expiry set. The events with the same sequence number as the snapshots do have expiry set.
+   *
+   * @param persistenceIds
+   *   the persistence ids to set expiry for
+   * @param expiryTimestamp
+   *   expiration timestamp to set on all events before snapshot
+   */
+  def setExpiryForEventsBeforeSnapshots(
+      persistenceIds: immutable.Seq[String],
+      expiryTimestamp: Instant): Future[Done] = {
+    foreach(
+      persistenceIds,
+      "setExpiryForEventsBeforeSnapshot",
+      pid => setExpiryForEventsBeforeSnapshot(pid, expiryTimestamp))
+  }
+
+  /**
+   * Set expiry (time to live) for all events for the given persistence ids from before their snapshots. The snapshots
+   * do not have expiry set. The events with the same sequence number as the snapshots do have expiry set.
+   *
+   * @param persistenceIds
+   *   the persistence ids to set expiry for
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForEventsBeforeSnapshots(
+      persistenceIds: immutable.Seq[String],
+      timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForEventsBeforeSnapshots(persistenceIds, expiryTimestamp)
+  }
+
+  /**
+   * Set expiry for everything related to a single persistence id. All events and the snapshot have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to delete for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
+   * @param expiryTimestamp
+   *   expiration timestamp to set on all events before snapshot
+   */
+  def setExpiryForAllEventsAndSnapshot(
+      persistenceId: String,
+      resetSequenceNumber: Boolean,
+      expiryTimestamp: Instant): Future[Done] = {
+    for {
+      _ <- setExpiryForAllEvents(persistenceId, resetSequenceNumber, expiryTimestamp)
+      _ <- setExpiryForSnapshot(persistenceId, expiryTimestamp)
+    } yield Done
+  }
+
+  /**
+   * Set expiry for everything related to a single persistence id. All events and the snapshot have expiry set.
+   *
+   * @param persistenceId
+   *   the persistence id to delete for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForAllEventsAndSnapshot(
+      persistenceId: String,
+      resetSequenceNumber: Boolean,
+      timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForAllEventsAndSnapshot(persistenceId, resetSequenceNumber, expiryTimestamp)
+  }
+
+  /**
+   * Set expiry for everything related to the given persistence ids. All events and snapshots have expiry set.
+   *
+   * @param persistenceIds
+   *   the persistence ids to delete for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
+   * @param expiryTimestamp
+   *   expiration timestamp to set on all events before snapshot
+   */
+  def setExpiryForAllEventsAndSnapshots(
+      persistenceIds: immutable.Seq[String],
+      resetSequenceNumber: Boolean,
+      expiryTimestamp: Instant): Future[Done] = {
+    foreach(
+      persistenceIds,
+      "setExpiryForAllEventsAndSnapshots",
+      pid => setExpiryForAllEventsAndSnapshot(pid, resetSequenceNumber, expiryTimestamp))
+  }
+
+  /**
+   * Set expiry for everything related to the given persistence ids. All events and snapshots have expiry set.
+   *
+   * @param persistenceIds
+   *   the persistence ids to delete for
+   * @param resetSequenceNumber
+   *   whether the entity will start from zero again, or continue from highest sequence number
+   * @param timeToLive
+   *   time-to-live duration from now
+   */
+  def setExpiryForAllEventsAndSnapshots(
+      persistenceIds: immutable.Seq[String],
+      resetSequenceNumber: Boolean,
+      timeToLive: FiniteDuration): Future[Done] = {
+    val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+    setExpiryForAllEventsAndSnapshots(persistenceIds, resetSequenceNumber, expiryTimestamp)
   }
 
   private def foreach(

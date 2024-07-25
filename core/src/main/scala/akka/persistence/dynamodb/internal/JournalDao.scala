@@ -4,6 +4,7 @@
 
 package akka.persistence.dynamodb.internal
 
+import java.time.Instant
 import java.util.concurrent.CompletionException
 import java.util.{ HashMap => JHashMap }
 
@@ -290,6 +291,98 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         fromSeqNr <- lowestSequenceNrForDelete
         toSeqNr <- highestSeqNrForDelete
         _ <- deleteInBatches(fromSeqNr, toSeqNr)
+      } yield ()
+
+    result
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContexts.parasitic)
+  }
+
+  def updateEventExpiry(
+      persistenceId: String,
+      toSequenceNr: Long,
+      resetSequenceNumber: Boolean,
+      expiryTimestamp: Instant): Future[Unit] = {
+    import JournalAttributes._
+
+    def pk(pid: String, seqNr: Long): JHashMap[String, AttributeValue] = {
+      val m = new JHashMap[String, AttributeValue]
+      m.put(Pid, AttributeValue.fromS(pid))
+      m.put(SeqNr, AttributeValue.fromN(seqNr.toString))
+      m
+    }
+
+    def updateBatch(fromSeqNr: Long, toSeqNr: Long, lastBatch: Boolean): Future[Unit] = {
+      val result = {
+        val expireItems =
+          (fromSeqNr to toSeqNr).map { seqNr =>
+            // when not resetting sequence number, only mark last item with expiry, keeping it to track latest
+            val updateExpression =
+              if (lastBatch && !resetSequenceNumber && seqNr == toSeqNr) s"SET $ExpiryMarker = :expiry REMOVE $Expiry"
+              else s"SET $Expiry = :expiry REMOVE $ExpiryMarker"
+
+            TransactWriteItem.builder
+              .update(
+                Update.builder
+                  .tableName(settings.journalTable)
+                  .key(pk(persistenceId, seqNr))
+                  .updateExpression(updateExpression)
+                  .expressionAttributeValues(
+                    Map(":expiry" -> AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString)).asJava)
+                  .build())
+              .build()
+          }
+
+        val request = TransactWriteItemsRequest
+          .builder()
+          .transactItems(expireItems.asJava)
+          .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+          .build()
+
+        client.transactWriteItems(request).asScala
+      }
+
+      if (log.isDebugEnabled()) {
+        result.foreach { response =>
+          log.debug(
+            "Updated expiry of events for persistenceId [{}], for sequence numbers [{}] to [{}], expiring at [{}], consumed [{}] WCU",
+            persistenceId,
+            fromSeqNr,
+            toSeqNr,
+            expiryTimestamp,
+            response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
+        }
+      }
+      result
+        .map(_ => ())(ExecutionContexts.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContexts.parasitic)
+    }
+
+    // TransactWriteItems has a limit of 100
+    val batchSize = 100
+
+    def updateInBatches(from: Long, maxTo: Long): Future[Unit] = {
+      if (from + batchSize > maxTo) {
+        updateBatch(from, maxTo, lastBatch = true)
+      } else {
+        val to = from + batchSize - 1
+        updateBatch(from, to, lastBatch = false).flatMap(_ => updateInBatches(to + 1, maxTo))
+      }
+    }
+
+    val lowestSequenceNr = readLowestSequenceNr(persistenceId)
+    val highestSeqNr =
+      if (toSequenceNr == Long.MaxValue) readHighestSequenceNr(persistenceId)
+      else Future.successful(toSequenceNr)
+
+    val result =
+      for {
+        fromSeqNr <- lowestSequenceNr
+        toSeqNr <- highestSeqNr
+        _ <- updateInBatches(fromSeqNr, toSeqNr)
       } yield ()
 
     result

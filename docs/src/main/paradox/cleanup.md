@@ -18,12 +18,18 @@ Then a background task can clean up the events and snapshots for the deleted ent
 @apidoc[EventSourcedCleanup] tool. The entity itself knows about the terminal state from the deleted event and should
 not emit further events after that, and typically stop itself if it receives any further commands.
 
+Rather than deleting immediately, the @apidoc[EventSourcedCleanup] tool can also be used to set an expiration timestamp
+on events or snapshots. DynamoDB's [Time to Live (TTL)][ttl] feature can then be enabled, to automatically delete items
+after they have expired. The TTL attribute to use for events or snapshots is named `expiry`.
+
+[ttl]: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html
+
 @apidoc[EventSourcedCleanup] operations include:
 
-* Delete all events and snapshots for one or many persistence ids
-* Delete all events for one or many persistence ids
-* Delete all snapshots for one or many persistence ids
-* Delete events before snapshot for one or many persistence ids
+* Delete or set expiry for all events and snapshots for one or many persistence ids
+* Delete or set expiry for all events for one or many persistence ids
+* Delete or set expiry for all snapshots for one or many persistence ids
+* Delete or set expiry for events before snapshot for one or many persistence ids
 <!-- TODO: * Delete events before a timestamp -->
 
 @@@ warning

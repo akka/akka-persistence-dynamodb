@@ -81,3 +81,11 @@ don't reuse the same sequence numbers that have been deleted.
 
 See the @ref[EventSourcedCleanup tool](cleanup.md#event-sourced-cleanup-tool) for more information about how to delete
 events, snapshots, and tombstone records.
+
+### Time to Live (TTL)
+
+Rather than deleting items immediately, the @ref[EventSourcedCleanup tool](cleanup.md#event-sourced-cleanup-tool) can
+also be used to set an expiration timestamp on events or snapshots. DynamoDB's [Time to Live (TTL)][ttl] feature can
+then be enabled, to automatically delete items after they have expired.
+
+[ttl]: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html

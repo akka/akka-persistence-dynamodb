@@ -48,4 +48,6 @@ final case class SerializedEventMetadata(serId: Int, serManifest: String, payloa
   val MetaSerManifest = "meta_ser_manifest"
   val MetaPayload = "meta_payload"
   val Deleted = "del"
+  val Expiry = "expiry"
+  val ExpiryMarker = "expiry_marker"
 }
