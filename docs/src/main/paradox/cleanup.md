@@ -20,7 +20,7 @@ not emit further events after that, and typically stop itself if it receives any
 
 Rather than deleting immediately, the @apidoc[EventSourcedCleanup] tool can also be used to set an expiration timestamp
 on events or snapshots. DynamoDB's [Time to Live (TTL)][ttl] feature can then be enabled, to automatically delete items
-after they have expired. The TTL attribute to use for events or snapshots is named `expiry`.
+after they have expired. The TTL attribute to use for the journal or snapshot tables is named `expiry`.
 
 [ttl]: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html
 

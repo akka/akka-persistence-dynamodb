@@ -4,6 +4,8 @@
 
 package akka.persistence.dynamodb.journal
 
+import java.time.Instant
+
 import scala.collection.immutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
@@ -193,8 +195,19 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
   }
 
   override def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = {
-    log.debug("asyncDeleteMessagesTo persistenceId [{}], toSequenceNr [{}]", persistenceId, toSequenceNr)
-    journalDao.deleteEventsTo(persistenceId, toSequenceNr, resetSequenceNumber = false)
+    settings.timeToLiveSettings.useTimeToLiveForDeletes match {
+      case Some(timeToLive) =>
+        val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+        log.debug(
+          "deleting events with time-to-live for persistence id [{}], to sequence number [{}], expiring at [{}]",
+          persistenceId,
+          toSequenceNr,
+          expiryTimestamp)
+        journalDao.updateEventExpiry(persistenceId, toSequenceNr, resetSequenceNumber = false, expiryTimestamp)
+      case None =>
+        log.debug("asyncDeleteMessagesTo persistenceId [{}], toSequenceNr [{}]", persistenceId, toSequenceNr)
+        journalDao.deleteEventsTo(persistenceId, toSequenceNr, resetSequenceNumber = false)
+    }
   }
 
   override def replayMessages(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long, max: Long)(

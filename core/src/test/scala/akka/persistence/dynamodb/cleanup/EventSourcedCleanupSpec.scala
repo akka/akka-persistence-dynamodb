@@ -7,8 +7,6 @@ package akka.persistence.dynamodb.cleanup
 import java.time.Instant
 
 import scala.concurrent.duration._
-import scala.jdk.CollectionConverters._
-import scala.jdk.FutureConverters._
 
 import akka.Done
 import akka.actor.testkit.typed.scaladsl.LogCapturing
@@ -1721,27 +1719,5 @@ class EventSourcedCleanupSpec
       }
     }
 
-  }
-
-  def getEventItemsFor(persistenceId: String): Seq[Map[String, AttributeValue]] = {
-    import akka.persistence.dynamodb.internal.JournalAttributes.Pid
-    val request = QueryRequest.builder
-      .tableName(settings.journalTable)
-      .consistentRead(true)
-      .keyConditionExpression(s"$Pid = :pid")
-      .expressionAttributeValues(Map(":pid" -> AttributeValue.fromS(persistenceId)).asJava)
-      .build()
-    client.query(request).asScala.futureValue.items.asScala.toSeq.map(_.asScala.toMap)
-  }
-
-  def getSnapshotItemFor(persistenceId: String): Option[Map[String, AttributeValue]] = {
-    import akka.persistence.dynamodb.internal.SnapshotAttributes.Pid
-    val request = QueryRequest.builder
-      .tableName(settings.snapshotTable)
-      .consistentRead(true)
-      .keyConditionExpression(s"$Pid = :pid")
-      .expressionAttributeValues(Map(":pid" -> AttributeValue.fromS(persistenceId)).asJava)
-      .build()
-    client.query(request).asScala.futureValue.items.asScala.headOption.map(_.asScala.toMap)
   }
 }

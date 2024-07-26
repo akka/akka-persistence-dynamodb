@@ -82,11 +82,21 @@ don't reuse the same sequence numbers that have been deleted.
 See the @ref[EventSourcedCleanup tool](cleanup.md#event-sourced-cleanup-tool) for more information about how to delete
 events, snapshots, and tombstone records.
 
-### Time to Live (TTL)
+## Time to Live (TTL)
 
-Rather than deleting items immediately, the @ref[EventSourcedCleanup tool](cleanup.md#event-sourced-cleanup-tool) can
-also be used to set an expiration timestamp on events or snapshots. DynamoDB's [Time to Live (TTL)][ttl] feature can
-then be enabled, to automatically delete items after they have expired.
+Rather than deleting items immediately, an expiration timestamp can be set on events or snapshots. DynamoDB's [Time to
+Live (TTL)][ttl] feature can then be enabled, to automatically delete items after they have expired.
+
+The TTL attribute to use for the journal or snapshot tables is named `expiry`.
+
+If events are being @extref:[deleted on snapshot](akka:typed/persistence-snapshot.html#event-deletion), the journal can
+be configured to instead set an expiry time for the deleted events, given a time-to-live duration to use. For example,
+deleted events can be configured to expire in 7 days, rather than being deleted immediately:
+
+@@ snip [use time-to-live for deletes](/docs/src/test/scala/docs/config/TimeToLiveSettingsDocExample.scala) { #use-time-to-live-for-deletes type=conf }
+
+The @ref[EventSourcedCleanup tool](cleanup.md#event-sourced-cleanup-tool) can also be used to set an expiration
+timestamp on events or snapshots.
 
 An expiry marker is kept in the event journal when all events for a persistence id have been marked for expiration, in
 the same way that a tombstone record is used for hard deletes. This expiry marker keeps track of the latest sequence
@@ -97,8 +107,12 @@ If persistence ids will be reused with possibly expired events or snapshots, the
 journal. This enforces expiration before DynamoDB Time to Live may have actually deleted the data, and protects against
 partially deleted data. Enable expiry checks with configuration:
 
-```
-akka.persistence.dynamodb.time-to-live.check-expiry = on
-```
+@@ snip [check expiry](/docs/src/test/scala/docs/config/TimeToLiveSettingsDocExample.scala) { #check-expiry type=conf }
+
+### Time to Live reference configuration
+
+The following can be overridden in your `application.conf` for the time-to-live specific settings:
+
+@@snip [reference.conf](/core/src/main/resources/reference.conf) { #time-to-live-settings }
 
 [ttl]: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html

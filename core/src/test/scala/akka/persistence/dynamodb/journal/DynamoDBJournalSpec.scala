@@ -10,6 +10,8 @@ import akka.actor.ActorRef
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.adapter._
 import akka.persistence.CapabilityFlag
+import akka.persistence.DeleteMessagesSuccess
+import akka.persistence.JournalProtocol.DeleteMessagesTo
 import akka.persistence.JournalProtocol.RecoverySuccess
 import akka.persistence.JournalProtocol.ReplayMessages
 import akka.persistence.dynamodb.TestConfig
@@ -18,6 +20,8 @@ import akka.persistence.journal.JournalSpec
 import akka.testkit.TestProbe
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
+import org.scalatest.Inspectors
+import org.scalatest.OptionValues
 import org.scalatest.concurrent.Eventually
 
 object DynamoDBJournalSpec {
@@ -26,6 +30,17 @@ object DynamoDBJournalSpec {
   def configWithMeta =
     ConfigFactory
       .parseString("""akka.persistence.dynamodb.with-meta = true""")
+      .withFallback(DynamoDBJournalSpec.testConfig())
+
+  def configWithTTL: Config =
+    ConfigFactory
+      .parseString("""
+        akka.persistence.dynamodb.time-to-live {
+          # check expiry and set zero TTL for testing as if deleted immediately
+          check-expiry = on
+          use-time-to-live-for-deletes = 0 seconds
+        }
+      """)
       .withFallback(DynamoDBJournalSpec.testConfig())
 
   def testConfig(): Config = {
@@ -63,4 +78,124 @@ class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.co
 
 class DynamoDBJournalWithMetaSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.configWithMeta) {
   protected override def supportsMetadata: CapabilityFlag = CapabilityFlag.on()
+}
+
+class DynamoDBJournalWithTTLSpec
+    extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.configWithTTL)
+    with Inspectors
+    with OptionValues {
+
+  // run the deletion tests again, with expiry attribute checks
+
+  "A journal with TTL settings" should {
+
+    "not replay expired events that were deleted using time-to-live" in {
+      import akka.persistence.dynamodb.internal.JournalAttributes._
+
+      val receiverProbe = TestProbe()
+      val receiverProbe2 = TestProbe()
+      val cmd = DeleteMessagesTo(pid, 3, receiverProbe2.ref)
+      val sub = TestProbe()
+
+      subscribe[DeleteMessagesTo](sub.ref)
+      journal ! cmd
+      sub.expectMsg(cmd)
+      receiverProbe2.expectMsg(DeleteMessagesSuccess(cmd.toSequenceNr))
+
+      val now = System.currentTimeMillis / 1000
+      val eventItems = getEventItemsFor(pid)
+      eventItems.size shouldBe 5
+      forAll(eventItems) { eventItem =>
+        val seqNr = eventItem.get(SeqNr).fold(0L)(_.n.toLong)
+        if (seqNr < 3) {
+          eventItem.get(Expiry).value.n.toLong should (be <= now and be > now - 10) // within 10s
+          eventItem.get(ExpiryMarker) shouldBe None
+        } else if (seqNr == 3) { // expiry marker at 3
+          eventItem.get(Expiry) shouldBe None
+          eventItem.get(ExpiryMarker).value.n.toLong should (be <= now and be > now - 10) // within 10s
+        } else {
+          eventItem.get(Expiry) shouldBe None
+          eventItem.get(ExpiryMarker) shouldBe None
+        }
+      }
+
+      journal ! ReplayMessages(1, Long.MaxValue, Long.MaxValue, pid, receiverProbe.ref)
+      List(4, 5).foreach { i =>
+        receiverProbe.expectMsg(replayedMessage(i))
+      }
+
+      receiverProbe2.expectNoMessage(200.millis)
+    }
+
+    "not reset highestSequenceNr after events were deleted using time-to-live" in {
+      import akka.persistence.dynamodb.internal.JournalAttributes._
+
+      val receiverProbe = TestProbe()
+
+      journal ! ReplayMessages(0, Long.MaxValue, Long.MaxValue, pid, receiverProbe.ref)
+      (1 to 5).foreach { i =>
+        receiverProbe.expectMsg(replayedMessage(i))
+      }
+      receiverProbe.expectMsg(RecoverySuccess(highestSequenceNr = 5L))
+
+      journal ! DeleteMessagesTo(pid, 3L, receiverProbe.ref)
+      receiverProbe.expectMsg(DeleteMessagesSuccess(3L))
+
+      val now = System.currentTimeMillis / 1000
+      val eventItems = getEventItemsFor(pid)
+      eventItems.size shouldBe 5
+      forAll(eventItems) { eventItem =>
+        val seqNr = eventItem.get(SeqNr).fold(0L)(_.n.toLong)
+        if (seqNr < 3) {
+          eventItem.get(Expiry).value.n.toLong should (be <= now and be > now - 10) // within 10s
+          eventItem.get(ExpiryMarker) shouldBe None
+        } else if (seqNr == 3) { // expiry marker at 3
+          eventItem.get(Expiry) shouldBe None
+          eventItem.get(ExpiryMarker).value.n.toLong should (be <= now and be > now - 10) // within 10s
+        } else {
+          eventItem.get(Expiry) shouldBe None
+          eventItem.get(ExpiryMarker) shouldBe None
+        }
+      }
+
+      journal ! ReplayMessages(0, Long.MaxValue, Long.MaxValue, pid, receiverProbe.ref)
+      (4 to 5).foreach { i =>
+        receiverProbe.expectMsg(replayedMessage(i))
+      }
+      receiverProbe.expectMsg(RecoverySuccess(highestSequenceNr = 5L))
+    }
+
+    "not reset highestSequenceNr after journal cleanup with events deleted using time-to-live" in {
+      import akka.persistence.dynamodb.internal.JournalAttributes._
+
+      val receiverProbe = TestProbe()
+
+      journal ! ReplayMessages(0, Long.MaxValue, Long.MaxValue, pid, receiverProbe.ref)
+      (1 to 5).foreach { i =>
+        receiverProbe.expectMsg(replayedMessage(i))
+      }
+      receiverProbe.expectMsg(RecoverySuccess(highestSequenceNr = 5L))
+
+      journal ! DeleteMessagesTo(pid, Long.MaxValue, receiverProbe.ref)
+      receiverProbe.expectMsg(DeleteMessagesSuccess(Long.MaxValue))
+
+      val now = System.currentTimeMillis / 1000
+      val eventItems = getEventItemsFor(pid)
+      eventItems.size shouldBe 5
+      forAll(eventItems) { eventItem =>
+        val seqNr = eventItem.get(SeqNr).fold(0L)(_.n.toLong)
+        if (seqNr < 5) {
+          eventItem.get(Expiry).value.n.toLong should (be <= now and be > now - 10) // within 10s
+          eventItem.get(ExpiryMarker) shouldBe None
+        } else { // expiry marker at last event
+          eventItem.get(Expiry) shouldBe None
+          eventItem.get(ExpiryMarker).value.n.toLong should (be <= now and be > now - 10) // within 10s
+        }
+      }
+
+      journal ! ReplayMessages(0, Long.MaxValue, Long.MaxValue, pid, receiverProbe.ref)
+      receiverProbe.expectMsg(RecoverySuccess(highestSequenceNr = 5L))
+    }
+
+  }
 }
