@@ -57,21 +57,39 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
     if (toSequenceNr < fromSequenceNr) { // when max of 0
       Source.empty
     } else {
-      val expressionAttributeValues =
+      val attributeValues =
         Map(
           ":pid" -> AttributeValue.fromS(persistenceId),
           ":from" -> AttributeValue.fromN(fromSequenceNr.toString),
-          ":to" -> AttributeValue.fromN(toSequenceNr.toString)).asJava
+          ":to" -> AttributeValue.fromN(toSequenceNr.toString))
+
+      val checkExpiry = settings.timeToLiveSettings.checkExpiry
+      val now = if (checkExpiry) System.currentTimeMillis / 1000 else 0
+
+      val (filterExpression, filterAttributeValues) =
+        if (checkExpiry) {
+          val expression = {
+            if (includeDeleted) // allow delete or expiry markers, but still filter expired events
+              s"attribute_not_exists($Expiry) OR $Expiry > :now"
+            else // no delete marker or expired events (checking expiry and expiry marker)
+              s"attribute_not_exists($Deleted)" +
+              s" AND (attribute_not_exists($Expiry) OR $Expiry > :now)" +
+              s" AND (attribute_not_exists($ExpiryMarker) OR $ExpiryMarker > :now)"
+          }
+          val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
+          (Some(expression), attributes)
+        } else if (!includeDeleted) {
+          (Some(s"attribute_not_exists($Deleted)"), Map.empty)
+        } else (None, Map.empty)
 
       val reqBuilder = QueryRequest.builder
         .tableName(settings.journalTable)
         .consistentRead(true)
         .keyConditionExpression(s"$Pid = :pid AND $SeqNr BETWEEN :from AND :to")
-        .expressionAttributeValues(expressionAttributeValues)
+        .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
         .limit(settings.querySettings.bufferSize)
 
-      if (!includeDeleted)
-        reqBuilder.filterExpression(s"attribute_not_exists($Deleted)")
+      filterExpression.foreach(reqBuilder.filterExpression)
 
       val publisher = client.queryPaginator(reqBuilder.build())
 
@@ -79,8 +97,9 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
         .fromPublisher(publisher)
         .mapConcat { response =>
           response.items().iterator().asScala.map { item =>
-            if (includeDeleted && item.get(Deleted) != null) {
-              // deleted item
+            if (includeDeleted && (item.containsKey(Deleted) ||
+              (checkExpiry && item.containsKey(ExpiryMarker) && item.get(ExpiryMarker).n.toLong <= now))) {
+              // deleted or expired item
               SerializedJournalItem(
                 persistenceId = persistenceId,
                 seqNr = item.get(SeqNr).n().toLong,
@@ -143,11 +162,25 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       // Well, we still need it for the first query because we want the external offset to be TimestampOffset
       // and that can include seen Map.
 
-      val expressionAttributeValues =
+      val attributeValues =
         Map(
           ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
           ":from" -> AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString),
-          ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString)).asJava
+          ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString))
+
+      val (filterExpression, filterAttributeValues) =
+        if (settings.timeToLiveSettings.checkExpiry) {
+          val now = System.currentTimeMillis / 1000
+          // no delete marker or expired events (checking expiry and expiry marker)
+          val expression =
+            s"attribute_not_exists($Deleted)" +
+            s" AND (attribute_not_exists($Expiry) OR $Expiry > :now)" +
+            s" AND (attribute_not_exists($ExpiryMarker) OR $ExpiryMarker > :now)"
+          val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
+          (expression, attributes)
+        } else {
+          (s"attribute_not_exists($Deleted)", Map.empty)
+        }
 
       val projectionExpression =
         if (backtracking) bySliceProjectionExpression else bySliceWithPayloadProjectionExpression
@@ -156,8 +189,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
         .tableName(settings.journalTable)
         .indexName(settings.journalBySliceGsi)
         .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $Timestamp BETWEEN :from AND :to")
-        .filterExpression(s"attribute_not_exists($Deleted)")
-        .expressionAttributeValues(expressionAttributeValues)
+        .filterExpression(filterExpression)
+        .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
         .projectionExpression(projectionExpression)
         // Limit won't limit the number of results you get with the paginator.
         // It only limits the number of results in each page
@@ -221,15 +254,29 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
   def timestampOfEvent(persistenceId: String, seqNr: Long): Future[Option[Instant]] = {
     import JournalAttributes._
-    val expressionAttributeValues =
-      Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString)).asJava
+    val attributeValues =
+      Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString))
+
+    val (filterExpression, filterAttributeValues) =
+      if (settings.timeToLiveSettings.checkExpiry) {
+        val now = System.currentTimeMillis / 1000
+        // no delete marker or expired events (checking expiry and expiry marker)
+        val expression =
+          s"attribute_not_exists($Deleted)" +
+          s" AND (attribute_not_exists($Expiry) OR $Expiry > :now)" +
+          s" AND (attribute_not_exists($ExpiryMarker) OR $ExpiryMarker > :now)"
+        val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
+        (expression, attributes)
+      } else {
+        (s"attribute_not_exists($Deleted)", Map.empty)
+      }
 
     val req = QueryRequest.builder
       .tableName(settings.journalTable)
       .consistentRead(true)
       .keyConditionExpression(s"$Pid = :pid AND $SeqNr = :seqNr")
-      .filterExpression(s"attribute_not_exists($Deleted)")
-      .expressionAttributeValues(expressionAttributeValues)
+      .filterExpression(filterExpression)
+      .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
       .projectionExpression(Timestamp)
       .build()
 
@@ -252,8 +299,22 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
   def loadEvent(persistenceId: String, seqNr: Long, includePayload: Boolean): Future[Option[SerializedJournalItem]] = {
     import JournalAttributes._
-    val expressionAttributeValues =
-      Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString)).asJava
+    val attributeValues =
+      Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString))
+
+    val (filterExpression, filterAttributeValues) =
+      if (settings.timeToLiveSettings.checkExpiry) {
+        val now = System.currentTimeMillis / 1000
+        // no delete marker or expired events (checking expiry and expiry marker)
+        val expression =
+          s"attribute_not_exists($Deleted)" +
+          s" AND (attribute_not_exists($Expiry) OR $Expiry > :now)" +
+          s" AND (attribute_not_exists($ExpiryMarker) OR $ExpiryMarker > :now)"
+        val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
+        (expression, attributes)
+      } else {
+        (s"attribute_not_exists($Deleted)", Map.empty)
+      }
 
     // FIXME is metadata needed here when includePayload==false? It is included in r2dbc
     val projectionExpression =
@@ -263,8 +324,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       .tableName(settings.journalTable)
       .consistentRead(true)
       .keyConditionExpression(s"$Pid = :pid AND $SeqNr = :seqNr")
-      .filterExpression(s"attribute_not_exists($Deleted)")
-      .expressionAttributeValues(expressionAttributeValues)
+      .filterExpression(filterExpression)
+      .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
       .projectionExpression(projectionExpression)
       .build()
 
