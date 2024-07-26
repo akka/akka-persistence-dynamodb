@@ -41,7 +41,15 @@ object DynamoDBSettings {
 
     val cleanupSettings = new CleanupSettings(config.getConfig("cleanup"))
 
-    new DynamoDBSettings(journalTable, journalPublishEvents, snapshotTable, querySettings, cleanupSettings)
+    val timeToLiveSettings = new TimeToLiveSettings(config.getConfig("time-to-live"))
+
+    new DynamoDBSettings(
+      journalTable,
+      journalPublishEvents,
+      snapshotTable,
+      querySettings,
+      cleanupSettings,
+      timeToLiveSettings)
   }
 
   /**
@@ -57,7 +65,8 @@ final class DynamoDBSettings private (
     val journalPublishEvents: Boolean,
     val snapshotTable: String,
     val querySettings: QuerySettings,
-    val cleanupSettings: CleanupSettings) {
+    val cleanupSettings: CleanupSettings,
+    val timeToLiveSettings: TimeToLiveSettings) {
 
   val journalBySliceGsi: String = journalTable + "_slice_idx"
   val snapshotBySliceGsi: String = snapshotTable + "_slice_idx"
@@ -239,4 +248,12 @@ final class PublishEventsDynamicSettings(config: Config) {
 @InternalStableApi
 final class CleanupSettings(config: Config) {
   val logProgressEvery: Int = config.getInt("log-progress-every")
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalStableApi
+final class TimeToLiveSettings(config: Config) {
+  val checkExpiry: Boolean = config.getBoolean("check-expiry")
 }

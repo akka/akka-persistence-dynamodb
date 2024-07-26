@@ -88,4 +88,17 @@ Rather than deleting items immediately, the @ref[EventSourcedCleanup tool](clean
 also be used to set an expiration timestamp on events or snapshots. DynamoDB's [Time to Live (TTL)][ttl] feature can
 then be enabled, to automatically delete items after they have expired.
 
+An expiry marker is kept in the event journal when all events for a persistence id have been marked for expiration, in
+the same way that a tombstone record is used for hard deletes. This expiry marker keeps track of the latest sequence
+number so that subsequent events don't reuse the same sequence numbers for events that have expired.
+
+If persistence ids will be reused with possibly expired events or snapshots, then it's recommended to enable a
+`check-expiry` feature, where expired events or snapshots are treated as already deleted when replaying from the
+journal. This enforces expiration before DynamoDB Time to Live may have actually deleted the data, and protects against
+partially deleted data. Enable expiry checks with configuration:
+
+```
+akka.persistence.dynamodb.time-to-live.check-expiry = on
+```
+
 [ttl]: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html

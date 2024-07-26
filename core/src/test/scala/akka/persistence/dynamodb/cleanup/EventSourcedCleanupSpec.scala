@@ -38,6 +38,9 @@ object EventSourcedCleanupSpec {
     akka.persistence.dynamodb.cleanup {
       log-progress-every = 2
     }
+    akka.persistence.dynamodb.time-to-live {
+      check-expiry = on
+    }
   """)
     .withFallback(TestConfig.config)
 }
@@ -460,6 +463,14 @@ class EventSourcedCleanupSpec
           eventItem.get(ExpiryMarker) shouldBe None
         }
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage(((x + 1) to n).mkString("|")) // expired events not included
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
     }
 
     "set expiry with time-to-live duration for selected events for single persistence id" in {
@@ -500,6 +511,14 @@ class EventSourcedCleanupSpec
           eventItem.get(ExpiryMarker) shouldBe None
         }
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage((1 to n).mkString("|")) // no events have expired yet (1 minute TTL)
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
     }
 
     "set expiry for selected events for single persistence id in batches" in {
@@ -557,6 +576,14 @@ class EventSourcedCleanupSpec
           eventItem.get(ExpiryMarker) shouldBe None
         }
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage(((x + 1) to n).mkString("|")) // expired events not included
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
     }
 
     "set expiry for all events for single persistence id" in {
@@ -586,6 +613,14 @@ class EventSourcedCleanupSpec
         eventItem.get(Expiry).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
         eventItem.get(ExpiryMarker) shouldBe None
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage("") // all events have expired
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(0L) // no expiry marker (resetSequenceNumber = true)
     }
 
     "set expiry with time-to-live duration for all events for single persistence id" in {
@@ -616,6 +651,14 @@ class EventSourcedCleanupSpec
         eventItem.get(Expiry).value.n.toLong should be >= beforeTimestamp.getEpochSecond
         eventItem.get(ExpiryMarker) shouldBe None
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage((1 to n).mkString("|")) // no events have expired yet (1 minute TTL)
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
     }
 
     "set expiry for all events for single persistence id in batches" in {
@@ -663,6 +706,14 @@ class EventSourcedCleanupSpec
         eventItem.get(Expiry).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
         eventItem.get(ExpiryMarker) shouldBe None
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage("") // all events have expired
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(0L) // no expiry marker (resetSequenceNumber = true)
     }
 
     "set expiry for all events for single persistence id and add expiry marker" in {
@@ -698,6 +749,14 @@ class EventSourcedCleanupSpec
           eventItem.get(ExpiryMarker).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
         }
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage("") // all events have expired
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong) // from expiry marker (resetSequenceNumber = false)
     }
 
     "set expiry with time-to-live duration for all events for single persistence id and add expiry marker" in {
@@ -734,6 +793,14 @@ class EventSourcedCleanupSpec
           eventItem.get(ExpiryMarker).value.n.toLong should be >= beforeTimestamp.getEpochSecond
         }
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage((1 to n).mkString("|")) // no events have expired yet (1 minute TTL)
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
     }
 
     "set expiry for all events for single persistence id in batches and add expiry marker" in {
@@ -787,6 +854,14 @@ class EventSourcedCleanupSpec
           eventItem.get(ExpiryMarker).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
         }
       }
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage("") // all events have expired
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong) // from expiry marker (resetSequenceNumber = false)
     }
 
     "set expiry for all events for multiple persistence ids" in {
@@ -819,6 +894,16 @@ class EventSourcedCleanupSpec
           eventItem.get(Expiry).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
           eventItem.get(ExpiryMarker) shouldBe None
         }
+      }
+
+      val persisters2 = pids.map(pid => spawn(Persister(pid)))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persisters2.foreach { persister2 =>
+        persister2 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage("") // all events have expired
+        persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+        seqNrProbe.expectMessage(0L) // no expiry marker (resetSequenceNumber = true)
       }
     }
 
@@ -854,6 +939,16 @@ class EventSourcedCleanupSpec
           eventItem.get(ExpiryMarker) shouldBe None
         }
       }
+
+      val persisters2 = pids.map(pid => spawn(Persister(pid)))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persisters2.foreach { persister2 =>
+        persister2 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage((1 to n).mkString("|")) // no events have expired yet (1 minute TTL)
+        persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+        seqNrProbe.expectMessage(n.toLong)
+      }
     }
 
     "set expiry for snapshot for single persistence id" in {
@@ -883,10 +978,24 @@ class EventSourcedCleanupSpec
 
       val cleanup = new EventSourcedCleanup(system)
       cleanup.setExpiryForAllEvents(pid, resetSequenceNumber = false, expiryTimestamp).futureValue
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage((1 to s).mkString("|") + "-snap") // all events expired, state from snapshot
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
+      testKit.stop(persister2)
+
       cleanup.setExpiryForSnapshot(pid, expiryTimestamp).futureValue
 
       val snapshotItem = getSnapshotItemFor(pid).value
       snapshotItem.get(Expiry).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
+
+      val persister3 = spawn(Persister(pid))
+      persister3 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage("") // snapshot has expired
     }
 
     "set expiry with time-to-live duration for snapshot for single persistence id" in {
@@ -917,6 +1026,15 @@ class EventSourcedCleanupSpec
       val cleanup = new EventSourcedCleanup(system)
       cleanup.setExpiryForAllEvents(pid, resetSequenceNumber = false, expiryTimestamp).futureValue
 
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage((1 to s).mkString("|") + "-snap") // all events expired, state from snapshot
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
+      testKit.stop(persister2)
+
       val timeToLive = 1.minute
       val beforeTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds) // same second or before
 
@@ -924,6 +1042,10 @@ class EventSourcedCleanupSpec
 
       val snapshotItem = getSnapshotItemFor(pid).value
       snapshotItem.get(Expiry).value.n.toLong should be >= beforeTimestamp.getEpochSecond
+
+      val persister3 = spawn(Persister(pid))
+      persister3 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage((1 to s).mkString("|") + "-snap") // snapshot not expired yet (1 minute TTL)
     }
 
     "set expiry for snapshot for multiple persistence ids" in {
@@ -957,11 +1079,28 @@ class EventSourcedCleanupSpec
 
       val cleanup = new EventSourcedCleanup(system)
       cleanup.setExpiryForAllEvents(pids, resetSequenceNumber = false, expiryTimestamp).futureValue
+
+      val persisters2 = pids.map(pid => spawn(Persister(pid)))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persisters2.foreach { persister2 =>
+        persister2 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage((1 to s).mkString("|") + "-snap") // all events expired, state from snapshot
+        persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+        seqNrProbe.expectMessage(n.toLong)
+      }
+
       cleanup.setExpiryForSnapshots(pids, expiryTimestamp).futureValue
 
       pids.foreach { pid =>
         val snapshotItem = getSnapshotItemFor(pid).value
         snapshotItem.get(Expiry).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
+      }
+
+      val persisters3 = pids.map(pid => spawn(Persister(pid)))
+      persisters3.foreach { persister3 =>
+        persister3 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage("") // snapshot has expired
       }
     }
 
@@ -997,6 +1136,16 @@ class EventSourcedCleanupSpec
       val cleanup = new EventSourcedCleanup(system)
       cleanup.setExpiryForAllEvents(pids, resetSequenceNumber = false, expiryTimestamp).futureValue
 
+      val persisters2 = pids.map(pid => spawn(Persister(pid)))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persisters2.foreach { persister2 =>
+        persister2 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage((1 to s).mkString("|") + "-snap") // all events expired, state from snapshot
+        persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+        seqNrProbe.expectMessage(n.toLong)
+      }
+
       val timeToLive = 1.minute
       val beforeTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds) // same second or before
 
@@ -1005,6 +1154,12 @@ class EventSourcedCleanupSpec
       pids.foreach { pid =>
         val snapshotItem = getSnapshotItemFor(pid).value
         snapshotItem.get(Expiry).value.n.toLong should be >= beforeTimestamp.getEpochSecond
+      }
+
+      val persisters3 = pids.map(pid => spawn(Persister(pid)))
+      persisters3.foreach { persister3 =>
+        persister3 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage((1 to s).mkString("|") + "-snap") // snapshot not expired yet (1 minute TTL)
       }
     }
 
@@ -1054,6 +1209,14 @@ class EventSourcedCleanupSpec
 
       val snapshotItem = getSnapshotItemFor(pid).value
       snapshotItem.get(Expiry) shouldBe None
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
     }
 
     "set expiry with time-to-live duration for events before snapshot for single persistence id" in {
@@ -1103,6 +1266,14 @@ class EventSourcedCleanupSpec
 
       val snapshotItem = getSnapshotItemFor(pid).value
       snapshotItem.get(Expiry) shouldBe None
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong)
     }
 
     "set expiry for events before snapshots for multiple persistence ids" in {
@@ -1156,6 +1327,16 @@ class EventSourcedCleanupSpec
 
         val snapshotItem = getSnapshotItemFor(pid).value
         snapshotItem.get(Expiry) shouldBe None
+      }
+
+      val persisters2 = pids.map(pid => spawn(Persister(pid)))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persisters2.foreach { persister2 =>
+        persister2 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+        persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+        seqNrProbe.expectMessage(n.toLong)
       }
     }
 
@@ -1212,6 +1393,16 @@ class EventSourcedCleanupSpec
         val snapshotItem = getSnapshotItemFor(pid).value
         snapshotItem.get(Expiry) shouldBe None
       }
+
+      val persisters2 = pids.map(pid => spawn(Persister(pid)))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persisters2.foreach { persister2 =>
+        persister2 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+        persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+        seqNrProbe.expectMessage(n.toLong)
+      }
     }
 
     "set expiry for all events and snapshot for single persistence id" in {
@@ -1251,6 +1442,14 @@ class EventSourcedCleanupSpec
 
       val snapshotItem = getSnapshotItemFor(pid).value
       snapshotItem.get(Expiry).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage("") // all events and snapshot expired
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(0L) // no expiry marker (resetSequenceNumber = true)
     }
 
     "set expiry with time-to-live duration for all events and snapshot for single persistence id" in {
@@ -1291,6 +1490,15 @@ class EventSourcedCleanupSpec
 
       val snapshotItem = getSnapshotItemFor(pid).value
       snapshotItem.get(Expiry).value.n.toLong should be >= beforeTimestamp.getEpochSecond
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      // events and snapshot not expired yet (1 minute TTL)
+      stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong) // not expired yet
     }
 
     "set expiry for all events and snapshot for single persistence id and add expiry marker" in {
@@ -1336,6 +1544,14 @@ class EventSourcedCleanupSpec
 
       val snapshotItem = getSnapshotItemFor(pid).value
       snapshotItem.get(Expiry).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      stateProbe.expectMessage("") // all events and snapshot expired
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong) // from expiry marker (resetSequenceNumber = false)
     }
 
     "set expiry with time-to-live duration for all events and snapshot for single persistence id and add expiry marker" in {
@@ -1382,6 +1598,15 @@ class EventSourcedCleanupSpec
 
       val snapshotItem = getSnapshotItemFor(pid).value
       snapshotItem.get(Expiry).value.n.toLong should be >= beforeTimestamp.getEpochSecond
+
+      val persister2 = spawn(Persister(pid))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persister2 ! Persister.GetState(stateProbe.ref)
+      // events and snapshot not expired yet (1 minute TTL)
+      stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(n.toLong) // not expired yet
     }
 
     "set expiry for all events and snapshots for multiple persistence ids" in {
@@ -1426,6 +1651,16 @@ class EventSourcedCleanupSpec
 
         val snapshotItem = getSnapshotItemFor(pid).value
         snapshotItem.get(Expiry).value.n.toLong shouldBe expiryTimestamp.getEpochSecond
+      }
+
+      val persisters2 = pids.map(pid => spawn(Persister(pid)))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persisters2.foreach { persister2 =>
+        persister2 ! Persister.GetState(stateProbe.ref)
+        stateProbe.expectMessage("") // all events and snapshot expired
+        persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+        seqNrProbe.expectMessage(0L) // no expiry marker (resetSequenceNumber = true)
       }
     }
 
@@ -1472,6 +1707,17 @@ class EventSourcedCleanupSpec
 
         val snapshotItem = getSnapshotItemFor(pid).value
         snapshotItem.get(Expiry).value.n.toLong should be >= beforeTimestamp.getEpochSecond
+      }
+
+      val persisters2 = pids.map(pid => spawn(Persister(pid)))
+      val stateProbe = createTestProbe[String]()
+      val seqNrProbe = createTestProbe[Long]()
+      persisters2.foreach { persister2 =>
+        persister2 ! Persister.GetState(stateProbe.ref)
+        // events and snapshot not expired yet (1 minute TTL)
+        stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+        persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+        seqNrProbe.expectMessage(n.toLong) // not expired yet
       }
     }
 

@@ -87,19 +87,31 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
           None
         } else {
           val item = response.items.get(0)
-          val snapshot = createSerializedSnapshotItem(item)
+          if (itemHasExpired(item)) {
+            None
+          } else {
+            val snapshot = createSerializedSnapshotItem(item)
 
-          log.debug(
-            "Loaded snapshot for persistenceId [{}], consumed [{}] RCU",
-            persistenceId,
-            response.consumedCapacity.capacityUnits)
+            log.debug(
+              "Loaded snapshot for persistenceId [{}], consumed [{}] RCU",
+              persistenceId,
+              response.consumedCapacity.capacityUnits)
 
-          Some(snapshot)
+            Some(snapshot)
+          }
         }
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
       }(ExecutionContexts.parasitic)
+  }
+
+  private def itemHasExpired(item: JMap[String, AttributeValue]): Boolean = {
+    import SnapshotAttributes.Expiry
+    if (settings.timeToLiveSettings.checkExpiry && item.containsKey(Expiry)) {
+      val now = System.currentTimeMillis / 1000
+      item.get(Expiry).n.toLong <= now
+    } else false
   }
 
   def store(snapshot: SerializedSnapshotItem): Future[Unit] = {
@@ -264,24 +276,35 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
 
     val entityTypeSlice = s"$entityType-$slice"
 
-    val expressionAttributeValues =
+    val attributeValues =
       Map(
         ":entityTypeSlice" -> AttributeValue.fromS(entityTypeSlice),
         ":from" -> AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString),
-        ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString)).asJava
+        ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString))
 
-    val req = QueryRequest.builder
+    val (filterExpression, filterAttributeValues) =
+      if (settings.timeToLiveSettings.checkExpiry) {
+        val now = System.currentTimeMillis / 1000
+        val expression = s"attribute_not_exists($Expiry) OR $Expiry > :now"
+        val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
+        (Some(expression), attributes)
+      } else {
+        (None, Map.empty)
+      }
+
+    val requestBuilder = QueryRequest.builder
       .tableName(settings.snapshotTable)
       .indexName(settings.snapshotBySliceGsi)
       .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $EventTimestamp BETWEEN :from AND :to")
-      .expressionAttributeValues(expressionAttributeValues)
+      .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
       // Limit won't limit the number of results you get with the paginator.
       // It only limits the number of results in each page
       // Limit is ignored by local DynamoDB.
       .limit(settings.querySettings.bufferSize)
-      .build()
 
-    val publisher = client.queryPaginator(req)
+    filterExpression.foreach(requestBuilder.filterExpression)
+
+    val publisher = client.queryPaginator(requestBuilder.build())
 
     Source
       .fromPublisher(publisher)

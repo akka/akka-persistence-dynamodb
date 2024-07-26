@@ -147,18 +147,28 @@ import software.amazon.awssdk.services.dynamodb.model.Update
   def readHighestSequenceNr(persistenceId: String): Future[Long] = {
     import JournalAttributes._
 
-    val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId)).asJava
+    val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId))
 
-    val request = QueryRequest.builder
+    val (filterExpression, filterAttributeValues) =
+      if (settings.timeToLiveSettings.checkExpiry) {
+        val now = System.currentTimeMillis / 1000
+        val expression = s"attribute_not_exists($Expiry) OR $Expiry > :now"
+        val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
+        (Some(expression), attributes)
+      } else (None, Map.empty)
+
+    val requestBuilder = QueryRequest.builder
       .tableName(settings.journalTable)
       .consistentRead(true)
       .keyConditionExpression(s"$Pid = :pid")
-      .expressionAttributeValues(attributeValues)
+      .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
+      .projectionExpression(s"$SeqNr")
       .scanIndexForward(false) // get last item (highest sequence nr)
       .limit(1)
-      .build()
 
-    val result = client.query(request).asScala.map { response =>
+    filterExpression.foreach(requestBuilder.filterExpression)
+
+    val result = client.query(requestBuilder.build()).asScala.map { response =>
       response.items().asScala.headOption.fold(0L) { item =>
         item.get(SeqNr).n().toLong
       }
@@ -173,7 +183,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       }(ExecutionContexts.parasitic)
   }
 
-  def readLowestSequenceNr(persistenceId: String): Future[Long] = {
+  private def readLowestSequenceNr(persistenceId: String): Future[Long] = {
     import JournalAttributes._
 
     val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId)).asJava
@@ -183,6 +193,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       .consistentRead(true)
       .keyConditionExpression(s"$Pid = :pid")
       .expressionAttributeValues(attributeValues)
+      .projectionExpression(s"$SeqNr")
       .scanIndexForward(true) // get first item (lowest sequence nr)
       .limit(1)
       .build()
