@@ -15,12 +15,35 @@ import akka.persistence.SnapshotProtocol.LoadSnapshotResult
 import akka.persistence.SnapshotSelectionCriteria
 import akka.persistence.dynamodb.TestConfig
 import akka.persistence.dynamodb.TestDbLifecycle
+import akka.persistence.dynamodb.internal.SnapshotAttributes
 import akka.persistence.snapshot.SnapshotStoreSpec
 import akka.testkit.TestProbe
+import com.typesafe.config.Config
+import com.typesafe.config.ConfigFactory
+import org.scalatest.OptionValues
 import org.scalatest.Outcome
 import org.scalatest.Pending
 
-class DynamoDBSnapshotStoreSpec extends SnapshotStoreSpec(TestConfig.config) with TestDbLifecycle {
+object DynamoDBSnapshotStoreSpec {
+  val config: Config = TestConfig.config
+
+  def configWithTTL: Config =
+    ConfigFactory
+      .parseString("""
+        akka.persistence.dynamodb.time-to-live {
+          # check expiry and set zero TTL for testing as if deleted immediately
+          check-expiry = on
+          use-time-to-live-for-deletes = 0 seconds
+        }
+      """)
+      .withFallback(config)
+}
+
+abstract class DynamoDBSnapshotStoreBaseSpec(config: Config)
+    extends SnapshotStoreSpec(config)
+    with TestDbLifecycle
+    with OptionValues {
+
   def typedSystem: ActorSystem[_] = system.toTyped
 
   private val ignoreTests = Set(
@@ -41,6 +64,8 @@ class DynamoDBSnapshotStoreSpec extends SnapshotStoreSpec(TestConfig.config) wit
     }
 
   protected override def supportsMetadata: CapabilityFlag = true
+
+  protected def usingTTLForDeletes: Boolean = false
 
   // Note: these depend on populating the database with snapshots in SnapshotStoreSpec.beforeEach
   // mostly covers the important bits of the skipped tests but for an update-in-place snapshot store
@@ -83,8 +108,20 @@ class DynamoDBSnapshotStoreSpec extends SnapshotStoreSpec(TestConfig.config) wit
       sub.expectMsg(cmd)
       senderProbe.expectMsg(DeleteSnapshotSuccess(md))
 
+      if (usingTTLForDeletes) {
+        val now = System.currentTimeMillis / 1000
+        val snapshotItem = getSnapshotItemFor(pid).value
+        snapshotItem.get(SnapshotAttributes.Expiry).value.n.toLong should (be <= now and be > now - 10) // within 10s
+      }
+
       snapshotStore.tell(LoadSnapshot(pid, SnapshotSelectionCriteria(), Long.MaxValue), senderProbe.ref)
       senderProbe.expectMsg(LoadSnapshotResult(None, Long.MaxValue))
     }
   }
+}
+
+class DynamoDBSnapshotStoreSpec extends DynamoDBSnapshotStoreBaseSpec(DynamoDBSnapshotStoreSpec.config)
+
+class DynamoDBSnapshotStoreWithTTLSpec extends DynamoDBSnapshotStoreBaseSpec(DynamoDBSnapshotStoreSpec.configWithTTL) {
+  override protected def usingTTLForDeletes: Boolean = true
 }

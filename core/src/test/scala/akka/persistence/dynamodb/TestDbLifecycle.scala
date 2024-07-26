@@ -8,6 +8,7 @@ import java.time.Instant
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
 import scala.util.control.NonFatal
 
@@ -25,6 +26,7 @@ import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
 trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
 
@@ -85,6 +87,30 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
       .item(attributes)
       .build()
     Await.result(client.putItem(req).asScala, 10.seconds)
+  }
+
+  // directly get event items from the journal table
+  def getEventItemsFor(persistenceId: String): Seq[Map[String, AttributeValue]] = {
+    import akka.persistence.dynamodb.internal.JournalAttributes.Pid
+    val request = QueryRequest.builder
+      .tableName(settings.journalTable)
+      .consistentRead(true)
+      .keyConditionExpression(s"$Pid = :pid")
+      .expressionAttributeValues(Map(":pid" -> AttributeValue.fromS(persistenceId)).asJava)
+      .build()
+    Await.result(client.query(request).asScala, 10.seconds).items.asScala.toSeq.map(_.asScala.toMap)
+  }
+
+  // directly get a snapshot item from the snapshot table
+  def getSnapshotItemFor(persistenceId: String): Option[Map[String, AttributeValue]] = {
+    import akka.persistence.dynamodb.internal.SnapshotAttributes.Pid
+    val request = QueryRequest.builder
+      .tableName(settings.snapshotTable)
+      .consistentRead(true)
+      .keyConditionExpression(s"$Pid = :pid")
+      .expressionAttributeValues(Map(":pid" -> AttributeValue.fromS(persistenceId)).asJava)
+      .build()
+    Await.result(client.query(request).asScala, 10.seconds).items.asScala.headOption.map(_.asScala.toMap)
   }
 
 }

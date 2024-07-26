@@ -125,10 +125,22 @@ private[dynamodb] final class DynamoDBSnapshotStore(cfg: Config, cfgPath: String
           minSequenceNr = metadata.sequenceNr,
           maxTimestamp = metadata.timestamp,
           minTimestamp = metadata.timestamp)
-    snapshotDao.delete(metadata.persistenceId, criteria)
+    deleteAsync(metadata.persistenceId, criteria)
   }
 
   override def deleteAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Unit] = {
-    snapshotDao.delete(persistenceId, criteria)
+    settings.timeToLiveSettings.useTimeToLiveForDeletes match {
+      case Some(timeToLive) =>
+        val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+        log.debug(
+          "deleting snapshot with time-to-live for persistence id [{}], with criteria [{}], expiring at [{}]",
+          persistenceId,
+          criteria,
+          expiryTimestamp)
+        snapshotDao.updateExpiry(persistenceId, criteria, expiryTimestamp)
+      case None =>
+        log.debug("deleting snapshot for persistence id [{}], with criteria [{}]", persistenceId, criteria)
+        snapshotDao.delete(persistenceId, criteria)
+    }
   }
 }

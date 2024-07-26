@@ -147,7 +147,7 @@ object ClientSettings {
           case "standard" => RetryMode.STANDARD
           case "adaptive" => RetryMode.ADAPTIVE
         }
-        Some(new RetrySettings(mode = mode, numRetries = optInt(config, "num-retries")))
+        Some(new RetrySettings(mode = mode, numRetries = ConfigHelpers.optInt(config, "num-retries")))
       } else None
     }
   }
@@ -181,35 +181,15 @@ object ClientSettings {
     }
   }
 
-  def apply(config: Config): ClientSettings =
+  def apply(config: Config): ClientSettings = {
     new ClientSettings(
       callTimeout = config.getDuration("call-timeout").toScala,
-      callAttemptTimeout = optDuration(config, "call-attempt-timeout"),
+      callAttemptTimeout = ConfigHelpers.optDuration(config, "call-attempt-timeout"),
       http = HttpSettings(config),
       retry = RetrySettings.get(config),
       compression = CompressionSettings(config),
-      region = optString(config, "region"),
+      region = ConfigHelpers.optString(config, "region"),
       local = LocalSettings.get(config))
-
-  private def optString(config: Config, path: String): Option[String] = {
-    if (config.hasPath(path)) {
-      val value = config.getString(path)
-      if (value.nonEmpty) Some(value) else None
-    } else None
-  }
-
-  private def optDuration(config: Config, path: String): Option[FiniteDuration] = {
-    Helpers.toRootLowerCase(config.getString(path)) match {
-      case "off" | "none" => None
-      case _              => Some(config.getDuration(path).toScala)
-    }
-  }
-
-  private def optInt(config: Config, path: String): Option[Int] = {
-    Helpers.toRootLowerCase(config.getString(path)) match {
-      case "default" => None
-      case _         => Some(config.getInt(path))
-    }
   }
 }
 
@@ -256,4 +236,30 @@ final class CleanupSettings(config: Config) {
 @InternalStableApi
 final class TimeToLiveSettings(config: Config) {
   val checkExpiry: Boolean = config.getBoolean("check-expiry")
+
+  val useTimeToLiveForDeletes: Option[FiniteDuration] =
+    ConfigHelpers.optDuration(config, "use-time-to-live-for-deletes")
+}
+
+private[dynamodb] object ConfigHelpers {
+  def optString(config: Config, path: String): Option[String] = {
+    if (config.hasPath(path)) {
+      val value = config.getString(path)
+      if (value.nonEmpty) Some(value) else None
+    } else None
+  }
+
+  def optDuration(config: Config, path: String): Option[FiniteDuration] = {
+    Helpers.toRootLowerCase(config.getString(path)) match {
+      case "off" | "none" => None
+      case _              => Some(config.getDuration(path).toScala)
+    }
+  }
+
+  def optInt(config: Config, path: String): Option[Int] = {
+    Helpers.toRootLowerCase(config.getString(path)) match {
+      case "default" => None
+      case _         => Some(config.getInt(path))
+    }
+  }
 }

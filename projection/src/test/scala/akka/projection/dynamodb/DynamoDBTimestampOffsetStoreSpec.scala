@@ -367,7 +367,7 @@ class DynamoDBTimestampOffsetStoreSpec
         if (i % 1000 == 0) {
           val totalDurationMs = (System.nanoTime() - totalStartTime) / 1000 / 1000
           val durationMs = (System.nanoTime() - startTime) / 1000 / 1000
-          println(
+          log.debug(
             s"#${i * batchSize}: $count took $durationMs ms, RPS ${1000L * count / durationMs}, Total RPS ${1000L * i * batchSize / totalDurationMs}")
           startTime = System.nanoTime()
           count = 0
