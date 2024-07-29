@@ -4,6 +4,8 @@
 
 package akka.persistence.dynamodb.snapshot
 
+import scala.concurrent.duration._
+
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.adapter._
 import akka.persistence.CapabilityFlag
@@ -27,13 +29,23 @@ import org.scalatest.Pending
 object DynamoDBSnapshotStoreSpec {
   val config: Config = TestConfig.config
 
-  def configWithTTL: Config =
+  def configWithTTLForDeletes: Config =
     ConfigFactory
       .parseString("""
         akka.persistence.dynamodb.time-to-live {
           # check expiry and set zero TTL for testing as if deleted immediately
           check-expiry = on
           use-time-to-live-for-deletes = 0 seconds
+        }
+      """)
+      .withFallback(config)
+
+  def configWithSnapshotTTL: Config =
+    ConfigFactory
+      .parseString("""
+        akka.persistence.dynamodb.time-to-live {
+          check-expiry = on
+          snapshot-time-to-live = 1 hour
         }
       """)
       .withFallback(config)
@@ -67,6 +79,8 @@ abstract class DynamoDBSnapshotStoreBaseSpec(config: Config)
 
   protected def usingTTLForDeletes: Boolean = false
 
+  protected def usingSnapshotTTL: Boolean = false
+
   // Note: these depend on populating the database with snapshots in SnapshotStoreSpec.beforeEach
   // mostly covers the important bits of the skipped tests but for an update-in-place snapshot store
 
@@ -99,6 +113,12 @@ abstract class DynamoDBSnapshotStoreBaseSpec(config: Config)
       val sequenceNr = result.snapshot.get.metadata.sequenceNr
       sequenceNr shouldBe 15
 
+      if (usingSnapshotTTL) {
+        val expected = System.currentTimeMillis / 1000 + 1.hour.toSeconds
+        val snapshotItem = getSnapshotItemFor(pid).value
+        snapshotItem.get(SnapshotAttributes.Expiry).value.n.toLong should (be <= expected and be > expected - 10)
+      }
+
       val md = SnapshotMetadata(pid, sequenceNr, timestamp = 0)
       val cmd = DeleteSnapshot(md)
       val sub = TestProbe()
@@ -122,6 +142,12 @@ abstract class DynamoDBSnapshotStoreBaseSpec(config: Config)
 
 class DynamoDBSnapshotStoreSpec extends DynamoDBSnapshotStoreBaseSpec(DynamoDBSnapshotStoreSpec.config)
 
-class DynamoDBSnapshotStoreWithTTLSpec extends DynamoDBSnapshotStoreBaseSpec(DynamoDBSnapshotStoreSpec.configWithTTL) {
+class DynamoDBSnapshotStoreWithTTLForDeletesSpec
+    extends DynamoDBSnapshotStoreBaseSpec(DynamoDBSnapshotStoreSpec.configWithTTLForDeletes) {
   override protected def usingTTLForDeletes: Boolean = true
+}
+
+class DynamoDBSnapshotStoreWithSnapshotTTLSpec
+    extends DynamoDBSnapshotStoreBaseSpec(DynamoDBSnapshotStoreSpec.configWithSnapshotTTL) {
+  override protected def usingSnapshotTTL: Boolean = true
 }

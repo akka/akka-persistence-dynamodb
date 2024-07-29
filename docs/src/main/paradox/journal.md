@@ -95,6 +95,12 @@ deleted events can be configured to expire in 7 days, rather than being deleted 
 
 @@ snip [use time-to-live for deletes](/docs/src/test/scala/docs/config/TimeToLiveSettingsDocExample.scala) { #use-time-to-live-for-deletes type=conf }
 
+While it is recommended to keep all events in an event sourced system, so that new @ref:[projections](projection.md)
+can be re-built, setting a time to live expiry on events or snapshots when they are created and stored is supported.
+For example, events can be configured to expire in 3 days and snapshots in 5 days, using configuration:
+
+@@ snip [event and snapshot time-to-live](/docs/src/test/scala/docs/config/TimeToLiveSettingsDocExample.scala) { #time-to-live type=conf }
+
 The @ref[EventSourcedCleanup tool](cleanup.md#event-sourced-cleanup-tool) can also be used to set an expiration
 timestamp on events or snapshots.
 

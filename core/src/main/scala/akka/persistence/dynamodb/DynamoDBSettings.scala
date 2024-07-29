@@ -239,6 +239,10 @@ final class TimeToLiveSettings(config: Config) {
 
   val useTimeToLiveForDeletes: Option[FiniteDuration] =
     ConfigHelpers.optDuration(config, "use-time-to-live-for-deletes")
+
+  val eventTimeToLive: Option[FiniteDuration] = ConfigHelpers.optDuration(config, "event-time-to-live")
+
+  val snapshotTimeToLive: Option[FiniteDuration] = ConfigHelpers.optDuration(config, "snapshot-time-to-live")
 }
 
 private[dynamodb] object ConfigHelpers {
