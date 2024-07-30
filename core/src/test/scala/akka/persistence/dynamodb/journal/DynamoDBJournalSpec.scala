@@ -32,13 +32,23 @@ object DynamoDBJournalSpec {
       .parseString("""akka.persistence.dynamodb.with-meta = true""")
       .withFallback(DynamoDBJournalSpec.testConfig())
 
-  def configWithTTL: Config =
+  def configWithTTLForDeletes: Config =
     ConfigFactory
       .parseString("""
         akka.persistence.dynamodb.time-to-live {
           # check expiry and set zero TTL for testing as if deleted immediately
           check-expiry = on
           use-time-to-live-for-deletes = 0 seconds
+        }
+      """)
+      .withFallback(DynamoDBJournalSpec.testConfig())
+
+  def configWithEventTTL: Config =
+    ConfigFactory
+      .parseString("""
+        akka.persistence.dynamodb.time-to-live {
+          check-expiry = on
+          event-time-to-live = 1 hour
         }
       """)
       .withFallback(DynamoDBJournalSpec.testConfig())
@@ -80,8 +90,8 @@ class DynamoDBJournalWithMetaSpec extends DynamoDBJournalBaseSpec(DynamoDBJourna
   protected override def supportsMetadata: CapabilityFlag = CapabilityFlag.on()
 }
 
-class DynamoDBJournalWithTTLSpec
-    extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.configWithTTL)
+class DynamoDBJournalWithTTLForDeletesSpec
+    extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.configWithTTLForDeletes)
     with Inspectors
     with OptionValues {
 
@@ -197,5 +207,25 @@ class DynamoDBJournalWithTTLSpec
       receiverProbe.expectMsg(RecoverySuccess(highestSequenceNr = 5L))
     }
 
+  }
+}
+
+class DynamoDBJournalWithEventTTLSpec
+    extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.configWithEventTTL)
+    with Inspectors
+    with OptionValues {
+
+  // check persisted events all have expiry set
+
+  override protected def beforeEach(): Unit = {
+    import akka.persistence.dynamodb.internal.JournalAttributes._
+    super.beforeEach() // test events written
+    val expected = System.currentTimeMillis / 1000 + 1.hour.toSeconds
+    val eventItems = getEventItemsFor(pid)
+    eventItems.size shouldBe 5
+    forAll(eventItems) { eventItem =>
+      eventItem.get(Expiry).value.n.toLong should (be <= expected and be > expected - 10) // within 10s
+      eventItem.get(ExpiryMarker) shouldBe None
+    }
   }
 }

@@ -29,6 +29,15 @@ object TimeToLiveSettingsDocExample {
     }
     //#use-time-to-live-for-deletes
     """))
+
+  val ttlConfig: Config = ConfigFactory.load(ConfigFactory.parseString("""
+    //#time-to-live
+    akka.persistence.dynamodb.time-to-live {
+      event-time-to-live = 3 days
+      snapshot-time-to-live = 5 days
+    }
+    //#time-to-live
+    """))
 }
 
 class TimeToLiveSettingsDocExample extends AnyWordSpec with Matchers {
@@ -49,6 +58,14 @@ class TimeToLiveSettingsDocExample extends AnyWordSpec with Matchers {
       val settings = dynamoDBSettings(ttlForDeletesConfig)
       settings.timeToLiveSettings.checkExpiry shouldBe false
       settings.timeToLiveSettings.useTimeToLiveForDeletes shouldBe Some(7.days)
+    }
+
+    "have example of setting event-time-to-live and snapshot-time-to-live" in {
+      val settings = dynamoDBSettings(ttlConfig)
+      settings.timeToLiveSettings.checkExpiry shouldBe false
+      settings.timeToLiveSettings.useTimeToLiveForDeletes shouldBe None
+      settings.timeToLiveSettings.eventTimeToLive shouldBe Some(3.days)
+      settings.timeToLiveSettings.snapshotTimeToLive shouldBe Some(5.days)
     }
 
   }

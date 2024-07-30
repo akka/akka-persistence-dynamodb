@@ -144,6 +144,11 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
       attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
     }
 
+    settings.timeToLiveSettings.snapshotTimeToLive.foreach { timeToLive =>
+      val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+      attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
+    }
+
     val request = PutItemRequest
       .builder()
       .tableName(settings.snapshotTable)
