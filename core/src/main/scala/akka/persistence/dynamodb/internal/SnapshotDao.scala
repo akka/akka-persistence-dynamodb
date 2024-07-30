@@ -145,7 +145,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
     }
 
     settings.timeToLiveSettings.snapshotTimeToLive.foreach { timeToLive =>
-      val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
+      val expiryTimestamp = snapshot.writeTimestamp.plusSeconds(timeToLive.toSeconds)
       attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
     }
 
