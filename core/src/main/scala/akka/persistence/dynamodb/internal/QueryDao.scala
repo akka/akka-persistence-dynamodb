@@ -17,6 +17,7 @@ import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
 import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.DynamoDBSettings
+import akka.persistence.typed.PersistenceId
 import akka.stream.scaladsl.Source
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
@@ -63,7 +64,9 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
           ":from" -> AttributeValue.fromN(fromSequenceNr.toString),
           ":to" -> AttributeValue.fromN(toSequenceNr.toString))
 
-      val checkExpiry = settings.timeToLiveSettings.checkExpiry
+      val entityType = PersistenceId.extractEntityType(persistenceId)
+      val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+      val checkExpiry = timeToLiveSettings.checkExpiry
       val now = if (checkExpiry) System.currentTimeMillis / 1000 else 0
 
       val (filterExpression, filterAttributeValues) =
@@ -168,8 +171,10 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
           ":from" -> AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString),
           ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString))
 
+      val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
       val (filterExpression, filterAttributeValues) =
-        if (settings.timeToLiveSettings.checkExpiry) {
+        if (timeToLiveSettings.checkExpiry) {
           val now = System.currentTimeMillis / 1000
           // no delete marker or expired events (checking expiry and expiry marker)
           val expression =
@@ -257,8 +262,11 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
     val attributeValues =
       Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString))
 
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
     val (filterExpression, filterAttributeValues) =
-      if (settings.timeToLiveSettings.checkExpiry) {
+      if (timeToLiveSettings.checkExpiry) {
         val now = System.currentTimeMillis / 1000
         // no delete marker or expired events (checking expiry and expiry marker)
         val expression =
@@ -302,8 +310,11 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
     val attributeValues =
       Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString))
 
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
     val (filterExpression, filterAttributeValues) =
-      if (settings.timeToLiveSettings.checkExpiry) {
+      if (timeToLiveSettings.checkExpiry) {
         val now = System.currentTimeMillis / 1000
         // no delete marker or expired events (checking expiry and expiry marker)
         val expression =

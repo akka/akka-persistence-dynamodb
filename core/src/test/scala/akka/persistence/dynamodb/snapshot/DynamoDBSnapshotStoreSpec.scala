@@ -33,9 +33,12 @@ object DynamoDBSnapshotStoreSpec {
     ConfigFactory
       .parseString("""
         akka.persistence.dynamodb.time-to-live {
-          # check expiry and set zero TTL for testing as if deleted immediately
-          check-expiry = on
-          use-time-to-live-for-deletes = 0 seconds
+          event-sourced-entities {
+            "*" {
+              # check expiry by default and set zero TTL for testing as if deleted immediately
+              use-time-to-live-for-deletes = 0 seconds
+            }
+          }
         }
       """)
       .withFallback(config)
@@ -44,8 +47,11 @@ object DynamoDBSnapshotStoreSpec {
     ConfigFactory
       .parseString("""
         akka.persistence.dynamodb.time-to-live {
-          check-expiry = on
-          snapshot-time-to-live = 1 hour
+          event-sourced-entities {
+            "*" {
+              snapshot-time-to-live = 1 hour
+            }
+          }
         }
       """)
       .withFallback(config)

@@ -89,15 +89,20 @@ Live (TTL)][ttl] feature can then be enabled, to automatically delete items afte
 
 The TTL attribute to use for the journal or snapshot tables is named `expiry`.
 
+Time-to-live settings are configured per entity type. The entity type can also be matched by prefix by using a `*` at
+the end of the key.
+
 If events are being @extref:[deleted on snapshot](akka:typed/persistence-snapshot.html#event-deletion), the journal can
 be configured to instead set an expiry time for the deleted events, given a time-to-live duration to use. For example,
-deleted events can be configured to expire in 7 days, rather than being deleted immediately:
+deleted events can be configured to expire in 7 days, rather than being deleted immediately, for a particular entity
+type:
 
 @@ snip [use time-to-live for deletes](/docs/src/test/scala/docs/config/TimeToLiveSettingsDocExample.scala) { #use-time-to-live-for-deletes type=conf }
 
 While it is recommended to keep all events in an event sourced system, so that new @ref:[projections](projection.md)
 can be re-built, setting a time to live expiry on events or snapshots when they are created and stored is supported.
-For example, events can be configured to expire in 3 days and snapshots in 5 days, using configuration:
+For example, events can be configured to expire in 3 days and snapshots in 5 days, for all entity type names that start
+with a particular prefix:
 
 @@ snip [event and snapshot time-to-live](/docs/src/test/scala/docs/config/TimeToLiveSettingsDocExample.scala) { #time-to-live type=conf }
 
@@ -108,12 +113,10 @@ An expiry marker is kept in the event journal when all events for a persistence 
 the same way that a tombstone record is used for hard deletes. This expiry marker keeps track of the latest sequence
 number so that subsequent events don't reuse the same sequence numbers for events that have expired.
 
-If persistence ids will be reused with possibly expired events or snapshots, then it's recommended to enable a
-`check-expiry` feature, where expired events or snapshots are treated as already deleted when replaying from the
-journal. This enforces expiration before DynamoDB Time to Live may have actually deleted the data, and protects against
-partially deleted data. Enable expiry checks with configuration:
-
-@@ snip [check expiry](/docs/src/test/scala/docs/config/TimeToLiveSettingsDocExample.scala) { #check-expiry type=conf }
+In case persistence ids will be reused with possibly expired events or snapshots, there is a `check-expiry` feature
+enabled by default, where expired events or snapshots are treated as already deleted when replaying from the journal.
+This enforces expiration before DynamoDB Time to Live may have actually deleted the data, and protects against
+partially deleted data.
 
 ### Time to Live reference configuration
 
