@@ -5,12 +5,14 @@
 package akka.persistence.dynamodb
 
 import scala.concurrent.duration.FiniteDuration
+import scala.jdk.CollectionConverters._
 import scala.jdk.DurationConverters._
 
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalStableApi
 import akka.util.Helpers
 import com.typesafe.config.Config
+import com.typesafe.config.ConfigObject
 import software.amazon.awssdk.core.retry.RetryMode
 
 object DynamoDBSettings {
@@ -235,6 +237,26 @@ final class CleanupSettings(config: Config) {
  */
 @InternalStableApi
 final class TimeToLiveSettings(config: Config) {
+  val eventSourcedEntities: WildcardMap[EventSourcedEntityTimeToLiveSettings] = {
+    val defaults = config.getConfig("event-sourced-defaults")
+    val defaultSettings = new EventSourcedEntityTimeToLiveSettings(defaults)
+    val entries = config.getConfig("event-sourced-entities").root.entrySet.asScala
+    val perEntitySettings = entries.toSeq.map { entry =>
+      (entry.getKey, entry.getValue) match {
+        case (key: String, value: ConfigObject) =>
+          val settings = new EventSourcedEntityTimeToLiveSettings(value.toConfig.withFallback(defaults))
+          key -> settings
+      }
+    }
+    WildcardMap(perEntitySettings, defaultSettings)
+  }
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalStableApi
+final class EventSourcedEntityTimeToLiveSettings(config: Config) {
   val checkExpiry: Boolean = config.getBoolean("check-expiry")
 
   val useTimeToLiveForDeletes: Option[FiniteDuration] =
@@ -265,5 +287,30 @@ private[dynamodb] object ConfigHelpers {
       case "default" => None
       case _         => Some(config.getInt(path))
     }
+  }
+}
+
+private[dynamodb] object WildcardMap {
+  def apply[V](elements: Seq[(String, V)], default: V): WildcardMap[V] = {
+    val (wildcards, exact) = elements.partition { case (key, _) => hasWildcard(key) }
+    val prefixes = wildcards.map { case (key, value) => dropWildcard(key) -> value }
+    new WildcardMap[V](exact.toMap, prefixes.toMap, default)
+  }
+
+  private def hasWildcard(key: String): Boolean = key.endsWith("*")
+
+  private def dropWildcard(key: String): String = key.dropRight(1)
+}
+
+private[dynamodb] final class WildcardMap[V](exact: Map[String, V], prefixes: Map[String, V], default: V) {
+  def isEmpty: Boolean = exact.isEmpty && prefixes.isEmpty
+
+  def get(key: String): V = {
+    if (isEmpty) default
+    else
+      exact
+        .get(key)
+        .orElse(prefixes.collectFirst { case (k, v) if key.startsWith(k) => v })
+        .getOrElse(default)
   }
 }

@@ -36,6 +36,7 @@ import akka.persistence.journal.AsyncReplay
 import akka.persistence.journal.AsyncWriteJournal
 import akka.persistence.journal.Tagged
 import akka.persistence.query.PersistenceQuery
+import akka.persistence.typed.PersistenceId
 import akka.serialization.Serialization
 import akka.serialization.SerializationExtension
 import akka.serialization.Serializers
@@ -195,7 +196,9 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
   }
 
   override def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = {
-    settings.timeToLiveSettings.useTimeToLiveForDeletes match {
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+    timeToLiveSettings.useTimeToLiveForDeletes match {
       case Some(timeToLive) =>
         val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
         log.debug(

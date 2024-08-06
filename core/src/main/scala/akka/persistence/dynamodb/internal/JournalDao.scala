@@ -63,6 +63,8 @@ import software.amazon.awssdk.services.dynamodb.model.Update
     val entityType = PersistenceId.extractEntityType(persistenceId)
     val slice = persistenceExt.sliceForPersistenceId(persistenceId)
 
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
     def putItemAttributes(item: SerializedJournalItem) = {
       import JournalAttributes._
       val attributes = new JHashMap[String, AttributeValue]
@@ -86,7 +88,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
       }
 
-      settings.timeToLiveSettings.eventTimeToLive.foreach { timeToLive =>
+      timeToLiveSettings.eventTimeToLive.foreach { timeToLive =>
         val expiryTimestamp = item.writeTimestamp.plusSeconds(timeToLive.toSeconds)
         attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
       }
@@ -154,8 +156,11 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 
     val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId))
 
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
     val (filterExpression, filterAttributeValues) =
-      if (settings.timeToLiveSettings.checkExpiry) {
+      if (timeToLiveSettings.checkExpiry) {
         val now = System.currentTimeMillis / 1000
         val expression = s"attribute_not_exists($Expiry) OR $Expiry > :now"
         val attributes = Map(":now" -> AttributeValue.fromN(now.toString))

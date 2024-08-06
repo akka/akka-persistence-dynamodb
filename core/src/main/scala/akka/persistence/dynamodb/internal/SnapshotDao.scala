@@ -78,6 +78,9 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
       }
     }
 
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
     client
       .query(request)
       .asScala
@@ -87,7 +90,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
           None
         } else {
           val item = response.items.get(0)
-          if (itemHasExpired(item)) {
+          if (timeToLiveSettings.checkExpiry && itemHasExpired(item)) {
             None
           } else {
             val snapshot = createSerializedSnapshotItem(item)
@@ -108,7 +111,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
 
   private def itemHasExpired(item: JMap[String, AttributeValue]): Boolean = {
     import SnapshotAttributes.Expiry
-    if (settings.timeToLiveSettings.checkExpiry && item.containsKey(Expiry)) {
+    if (item.containsKey(Expiry)) {
       val now = System.currentTimeMillis / 1000
       item.get(Expiry).n.toLong <= now
     } else false
@@ -144,7 +147,9 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
       attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
     }
 
-    settings.timeToLiveSettings.snapshotTimeToLive.foreach { timeToLive =>
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
+    timeToLiveSettings.snapshotTimeToLive.foreach { timeToLive =>
       val expiryTimestamp = snapshot.writeTimestamp.plusSeconds(timeToLive.toSeconds)
       attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
     }
@@ -287,8 +292,10 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
         ":from" -> AttributeValue.fromN(InstantFactory.toEpochMicros(fromTimestamp).toString),
         ":to" -> AttributeValue.fromN(InstantFactory.toEpochMicros(toTimestamp).toString))
 
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
     val (filterExpression, filterAttributeValues) =
-      if (settings.timeToLiveSettings.checkExpiry) {
+      if (timeToLiveSettings.checkExpiry) {
         val now = System.currentTimeMillis / 1000
         val expression = s"attribute_not_exists($Expiry) OR $Expiry > :now"
         val attributes = Map(":now" -> AttributeValue.fromN(now.toString))

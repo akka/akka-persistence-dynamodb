@@ -23,6 +23,7 @@ import akka.persistence.dynamodb.internal.SerializedSnapshotMetadata
 import akka.persistence.dynamodb.internal.SnapshotDao
 import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.snapshot.SnapshotStore
+import akka.persistence.typed.PersistenceId
 import akka.serialization.Serialization
 import akka.serialization.SerializationExtension
 import akka.serialization.Serializers
@@ -129,7 +130,9 @@ private[dynamodb] final class DynamoDBSnapshotStore(cfg: Config, cfgPath: String
   }
 
   override def deleteAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Unit] = {
-    settings.timeToLiveSettings.useTimeToLiveForDeletes match {
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+    timeToLiveSettings.useTimeToLiveForDeletes match {
       case Some(timeToLive) =>
         val expiryTimestamp = Instant.now().plusSeconds(timeToLive.toSeconds)
         log.debug(

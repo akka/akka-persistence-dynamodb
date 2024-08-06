@@ -26,8 +26,6 @@ import com.typesafe.config.Config
 import org.scalatest.Inspectors
 import org.scalatest.OptionValues
 import org.slf4j.event.Level
-import software.amazon.awssdk.services.dynamodb.model.AttributeValue
-import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
 object EventSourcedCleanupSpec {
   val config: Config = ConfigFactory
@@ -35,9 +33,6 @@ object EventSourcedCleanupSpec {
     akka.loglevel = DEBUG
     akka.persistence.dynamodb.cleanup {
       log-progress-every = 2
-    }
-    akka.persistence.dynamodb.time-to-live {
-      check-expiry = on
     }
   """)
     .withFallback(TestConfig.config)
