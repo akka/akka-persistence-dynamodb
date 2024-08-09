@@ -272,11 +272,11 @@ class DynamoDBTimestampOffsetStoreSpec
       offsetStore.getState().offsetBySlice(slice4) shouldBe TimestampOffset(offset2.timestamp, Map(p4 -> 1L))
       readOffset1.get.offsets shouldBe offsetStore.getState().offsetBySlice
 
-      offsetStore.load(Vector(p1, p2, p3, p4)).futureValue
-      offsetStore.getState().byPid(p1).seqNr shouldBe 4L
-      offsetStore.getState().byPid(p2).seqNr shouldBe 2L
-      offsetStore.getState().byPid(p3).seqNr shouldBe 5L
-      offsetStore.getState().byPid(p4).seqNr shouldBe 1L
+      val state1 = offsetStore.load(Vector(p1, p2, p3, p4)).futureValue
+      state1.byPid(p1).seqNr shouldBe 4L
+      state1.byPid(p2).seqNr shouldBe 2L
+      state1.byPid(p3).seqNr shouldBe 5L
+      state1.byPid(p4).seqNr shouldBe 1L
 
       tick()
       val offset5 = TimestampOffset(clock.instant(), Map(p1 -> 5L))
@@ -298,11 +298,11 @@ class DynamoDBTimestampOffsetStoreSpec
 
       offsetStore.saveOffsets(offsetsBatch2).futureValue
       val readOffset2 = offsetStore.readOffset[TimestampOffsetBySlice]().futureValue
-      offsetStore.load(Vector(p1, p2, p3, p4)).futureValue
-      offsetStore.getState().byPid(p1).seqNr shouldBe 8L
-      offsetStore.getState().byPid(p2).seqNr shouldBe 2L // duplicate with lower seqNr not saved
-      offsetStore.getState().byPid(p3).seqNr shouldBe 5L
-      offsetStore.getState().byPid(p4).seqNr shouldBe 1L
+      val state2 = offsetStore.load(Vector(p1, p2, p3, p4)).futureValue
+      state2.byPid(p1).seqNr shouldBe 8L
+      state2.byPid(p2).seqNr shouldBe 2L // duplicate with lower seqNr not saved
+      state2.byPid(p3).seqNr shouldBe 5L
+      state2.byPid(p4).seqNr shouldBe 1L
       readOffset2.get.offsets shouldBe offsetStore.getState().offsetBySlice
     }
 
@@ -321,8 +321,8 @@ class DynamoDBTimestampOffsetStoreSpec
           offsetStore.readOffset().futureValue
           (1 to numberOfOffsets).map { n =>
             val pid = s"$pidPrefix$n"
-            offsetStore.load(pid).futureValue
-            offsetStore.getState().byPid(pid).seqNr shouldBe n
+            val state = offsetStore.load(pid).futureValue
+            state.byPid(pid).seqNr shouldBe n
           }
         }
       }
@@ -443,8 +443,8 @@ class DynamoDBTimestampOffsetStoreSpec
           client)
       offsetStore1.readOffset().futureValue
       // FIXME this is not really testing anything, the test is supposed to test that it is responsible for a range
-      offsetStore1.load(Vector(p1, p2)).futureValue
-      offsetStore1.getState().byPid.keySet shouldBe Set(p1, p2)
+      val state1 = offsetStore1.load(Vector(p1, p2)).futureValue
+      state1.byPid.keySet shouldBe Set(p1, p2)
 
       val offsetStore2 =
         new DynamoDBOffsetStore(
@@ -455,8 +455,8 @@ class DynamoDBTimestampOffsetStoreSpec
           client)
       offsetStore2.readOffset().futureValue
       // FIXME this is not really testing anything, the test is supposed to test that it is responsible for a range
-      offsetStore2.load(Vector(p3, p4)).futureValue
-      offsetStore2.getState().byPid.keySet shouldBe Set(p3, p4)
+      val state2 = offsetStore2.load(Vector(p3, p4)).futureValue
+      state2.byPid.keySet shouldBe Set(p3, p4)
     }
 
     "filter duplicates" in {
