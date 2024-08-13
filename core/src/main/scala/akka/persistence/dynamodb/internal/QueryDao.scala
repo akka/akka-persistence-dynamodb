@@ -90,7 +90,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
         .consistentRead(true)
         .keyConditionExpression(s"$Pid = :pid AND $SeqNr BETWEEN :from AND :to")
         .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
-        .limit(settings.querySettings.pageSize)
+        .limit(settings.querySettings.bufferSize)
 
       filterExpression.foreach(reqBuilder.filterExpression)
 
@@ -201,7 +201,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
         // It only limits the number of results in each page.
         // See the `take` below which limits the total number of results.
         // Limit is ignored by local DynamoDB.
-        .limit(settings.querySettings.pageSize)
+        .limit(settings.querySettings.bufferSize)
         .build()
 
       val publisher = client.queryPaginator(req)

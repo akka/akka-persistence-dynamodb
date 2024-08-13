@@ -313,7 +313,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
       // It only limits the number of results in each page.
       // See the `take` below which limits the total number of results.
       // Limit is ignored by local DynamoDB.
-      .limit(settings.querySettings.pageSize)
+      .limit(settings.querySettings.bufferSize)
 
     filterExpression.foreach(requestBuilder.filterExpression)
 
