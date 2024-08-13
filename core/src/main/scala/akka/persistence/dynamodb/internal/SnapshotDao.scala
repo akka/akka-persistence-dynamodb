@@ -310,9 +310,10 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
       .keyConditionExpression(s"$EntityTypeSlice = :entityTypeSlice AND $EventTimestamp BETWEEN :from AND :to")
       .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
       // Limit won't limit the number of results you get with the paginator.
-      // It only limits the number of results in each page
+      // It only limits the number of results in each page.
+      // See the `take` below which limits the total number of results.
       // Limit is ignored by local DynamoDB.
-      .limit(settings.querySettings.bufferSize)
+      .limit(settings.querySettings.pageSize)
 
     filterExpression.foreach(requestBuilder.filterExpression)
 
@@ -320,9 +321,9 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
 
     Source
       .fromPublisher(publisher)
-      .mapConcat { response =>
-        response.items().iterator().asScala.map(createSerializedSnapshotItem)
-      }
+      .mapConcat(_.items.iterator.asScala)
+      .take(settings.querySettings.bufferSize)
+      .map(createSerializedSnapshotItem)
       .mapError { case c: CompletionException =>
         c.getCause
       }

@@ -81,6 +81,7 @@ final class QuerySettings(config: Config) {
   val backtrackingWindow: FiniteDuration = config.getDuration("backtracking.window").toScala
   val backtrackingBehindCurrentTime: FiniteDuration = config.getDuration("backtracking.behind-current-time").toScala
   val bufferSize: Int = config.getInt("buffer-size")
+  val pageSize: Int = config.getInt("page-size")
   val deduplicateCapacity: Int = config.getInt("deduplicate-capacity")
   val startFromSnapshotEnabled: Boolean = config.getBoolean("start-from-snapshot.enabled")
 }
