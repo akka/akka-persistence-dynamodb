@@ -198,7 +198,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
         .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
         .projectionExpression(projectionExpression)
         // Limit won't limit the number of results you get with the paginator.
-        // It only limits the number of results in each page
+        // It only limits the number of results in each page.
+        // See the `take` below which limits the total number of results.
         // Limit is ignored by local DynamoDB.
         .limit(settings.querySettings.bufferSize)
         .build()
@@ -207,23 +208,23 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
       Source
         .fromPublisher(publisher)
-        .mapConcat { response =>
-          response.items().iterator().asScala.map { item =>
-            if (backtracking) {
-              SerializedJournalItem(
-                persistenceId = item.get(Pid).s(),
-                seqNr = item.get(SeqNr).n().toLong,
-                writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-                readTimestamp = InstantFactory.now(),
-                payload = None, // lazy loaded for backtracking
-                serId = item.get(EventSerId).n().toInt,
-                serManifest = "",
-                writerUuid = "", // not need in this query
-                tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-                metadata = None)
-            } else {
-              createSerializedJournalItem(item, includePayload = true)
-            }
+        .mapConcat(_.items.iterator.asScala)
+        .take(settings.querySettings.bufferSize)
+        .map { item =>
+          if (backtracking) {
+            SerializedJournalItem(
+              persistenceId = item.get(Pid).s(),
+              seqNr = item.get(SeqNr).n().toLong,
+              writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
+              readTimestamp = InstantFactory.now(),
+              payload = None, // lazy loaded for backtracking
+              serId = item.get(EventSerId).n().toInt,
+              serManifest = "",
+              writerUuid = "", // not need in this query
+              tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
+              metadata = None)
+          } else {
+            createSerializedJournalItem(item, includePayload = true)
           }
         }
         .mapError { case c: CompletionException =>
