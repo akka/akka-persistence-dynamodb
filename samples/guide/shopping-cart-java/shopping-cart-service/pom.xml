@@ -92,12 +92,12 @@
         <dependency>
             <groupId>com.lightbend.akka</groupId>
             <artifactId>akka-persistence-dynamodb_${scala.binary.version}</artifactId>
-            <version>0.0.0+22-a9f79241-SNAPSHOT</version>
+            <version>0.2.0</version>
         </dependency>
         <dependency>
             <groupId>com.lightbend.akka</groupId>
             <artifactId>akka-projection-dynamodb_${scala.binary.version}</artifactId>
-            <version>0.0.0+22-a9f79241-SNAPSHOT</version>
+            <version>0.2.0</version>
         </dependency>
         <dependency>
             <groupId>com.lightbend.akka</groupId>
