@@ -279,10 +279,10 @@ private[projection] class DynamoDBOffsetStore(
     }
   }
 
-  def load(pid: Pid): Future[Done] = {
+  def load(pid: Pid): Future[State] = {
     val oldState = state.get()
     if (oldState.contains(pid))
-      FutureDone
+      Future.successful(oldState)
     else {
       val slice = persistenceExt.sliceForPersistenceId(pid)
       logger.trace("{} load [{}]", logPrefix, pid)
@@ -290,19 +290,19 @@ private[projection] class DynamoDBOffsetStore(
         case Some(record) =>
           val newState = oldState.add(Vector(record))
           if (state.compareAndSet(oldState, newState))
-            FutureDone
+            Future.successful(newState)
           else
             load(pid) // CAS retry, concurrent update
-        case None => FutureDone
+        case None => Future.successful(oldState)
       }
     }
   }
 
-  def load(pids: IndexedSeq[Pid]): Future[Done] = {
+  def load(pids: IndexedSeq[Pid]): Future[State] = {
     val oldState = state.get()
     val pidsToLoad = pids.filterNot(oldState.contains)
     if (pidsToLoad.isEmpty)
-      FutureDone
+      Future.successful(oldState)
     else {
       val loadedRecords = pidsToLoad.map { pid =>
         val slice = persistenceExt.sliceForPersistenceId(pid)
@@ -312,7 +312,7 @@ private[projection] class DynamoDBOffsetStore(
       Future.sequence(loadedRecords).flatMap { records =>
         val newState = oldState.add(records.flatten)
         if (state.compareAndSet(oldState, newState))
-          FutureDone
+          Future.successful(newState)
         else
           load(pids) // CAS retry, concurrent update
       }
@@ -358,8 +358,7 @@ private[projection] class DynamoDBOffsetStore(
       records: IndexedSeq[Record],
       storeSequenceNumbers: IndexedSeq[Record] => Future[Done],
       canBeConcurrent: Boolean): Future[Done] = {
-    load(records.map(_.pid)).flatMap { _ =>
-      val oldState = state.get()
+    load(records.map(_.pid)).flatMap { oldState =>
       val filteredRecords = {
         if (records.size <= 1)
           records.filterNot(oldState.isDuplicate)
@@ -504,9 +503,7 @@ private[projection] class DynamoDBOffsetStore(
     val pid = recordWithOffset.record.pid
     val seqNr = recordWithOffset.record.seqNr
 
-    load(pid).flatMap { _ =>
-      val currentState = getState()
-
+    load(pid).flatMap { currentState =>
       val duplicate = currentState.isDuplicate(recordWithOffset.record)
 
       if (duplicate) {
