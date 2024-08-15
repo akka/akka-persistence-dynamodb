@@ -27,11 +27,11 @@ import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.internal.SerializedSnapshotItem
 import akka.persistence.dynamodb.internal.SnapshotDao
 import akka.persistence.dynamodb.internal.StartingFromSnapshotStage
-import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
 import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.query.NoOffset
 import akka.persistence.query.Offset
 import akka.persistence.query.TimestampOffset
+import akka.persistence.query.TimestampOffsetBySlice
 import akka.persistence.query.scaladsl._
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.CurrentEventsBySliceQuery
@@ -227,8 +227,8 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   private def sliceStartOffset(slice: Int, offset: Offset): Offset = {
     offset match {
-      case offsetBySlice: TimestampOffsetBySlice => offsetBySlice.offsets.getOrElse(slice, NoOffset)
-      case _                                     => offset
+      case TimestampOffsetBySlice(offsets) => offsets.getOrElse(slice, NoOffset)
+      case _                               => offset
     }
   }
 
