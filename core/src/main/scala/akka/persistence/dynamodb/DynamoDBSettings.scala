@@ -267,7 +267,7 @@ final class EventSourcedEntityTimeToLiveSettings(config: Config) {
   val snapshotTimeToLive: Option[FiniteDuration] = ConfigHelpers.optDuration(config, "snapshot-time-to-live")
 }
 
-private[dynamodb] object ConfigHelpers {
+private[akka] object ConfigHelpers {
   def optString(config: Config, path: String): Option[String] = {
     if (config.hasPath(path)) {
       val value = config.getString(path)
@@ -290,7 +290,7 @@ private[dynamodb] object ConfigHelpers {
   }
 }
 
-private[dynamodb] object WildcardMap {
+private[akka] object WildcardMap {
   def apply[V](elements: Seq[(String, V)], default: V): WildcardMap[V] = {
     val (wildcards, exact) = elements.partition { case (key, _) => hasWildcard(key) }
     val prefixes = wildcards.map { case (key, value) => dropWildcard(key) -> value }
@@ -302,7 +302,9 @@ private[dynamodb] object WildcardMap {
   private def dropWildcard(key: String): String = key.dropRight(1)
 }
 
-private[dynamodb] final class WildcardMap[V](exact: Map[String, V], prefixes: Map[String, V], default: V) {
+private[akka] final class WildcardMap[V](exact: Map[String, V], prefixes: Map[String, V], default: V) {
+  import WildcardMap._
+
   def isEmpty: Boolean = exact.isEmpty && prefixes.isEmpty
 
   def get(key: String): V = {
@@ -312,5 +314,10 @@ private[dynamodb] final class WildcardMap[V](exact: Map[String, V], prefixes: Ma
         .get(key)
         .orElse(prefixes.collectFirst { case (k, v) if key.startsWith(k) => v })
         .getOrElse(default)
+  }
+
+  def updated(key: String, value: V): WildcardMap[V] = {
+    if (hasWildcard(key)) new WildcardMap(exact, prefixes.updated(dropWildcard(key), value), default)
+    else new WildcardMap(exact.updated(key, value), prefixes, default)
   }
 }

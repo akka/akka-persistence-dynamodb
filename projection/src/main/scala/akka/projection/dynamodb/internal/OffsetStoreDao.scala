@@ -4,6 +4,7 @@
 
 package akka.projection.dynamodb.internal
 
+import java.time.Instant
 import java.util.Collections
 import java.util.concurrent.CompletionException
 import java.util.{ HashMap => JHashMap }
@@ -53,6 +54,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     val Timestamp = "ts"
     val Seen = "seen"
     val Paused = "paused"
+    val Expiry = "expiry"
 
     val timestampBySlicePid = AttributeValue.fromS("_")
     val managementStateBySlicePid = AttributeValue.fromS("_mgmt")
@@ -71,6 +73,8 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
   import OffsetStoreDao.MaxBatchSize
   import OffsetStoreDao.MaxTransactItems
   import system.executionContext
+
+  private val timeToLiveSettings = settings.timeToLiveSettings.projections.get(projectionId.name)
 
   private def nameSlice(slice: Int): String = s"${projectionId.name}-$slice"
 
@@ -111,6 +115,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
   def storeTimestampOffsets(offsetsBySlice: Map[Int, TimestampOffset]): Future[Done] = {
     import OffsetStoreDao.OffsetStoreAttributes._
 
+    val expiry = timeToLiveSettings.offsetTimeToLive.map { timeToLive =>
+      Instant.now().plusSeconds(timeToLive.toSeconds)
+    }
+
     def writeBatch(offsetsBatch: IndexedSeq[(Int, TimestampOffset)]): Future[Done] = {
       val writeItems =
         offsetsBatch.map { case (slice, offset) =>
@@ -131,6 +139,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
             }
           }
           attributes.put(Seen, AttributeValue.fromM(seen))
+
+          expiry.foreach { timestamp =>
+            attributes.put(Expiry, AttributeValue.fromN(timestamp.getEpochSecond.toString))
+          }
 
           WriteRequest.builder
             .putRequest(
@@ -178,6 +190,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
   }
 
   def storeSequenceNumbers(records: IndexedSeq[Record]): Future[Done] = {
+    val expiry = timeToLiveSettings.offsetTimeToLive.map { timeToLive =>
+      Instant.now().plusSeconds(timeToLive.toSeconds)
+    }
+
     def writeBatch(recordsBatch: IndexedSeq[Record]): Future[Done] = {
       val writeItems =
         recordsBatch
@@ -186,7 +202,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
               .putRequest(
                 PutRequest
                   .builder()
-                  .item(sequenceNumberAttributes(record))
+                  .item(sequenceNumberAttributes(record, expiry))
                   .build())
               .build()
           }
@@ -262,13 +278,17 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
         s"Too many transactional write items. Total limit is [${MaxTransactItems}], attempting to store " +
         s"[${writeItems.size}] write items and [${records.size}] sequence numbers.")
 
+    val expiry = timeToLiveSettings.offsetTimeToLive.map { timeToLive =>
+      Instant.now().plusSeconds(timeToLive.toSeconds)
+    }
+
     val writeSequenceNumbers = records.map { record =>
       TransactWriteItem.builder
         .put(
           Put
             .builder()
             .tableName(settings.timestampOffsetTable)
-            .item(sequenceNumberAttributes(record))
+            .item(sequenceNumberAttributes(record, expiry))
             .build())
         .build()
     }
@@ -301,7 +321,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
 
   }
 
-  private def sequenceNumberAttributes(record: Record): JHashMap[String, AttributeValue] = {
+  private def sequenceNumberAttributes(record: Record, expiry: Option[Instant]): JHashMap[String, AttributeValue] = {
     import OffsetStoreDao.OffsetStoreAttributes._
 
     val attributes = new JHashMap[String, AttributeValue]
@@ -310,6 +330,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     attributes.put(SeqNr, AttributeValue.fromN(record.seqNr.toString))
     val timestampMicros = InstantFactory.toEpochMicros(record.timestamp)
     attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
+
+    expiry.foreach { expiryTimestamp =>
+      attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
+    }
 
     attributes
   }
