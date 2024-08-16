@@ -33,12 +33,36 @@ import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Validation.Duplicat
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Validation.RejectedBacktrackingSeqNr
 import akka.projection.dynamodb.internal.DynamoDBOffsetStore.Validation.RejectedSeqNr
 import akka.projection.dynamodb.internal.OffsetPidSeqNr
+import akka.projection.dynamodb.internal.OffsetStoreDao.OffsetStoreAttributes
 import akka.projection.internal.ManagementState
+import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
+import org.scalatest.OptionValues
 import org.scalatest.wordspec.AnyWordSpecLike
 import org.slf4j.LoggerFactory
 
 object DynamoDBTimestampOffsetStoreSpec {
+  val config: Config =
+    ConfigFactory
+      .parseString("""
+        # to be able to test eviction
+        akka.projection.dynamodb.offset-store.keep-number-of-entries = 0
+      """)
+      .withFallback(TestConfig.config)
+
+  def configWithOffsetTTL: Config =
+    ConfigFactory
+      .parseString("""
+        akka.projection.dynamodb.time-to-live {
+          projections {
+            "*" {
+              offset-time-to-live = 1 hour
+            }
+          }
+        }
+      """)
+      .withFallback(config)
+
   class TestTimestampSourceProvider(override val minSlice: Int, override val maxSlice: Int, clock: TestClock)
       extends BySlicesSourceProvider
       with EventTimestampQuery
@@ -53,15 +77,19 @@ object DynamoDBTimestampOffsetStoreSpec {
 }
 
 class DynamoDBTimestampOffsetStoreSpec
-    extends ScalaTestWithActorTestKit(
-      ConfigFactory
-        .parseString("""
-    # to be able to test eviction
-    akka.projection.dynamodb.offset-store.keep-number-of-entries = 0
-    """).withFallback(TestConfig.config))
+    extends DynamoDBTimestampOffsetStoreBaseSpec(DynamoDBTimestampOffsetStoreSpec.config)
+
+class DynamoDBTimestampOffsetStoreWithOffsetTTLSpec
+    extends DynamoDBTimestampOffsetStoreBaseSpec(DynamoDBTimestampOffsetStoreSpec.configWithOffsetTTL) {
+  override protected def usingOffsetTTL: Boolean = true
+}
+
+abstract class DynamoDBTimestampOffsetStoreBaseSpec(config: Config)
+    extends ScalaTestWithActorTestKit(config)
     with AnyWordSpecLike
     with TestDbLifecycle
     with TestData
+    with OptionValues
     with LogCapturing {
   import DynamoDBTimestampOffsetStoreSpec.TestTimestampSourceProvider
 
@@ -71,6 +99,8 @@ class DynamoDBTimestampOffsetStoreSpec
   def tick(): Unit = clock.tick(JDuration.ofMillis(1))
 
   private val log = LoggerFactory.getLogger(getClass)
+
+  protected def usingOffsetTTL: Boolean = false
 
   private def createOffsetStore(
       projectionId: ProjectionId,
@@ -158,6 +188,20 @@ class DynamoDBTimestampOffsetStoreSpec
       readOffset2.get.offsets(slice("p1")) shouldBe offset2 // yep, saveOffset overwrites previous
       offsetStore.getState().offsetBySlice(slice("p1")) shouldBe offset2
       offsetStore.storedSeqNr("p1").futureValue shouldBe 4L
+
+      val timestampOffsetItem = getOffsetItemFor(projectionId, slice("p1")).value
+      val seqNrOffsetItem = getOffsetItemFor(projectionId, slice("p1"), "p1").value
+
+      if (usingOffsetTTL) {
+        val expected = System.currentTimeMillis / 1000 + 1.hour.toSeconds
+        val timestampOffsetExpiry = timestampOffsetItem.get(OffsetStoreAttributes.Expiry).value.n.toLong
+        timestampOffsetExpiry should (be <= expected and be > expected - 10) // within 10 seconds
+        val seqNrOffsetExpiry = seqNrOffsetItem.get(OffsetStoreAttributes.Expiry).value.n.toLong
+        seqNrOffsetExpiry should (be <= expected and be > expected - 10) // within 10 seconds
+      } else {
+        timestampOffsetItem.get(OffsetStoreAttributes.Expiry) shouldBe None
+        seqNrOffsetItem.get(OffsetStoreAttributes.Expiry) shouldBe None
+      }
     }
 
     "save TimestampOffset with several seen entries" in {
@@ -304,6 +348,22 @@ class DynamoDBTimestampOffsetStoreSpec
       state2.byPid(p3).seqNr shouldBe 5L
       state2.byPid(p4).seqNr shouldBe 1L
       readOffset2.get.offsets shouldBe offsetStore.getState().offsetBySlice
+
+      for (pid <- Seq(p1, p2, p3, p4)) {
+        val timestampOffsetItem = getOffsetItemFor(projectionId, slice(pid)).value
+        val seqNrOffsetItem = getOffsetItemFor(projectionId, slice(pid), pid).value
+
+        if (usingOffsetTTL) {
+          val expected = System.currentTimeMillis / 1000 + 1.hour.toSeconds
+          val timestampOffsetExpiry = timestampOffsetItem.get(OffsetStoreAttributes.Expiry).value.n.toLong
+          timestampOffsetExpiry should (be <= expected and be > expected - 10) // within 10 seconds
+          val seqNrOffsetExpiry = seqNrOffsetItem.get(OffsetStoreAttributes.Expiry).value.n.toLong
+          seqNrOffsetExpiry should (be <= expected and be > expected - 10) // within 10 seconds
+        } else {
+          timestampOffsetItem.get(OffsetStoreAttributes.Expiry) shouldBe None
+          seqNrOffsetItem.get(OffsetStoreAttributes.Expiry) shouldBe None
+        }
+      }
     }
 
     "save batch of many TimestampOffsets" in {

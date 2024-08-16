@@ -338,3 +338,25 @@ Java
 Scala
 :  @@snip [projection settings](/docs/src/test/scala/projection/docs/scaladsl/ProjectionDocExample.scala) { #projection-settings }
 
+## Time to Live (TTL)
+
+Offsets are never deleted by default. To have offsets deleted for inactive projections, an expiration timestamp can be
+set. DynamoDB's [Time to Live (TTL)][ttl] feature can then be enabled, to automatically delete items after they have
+expired. A new expiration timestamp will be set each time an offset for a particular projection slice or persistence id
+is updated.
+
+The TTL attribute to use for the timestamp offset table is named `expiry`.
+
+Time-to-live settings are configured per projection. The projection name can also be matched by prefix by using a `*`
+at the end of the key. For example, offsets can be configured to expire in 7 days for a particular projection, and in
+14 days for all projections names that start with a particular prefix:
+
+@@ snip [offset time-to-live](/docs/src/test/scala/projection/docs/config/ProjectionTimeToLiveSettingsDocExample.scala) { #time-to-live type=conf }
+
+### Time to Live reference configuration
+
+The following can be overridden in your `application.conf` for the time-to-live specific settings:
+
+@@snip [reference.conf](/projection/src/main/resources/reference.conf) { #time-to-live-settings }
+
+[ttl]: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html

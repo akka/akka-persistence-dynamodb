@@ -7,10 +7,14 @@ package akka.projection.dynamodb
 import java.time.{ Duration => JDuration }
 
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
 
 import akka.actor.typed.ActorSystem
+import akka.persistence.dynamodb.ConfigHelpers
+import akka.persistence.dynamodb.WildcardMap
 import akka.util.JavaDurationConverters._
 import com.typesafe.config.Config
+import com.typesafe.config.ConfigObject
 
 object DynamoDBProjectionSettings {
 
@@ -39,7 +43,8 @@ object DynamoDBProjectionSettings {
       keepNumberOfEntries = config.getInt("offset-store.keep-number-of-entries"),
       evictInterval = config.getDuration("offset-store.evict-interval"),
       warnAboutFilteredEventsInFlow = config.getBoolean("warn-about-filtered-events-in-flow"),
-      offsetBatchSize = config.getInt("offset-store.offset-batch-size"))
+      offsetBatchSize = config.getInt("offset-store.offset-batch-size"),
+      timeToLiveSettings = TimeToLiveSettings(config.getConfig("time-to-live")))
   }
 
   /**
@@ -57,7 +62,8 @@ final class DynamoDBProjectionSettings private (
     val keepNumberOfEntries: Int,
     val evictInterval: JDuration,
     val warnAboutFilteredEventsInFlow: Boolean,
-    val offsetBatchSize: Int) {
+    val offsetBatchSize: Int,
+    val timeToLiveSettings: TimeToLiveSettings) {
 
   def withTimestampOffsetTable(timestampOffsetTable: String): DynamoDBProjectionSettings =
     copy(timestampOffsetTable = timestampOffsetTable)
@@ -86,6 +92,9 @@ final class DynamoDBProjectionSettings private (
   def withOffsetBatchSize(offsetBatchSize: Int): DynamoDBProjectionSettings =
     copy(offsetBatchSize = offsetBatchSize)
 
+  def withTimeToLiveSettings(timeToLiveSettings: TimeToLiveSettings): DynamoDBProjectionSettings =
+    copy(timeToLiveSettings = timeToLiveSettings)
+
   private def copy(
       timestampOffsetTable: String = timestampOffsetTable,
       useClient: String = useClient,
@@ -93,7 +102,8 @@ final class DynamoDBProjectionSettings private (
       keepNumberOfEntries: Int = keepNumberOfEntries,
       evictInterval: JDuration = evictInterval,
       warnAboutFilteredEventsInFlow: Boolean = warnAboutFilteredEventsInFlow,
-      offsetBatchSize: Int = offsetBatchSize) =
+      offsetBatchSize: Int = offsetBatchSize,
+      timeToLiveSettings: TimeToLiveSettings = timeToLiveSettings) =
     new DynamoDBProjectionSettings(
       timestampOffsetTable,
       useClient,
@@ -101,8 +111,79 @@ final class DynamoDBProjectionSettings private (
       keepNumberOfEntries,
       evictInterval,
       warnAboutFilteredEventsInFlow,
-      offsetBatchSize)
+      offsetBatchSize,
+      timeToLiveSettings)
 
   override def toString =
     s"DynamoDBProjectionSettings($timestampOffsetTable, $useClient, $timeWindow, $keepNumberOfEntries, $evictInterval, $warnAboutFilteredEventsInFlow, $offsetBatchSize)"
+}
+
+object TimeToLiveSettings {
+  val defaults: TimeToLiveSettings =
+    new TimeToLiveSettings(projections = WildcardMap(Seq.empty, ProjectionTimeToLiveSettings.defaults))
+
+  /**
+   * Scala API: Create from configuration corresponding to `akka.projection.dynamodb.time-to-live`.
+   */
+  def apply(config: Config): TimeToLiveSettings = {
+    val projections: WildcardMap[ProjectionTimeToLiveSettings] = {
+      val defaults = config.getConfig("projection-defaults")
+      val defaultSettings = ProjectionTimeToLiveSettings(defaults)
+      val entries = config.getConfig("projections").root.entrySet.asScala
+      val perEntitySettings = entries.toSeq.map { entry =>
+        (entry.getKey, entry.getValue) match {
+          case (key: String, value: ConfigObject) =>
+            val settings = ProjectionTimeToLiveSettings(value.toConfig.withFallback(defaults))
+            key -> settings
+        }
+      }
+      WildcardMap(perEntitySettings, defaultSettings)
+    }
+    new TimeToLiveSettings(projections)
+  }
+
+  /**
+   * Java API: Create from configuration corresponding to `akka.projection.dynamodb.time-to-live`.
+   */
+  def create(config: Config): TimeToLiveSettings = apply(config)
+}
+
+final class TimeToLiveSettings private (val projections: WildcardMap[ProjectionTimeToLiveSettings]) {
+
+  def withProjection(name: String, settings: ProjectionTimeToLiveSettings): TimeToLiveSettings =
+    copy(projections = projections.updated(name, settings))
+
+  private def copy(projections: WildcardMap[ProjectionTimeToLiveSettings] = projections): TimeToLiveSettings =
+    new TimeToLiveSettings(projections)
+}
+
+object ProjectionTimeToLiveSettings {
+  val defaults: ProjectionTimeToLiveSettings =
+    new ProjectionTimeToLiveSettings(offsetTimeToLive = None)
+
+  /**
+   * Scala API: Create from configuration corresponding to `akka.projection.dynamodb.time-to-live.projections`.
+   */
+  def apply(config: Config): ProjectionTimeToLiveSettings =
+    new ProjectionTimeToLiveSettings(offsetTimeToLive = ConfigHelpers.optDuration(config, "offset-time-to-live"))
+
+  /**
+   * Java API: Create from configuration corresponding to `akka.projection.dynamodb.time-to-live.projections`.
+   */
+  def create(config: Config): ProjectionTimeToLiveSettings = apply(config)
+}
+
+final class ProjectionTimeToLiveSettings private (val offsetTimeToLive: Option[FiniteDuration]) {
+
+  def withOffsetTimeToLive(offsetTimeToLive: FiniteDuration): ProjectionTimeToLiveSettings =
+    copy(offsetTimeToLive = Some(offsetTimeToLive))
+
+  def withOffsetTimeToLive(offsetTimeToLive: JDuration): ProjectionTimeToLiveSettings =
+    copy(offsetTimeToLive = Some(offsetTimeToLive.asScala))
+
+  def withNoOffsetTimeToLive(): ProjectionTimeToLiveSettings =
+    copy(offsetTimeToLive = None)
+
+  private def copy(offsetTimeToLive: Option[FiniteDuration] = offsetTimeToLive): ProjectionTimeToLiveSettings =
+    new ProjectionTimeToLiveSettings(offsetTimeToLive)
 }

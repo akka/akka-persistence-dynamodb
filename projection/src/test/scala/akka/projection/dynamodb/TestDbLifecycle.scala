@@ -6,17 +6,22 @@ package akka.projection.dynamodb
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
+import scala.jdk.FutureConverters._
 import scala.util.control.NonFatal
 
 import akka.actor.typed.ActorSystem
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.util.ClientProvider
+import akka.projection.ProjectionId
 import akka.projection.dynamodb.scaladsl.CreateTables
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.Suite
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 
 trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
 
@@ -56,6 +61,28 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
     }
 
     super.beforeAll()
+  }
+
+  // directly get an offset item (timestamp or sequence number) from the timestamp offset table
+  def getOffsetItemFor(
+      projectionId: ProjectionId,
+      slice: Int,
+      persistenceId: String = "_"): Option[Map[String, AttributeValue]] = {
+    import akka.projection.dynamodb.internal.OffsetStoreDao.OffsetStoreAttributes._
+
+    val attributes =
+      Map(
+        ":nameSlice" -> AttributeValue.fromS(s"${projectionId.name}-$slice"),
+        ":pid" -> AttributeValue.fromS(persistenceId)).asJava
+
+    val request = QueryRequest.builder
+      .tableName(settings.timestampOffsetTable)
+      .consistentRead(true)
+      .keyConditionExpression(s"$NameSlice = :nameSlice AND $Pid = :pid")
+      .expressionAttributeValues(attributes)
+      .build()
+
+    Await.result(client.query(request).asScala, 10.seconds).items.asScala.headOption.map(_.asScala.toMap)
   }
 
 }
