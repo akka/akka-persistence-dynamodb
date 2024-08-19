@@ -349,7 +349,7 @@ The TTL attribute to use for the timestamp offset table is named `expiry`.
 
 Time-to-live settings are configured per projection. The projection name can also be matched by prefix by using a `*`
 at the end of the key. For example, offsets can be configured to expire in 7 days for a particular projection, and in
-14 days for all projections names that start with a particular prefix:
+14 days for all projection names that start with a particular prefix:
 
 @@ snip [offset time-to-live](/docs/src/test/scala/projection/docs/config/ProjectionTimeToLiveSettingsDocExample.scala) { #time-to-live type=conf }
 
