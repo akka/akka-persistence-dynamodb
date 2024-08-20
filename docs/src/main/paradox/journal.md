@@ -68,6 +68,13 @@ The events are serialized with @extref:[Akka Serialization](akka:serialization.h
 is stored in the `event_payload` column together with information about what serializer that was used in the
 `event_ser_id` and `event_ser_manifest` columns.
 
+## Retryable errors
+
+When persisting events, any DynamoDB errors that are considered retryable, such as when provisioned throughput capacity
+is exceeded, will cause events to be @extref:[rejected](akka:typed/persistence.html#journal-rejections) rather than
+marked as a journal failure. A supervision strategy for `EventRejectedException` failures can then be added to
+EventSourcedBehaviors, so that entities can be resumed on these retryable errors rather than stopped or restarted.
+
 ## Deletes
 
 The journal supports deletes through hard deletes, which means that journal entries are actually deleted from the
