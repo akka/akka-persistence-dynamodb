@@ -33,9 +33,9 @@ import akka.actor.typed.ActorRef
 import akka.actor.typed.ActorSystem
 import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
-import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
 import akka.persistence.query.Offset
 import akka.persistence.query.TimestampOffset
+import akka.persistence.query.TimestampOffsetBySlice
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.EventTimestampQuery
 import akka.persistence.query.typed.scaladsl.LoadEventQuery

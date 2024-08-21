@@ -16,8 +16,8 @@ import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorSystem
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
-import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
 import akka.persistence.query.TimestampOffset
+import akka.persistence.query.TimestampOffsetBySlice
 import akka.persistence.query.UpdatedDurableState
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.EventTimestampQuery

@@ -19,10 +19,10 @@ import akka.annotation.InternalApi
 import akka.dispatch.ExecutionContexts
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
-import akka.persistence.dynamodb.internal.TimestampOffsetBySlice
 import akka.persistence.query.DeletedDurableState
 import akka.persistence.query.DurableStateChange
 import akka.persistence.query.TimestampOffset
+import akka.persistence.query.TimestampOffsetBySlice
 import akka.persistence.query.UpdatedDurableState
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.query.typed.scaladsl.EventTimestampQuery
