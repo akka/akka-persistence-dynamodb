@@ -107,13 +107,6 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
   // them to complete before we can read the highest sequence number or we will miss it
   private val writesInProgress = new java.util.HashMap[String, Future[Seq[Try[Unit]]]]()
 
-  // reject retryable errors rather than fail, to be able to resume rather than stop or restart
-  // TODO: API call timeout exceptions not considered retryable as they may have persisted?
-  private def isRetryableError(error: Throwable): Boolean = error match {
-    case _: ProvisionedThroughputExceededException => true
-    case _                                         => false
-  }
-
   override def receivePluginInternal: Receive = { case WriteFinished(pid, f) =>
     writesInProgress.remove(pid, f)
   }
@@ -178,9 +171,9 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
             }
             .recoverWith { case e: CompletionException =>
               e.getCause match {
-                case error if isRetryableError(error) =>
-                  Future.successful(Seq(Failure(error))) // will be rejected
-                case error =>
+                case error: ProvisionedThroughputExceededException => // reject retryable errors
+                  Future.successful(atomicWrite.payload.map(_ => Failure(error)))
+                case error => // otherwise journal failure
                   Future.failed(error)
               }
             }
