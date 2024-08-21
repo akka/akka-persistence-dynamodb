@@ -82,8 +82,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
           val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
           (Some(expression), attributes)
         } else if (!includeDeleted) {
-          (Some(s"attribute_not_exists($Deleted)"), Map.empty)
-        } else (None, Map.empty)
+          (Some(s"attribute_not_exists($Deleted)"), Map.empty[String, AttributeValue])
+        } else (None, Map.empty[String, AttributeValue])
 
       val reqBuilder = QueryRequest.builder
         .tableName(settings.journalTable)
@@ -184,7 +184,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
           val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
           (expression, attributes)
         } else {
-          (s"attribute_not_exists($Deleted)", Map.empty)
+          (s"attribute_not_exists($Deleted)", Map.empty[String, AttributeValue])
         }
 
       val projectionExpression =
@@ -277,7 +277,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
         val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
         (expression, attributes)
       } else {
-        (s"attribute_not_exists($Deleted)", Map.empty)
+        (s"attribute_not_exists($Deleted)", Map.empty[String, AttributeValue])
       }
 
     val req = QueryRequest.builder
@@ -325,7 +325,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
         val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
         (expression, attributes)
       } else {
-        (s"attribute_not_exists($Deleted)", Map.empty)
+        (s"attribute_not_exists($Deleted)", Map.empty[String, AttributeValue])
       }
 
     // FIXME is metadata needed here when includePayload==false? It is included in r2dbc

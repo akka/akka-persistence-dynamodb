@@ -241,11 +241,12 @@ final class TimeToLiveSettings(config: Config) {
     val defaults = config.getConfig("event-sourced-defaults")
     val defaultSettings = new EventSourcedEntityTimeToLiveSettings(defaults)
     val entries = config.getConfig("event-sourced-entities").root.entrySet.asScala
-    val perEntitySettings = entries.toSeq.map { entry =>
+    val perEntitySettings = entries.toSeq.flatMap { entry =>
       (entry.getKey, entry.getValue) match {
         case (key: String, value: ConfigObject) =>
           val settings = new EventSourcedEntityTimeToLiveSettings(value.toConfig.withFallback(defaults))
-          key -> settings
+          Some(key -> settings)
+        case _ => None
       }
     }
     WildcardMap(perEntitySettings, defaultSettings)

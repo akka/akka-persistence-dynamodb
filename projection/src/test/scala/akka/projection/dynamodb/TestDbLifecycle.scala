@@ -18,7 +18,6 @@ import akka.projection.ProjectionId
 import akka.projection.dynamodb.scaladsl.CreateTables
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.Suite
-import org.slf4j.LoggerFactory
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
@@ -41,9 +40,7 @@ trait TestDbLifecycle extends BeforeAndAfterAll { this: Suite =>
 
   lazy val client: DynamoDbAsyncClient = ClientProvider(typedSystem).clientFor(settings.useClient)
 
-  lazy val localDynamoDB = ClientProvider(typedSystem).clientSettingsFor(settings.useClient).local.isDefined
-
-  private lazy val log = LoggerFactory.getLogger(getClass)
+  lazy val localDynamoDB: Boolean = ClientProvider(typedSystem).clientSettingsFor(settings.useClient).local.isDefined
 
   override protected def beforeAll(): Unit = {
     if (localDynamoDB) {

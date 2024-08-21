@@ -301,7 +301,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
         val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
         (Some(expression), attributes)
       } else {
-        (None, Map.empty)
+        (None, Map.empty[String, AttributeValue])
       }
 
     val requestBuilder = QueryRequest.builder

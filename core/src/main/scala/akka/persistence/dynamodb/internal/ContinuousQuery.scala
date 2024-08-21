@@ -99,6 +99,7 @@ final private[dynamodb] class ContinuousQuery[S, T](
 
       override protected def onTimer(timerKey: Any): Unit = timerKey match {
         case NextQuery => next()
+        case _         =>
       }
 
       def next(): Unit = {
@@ -177,7 +178,7 @@ final private[dynamodb] class ContinuousQuery[S, T](
                 sinkIn.pull()
               }
             }
-          case OptionVal.None =>
+          case _ =>
             if (!subStreamFinished && sinkIn != null && !sinkIn.isClosed && !sinkIn.hasBeenPulled) {
               sinkIn.pull()
             }

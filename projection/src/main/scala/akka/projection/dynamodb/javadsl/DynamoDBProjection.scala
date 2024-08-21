@@ -39,8 +39,9 @@ object DynamoDBProjection {
    * projection is restarted from previously stored offset then some elements may be processed more than once.
    *
    * The offset is stored after a time window, or limited by a number of envelopes, whatever happens first. This window
-   * can be defined with [[AtLeastOnceProjection.withSaveOffset]] of the returned `AtLeastOnceProjection`. The default
-   * settings for the window is defined in configuration section `akka.projection.at-least-once`.
+   * can be defined with [[akka.projection.javadsl.AtLeastOnceProjection.withSaveOffset]] of the returned
+   * `AtLeastOnceProjection`. The default settings for the window is defined in configuration section
+   * `akka.projection.at-least-once`.
    */
   def atLeastOnce[Offset, Envelope](
       projectionId: ProjectionId,
@@ -82,8 +83,9 @@ object DynamoDBProjection {
   /**
    * Create a [[akka.projection.Projection]] that groups envelopes and calls the `handler` with a group of `Envelopes`.
    * The envelopes are grouped within a time window, or limited by a number of envelopes, whatever happens first. This
-   * window can be defined with [[GroupedProjection.withGroup]] of the returned `GroupedProjection`. The default
-   * settings for the window is defined in configuration section `akka.projection.grouped`.
+   * window can be defined with [[akka.projection.javadsl.GroupedProjection.withGroup]] of the returned
+   * `GroupedProjection`. The default settings for the window is defined in configuration section
+   * `akka.projection.grouped`.
    *
    * The offset is stored in DynamoDB in the same transaction as the `TransactWriteItem`s returned by the `handler`.
    */
@@ -105,8 +107,9 @@ object DynamoDBProjection {
   /**
    * Create a [[akka.projection.Projection]] that groups envelopes and calls the `handler` with a group of `Envelopes`.
    * The envelopes are grouped within a time window, or limited by a number of envelopes, whatever happens first. This
-   * window can be defined with [[GroupedProjection.withGroup]] of the returned `GroupedProjection`. The default
-   * settings for the window is defined in configuration section `akka.projection.grouped`.
+   * window can be defined with [[akka.projection.javadsl.GroupedProjection.withGroup]] of the returned
+   * `GroupedProjection`. The default settings for the window is defined in configuration section
+   * `akka.projection.grouped`.
    *
    * The offset is stored in DynamoDB immediately after the `handler` has processed the envelopes, but that is still
    * with at-least-once processing semantics. This means that if the projection is restarted from previously stored
@@ -128,8 +131,8 @@ object DynamoDBProjection {
   }
 
   /**
-   * Create a [[akka.projection.Projection]] with a [[FlowWithContext]] as the envelope handler. It has at-least-once
-   * processing semantics.
+   * Create a [[akka.projection.Projection]] with a [[akka.stream.javadsl.FlowWithContext]] as the envelope handler. It
+   * has at-least-once processing semantics.
    *
    * The flow should emit a `Done` element for each completed envelope. The offset of the envelope is carried in the
    * context of the `FlowWithContext` and is stored in the database when corresponding `Done` is emitted. Since the

@@ -155,7 +155,7 @@ object DynamoDBTimestampOffsetProjectionSpec {
     }
   }
 
-  final case class TestRepository()(implicit ec: ExecutionContext, system: ActorSystem[_]) {
+  final case class TestRepository()(implicit ec: ExecutionContext) {
     private val store = new ConcurrentHashMap[String, String]()
 
     private val logger = LoggerFactory.getLogger(this.getClass)
@@ -283,11 +283,13 @@ class DynamoDBTimestampOffsetProjectionSpec
       complete: Boolean = true): TestTimestampSourceProvider = {
     val sp =
       TestSourceProvider[Offset, EventEnvelope[String]](Source(envelopes), _.offset)
-        .withStartSourceFrom { case (lastProcessedOffsetBySlice: TimestampOffsetBySlice, offset: TimestampOffset) =>
-          // FIXME: should have the envelope slice to handle this properly
-          val lastProcessedOffset = lastProcessedOffsetBySlice.offsets.head._2
-          offset.timestamp.isBefore(lastProcessedOffset.timestamp) ||
-          (offset.timestamp == lastProcessedOffset.timestamp && offset.seen == lastProcessedOffset.seen)
+        .withStartSourceFrom {
+          case (lastProcessedOffsetBySlice: TimestampOffsetBySlice, offset: TimestampOffset) =>
+            // FIXME: should have the envelope slice to handle this properly
+            val lastProcessedOffset = lastProcessedOffsetBySlice.offsets.head._2
+            offset.timestamp.isBefore(lastProcessedOffset.timestamp) ||
+            (offset.timestamp == lastProcessedOffset.timestamp && offset.seen == lastProcessedOffset.seen)
+          case _ => false
         }
         .withAllowCompletion(complete)
 
@@ -304,7 +306,7 @@ class DynamoDBTimestampOffsetProjectionSpec
     new TestTimestampSourceProvider(envelopes, sp, persistenceExt.numberOfSlices - 1)
   }
 
-  private def latestOffsetShouldBe[Offset](expected: Offset)(implicit offsetStore: DynamoDBOffsetStore) = {
+  private def latestOffsetShouldBe(expected: Any)(implicit offsetStore: DynamoDBOffsetStore) = {
     val expectedTimestampOffset = expected.asInstanceOf[TimestampOffset]
     offsetStore.readOffset().futureValue
     offsetStore.getState().latestOffset shouldBe expectedTimestampOffset
@@ -382,7 +384,6 @@ class DynamoDBTimestampOffsetProjectionSpec
       failPredicate: EventEnvelope[String] => Boolean = _ => false)
       extends DynamoDBTransactHandler[Seq[EventEnvelope[String]]] {
 
-    private val logger = LoggerFactory.getLogger(getClass)
     private val _attempts = new AtomicInteger()
     def attempts: Int = _attempts.get
 

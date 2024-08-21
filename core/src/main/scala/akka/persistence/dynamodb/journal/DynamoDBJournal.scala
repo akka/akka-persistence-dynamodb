@@ -21,7 +21,6 @@ import akka.annotation.InternalApi
 import akka.dispatch.ExecutionContexts
 import akka.event.Logging
 import akka.persistence.AtomicWrite
-import akka.persistence.Persistence
 import akka.persistence.PersistentRepr
 import akka.persistence.SerializedEvent
 import akka.persistence.dynamodb.DynamoDBSettings
@@ -89,8 +88,6 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
 
   private val log = Logging(context.system, classOf[DynamoDBJournal])
 
-  private val persistenceExt = Persistence(system)
-
   private val sharedConfigPath = cfgPath.replaceAll("""\.journal$""", "")
   private val serialization: Serialization = SerializationExtension(context.system)
   private val settings = DynamoDBSettings(context.system.settings.config.getConfig(sharedConfigPath))
@@ -107,7 +104,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
 
   // if there are pending writes when an actor restarts we must wait for
   // them to complete before we can read the highest sequence number or we will miss it
-  private val writesInProgress = new java.util.HashMap[String, Future[_]]()
+  private val writesInProgress = new java.util.HashMap[String, Future[Done]]()
 
   override def receivePluginInternal: Receive = { case WriteFinished(pid, f) =>
     writesInProgress.remove(pid, f)

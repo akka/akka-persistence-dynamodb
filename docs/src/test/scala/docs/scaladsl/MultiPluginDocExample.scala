@@ -20,14 +20,14 @@ import org.scalatest.wordspec.AnyWordSpecLike
 
 object MultiPluginDocExample {
   val config: Config = ConfigFactory
-    .parseString("""
+    .parseString(s"""
     //#default-config
     akka.persistence.journal.plugin = "akka.persistence.dynamodb.journal"
     akka.persistence.snapshot-store.plugin = "akka.persistence.dynamodb.snapshot"
     //#default-config
 
     //#second-config
-    second-dynamodb = ${akka.persistence.dynamodb}
+    second-dynamodb = $${akka.persistence.dynamodb}
     second-dynamodb {
       client {
         # specific client settings here

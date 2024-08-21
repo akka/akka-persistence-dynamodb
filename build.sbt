@@ -35,6 +35,8 @@ inThisBuild(
          Seq("Akka library snapshot repository".at("https://repo.akka.io/snapshots"))
        else Seq.empty)))
 
+val defaultScalacOptions = Seq("-release", "11")
+
 def common: Seq[Setting[_]] =
   Seq(
     crossScalaVersions := Dependencies.ScalaVersions,
@@ -43,7 +45,16 @@ def common: Seq[Setting[_]] =
     scalafmtOnCompile := true,
     // Setting javac options in common allows IntelliJ IDEA to import them automatically
     Compile / javacOptions ++= Seq("-encoding", "UTF-8", "--release", "11"),
-    Compile / scalacOptions ++= Seq("-release", "11"),
+    Compile / javacOptions ++= Seq("-Werror", "-Xlint:deprecation", "-Xlint:unchecked"),
+    Compile / scalacOptions ++= defaultScalacOptions,
+    Compile / scalacOptions ++= (CrossVersion.partialVersion(scalaVersion.value) match {
+      case Some((2, 13)) => Seq("-Xfatal-warnings", "-Xlint", "-unchecked", "-deprecation")
+      case _             => Seq("-Xfatal-warnings")
+    }),
+    Compile / console / scalacOptions := defaultScalacOptions,
+    Test / console / scalacOptions := defaultScalacOptions,
+    Compile / doc / scalacOptions := defaultScalacOptions,
+    Compile / doc / autoAPIMappings := true,
     headerLicense := Some(HeaderLicense.Custom("""Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>""")),
     Test / logBuffered := false,
     Test / parallelExecution := false,
@@ -67,6 +78,7 @@ def common: Seq[Setting[_]] =
     Global / excludeLintKeys += projectInfoVersion,
     Global / excludeLintKeys += mimaReportSignatureProblems,
     Global / excludeLintKeys += mimaPreviousArtifacts,
+    Global / excludeLintKeys += docs / previewSite / previewPath,
     mimaReportSignatureProblems := true,
     mimaPreviousArtifacts := Set.empty
     // FIXME enable after first official release

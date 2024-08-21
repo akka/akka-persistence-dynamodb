@@ -130,11 +130,12 @@ object TimeToLiveSettings {
       val defaults = config.getConfig("projection-defaults")
       val defaultSettings = ProjectionTimeToLiveSettings(defaults)
       val entries = config.getConfig("projections").root.entrySet.asScala
-      val perEntitySettings = entries.toSeq.map { entry =>
+      val perEntitySettings = entries.toSeq.flatMap { entry =>
         (entry.getKey, entry.getValue) match {
           case (key: String, value: ConfigObject) =>
             val settings = ProjectionTimeToLiveSettings(value.toConfig.withFallback(defaults))
-            key -> settings
+            Some(key -> settings)
+          case _ => None
         }
       }
       WildcardMap(perEntitySettings, defaultSettings)
@@ -153,7 +154,7 @@ final class TimeToLiveSettings private (val projections: WildcardMap[ProjectionT
   def withProjection(name: String, settings: ProjectionTimeToLiveSettings): TimeToLiveSettings =
     copy(projections = projections.updated(name, settings))
 
-  private def copy(projections: WildcardMap[ProjectionTimeToLiveSettings] = projections): TimeToLiveSettings =
+  private def copy(projections: WildcardMap[ProjectionTimeToLiveSettings]): TimeToLiveSettings =
     new TimeToLiveSettings(projections)
 }
 
@@ -184,6 +185,6 @@ final class ProjectionTimeToLiveSettings private (val offsetTimeToLive: Option[F
   def withNoOffsetTimeToLive(): ProjectionTimeToLiveSettings =
     copy(offsetTimeToLive = None)
 
-  private def copy(offsetTimeToLive: Option[FiniteDuration] = offsetTimeToLive): ProjectionTimeToLiveSettings =
+  private def copy(offsetTimeToLive: Option[FiniteDuration]): ProjectionTimeToLiveSettings =
     new ProjectionTimeToLiveSettings(offsetTimeToLive)
 }

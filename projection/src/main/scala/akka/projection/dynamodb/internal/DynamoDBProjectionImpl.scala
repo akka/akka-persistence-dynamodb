@@ -76,7 +76,6 @@ private[projection] object DynamoDBProjectionImpl {
   val log: Logger = LoggerFactory.getLogger(classOf[DynamoDBProjectionImpl[_, _]])
 
   private val FutureDone: Future[Done] = Future.successful(Done)
-  private val FutureTrue: Future[Boolean] = Future.successful(true)
   private val FutureFalse: Future[Boolean] = Future.successful(false)
 
   private[projection] def createOffsetStore(
@@ -160,14 +159,17 @@ private[projection] object DynamoDBProjectionImpl {
   private def extractOffsetPidSeqNr[Offset, Envelope](offset: Offset, envelope: Envelope): OffsetPidSeqNr = {
     // we could define a new trait for the SourceProvider to implement this in case other (custom) envelope types are needed
     envelope match {
-      case env: EventEnvelope[_]         => OffsetPidSeqNr(offset, env.persistenceId, env.sequenceNr)
-      case chg: UpdatedDurableState[_]   => OffsetPidSeqNr(offset, chg.persistenceId, chg.revision)
-      case del: DeletedDurableState[_]   => OffsetPidSeqNr(offset, del.persistenceId, del.revision)
-      case change: DurableStateChange[_] =>
-        // in case additional types are added
-        throw new IllegalArgumentException(
-          s"DurableStateChange [${change.getClass.getName}] not implemented yet. Please report bug at https://github.com/akka/akka-projection/issues")
-      case _ => OffsetPidSeqNr(offset)
+      case env: EventEnvelope[_]       => OffsetPidSeqNr(offset, env.persistenceId, env.sequenceNr)
+      case chg: UpdatedDurableState[_] => OffsetPidSeqNr(offset, chg.persistenceId, chg.revision)
+      case del: DeletedDurableState[_] => OffsetPidSeqNr(offset, del.persistenceId, del.revision)
+      case other => // avoid unreachable error on sealed DurableStateChange
+        other match {
+          case change: DurableStateChange[_] =>
+            // in case additional types are added
+            throw new IllegalArgumentException(
+              s"DurableStateChange [${change.getClass.getName}] not implemented yet. Please report bug at https://github.com/akka/akka-projection/issues")
+          case _ => OffsetPidSeqNr(offset)
+        }
     }
   }
 
