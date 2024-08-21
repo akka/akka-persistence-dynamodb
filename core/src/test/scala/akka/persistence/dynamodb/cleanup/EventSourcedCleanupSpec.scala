@@ -217,7 +217,7 @@ class EventSourcedCleanupSpec
       })
 
       (1 to 10).foreach { n =>
-        p ! Persister.PersistWithAck(s"${if (n == 3) n + "-snap" else n}", ackProbe.ref)
+        p ! Persister.PersistWithAck(if (n == 3) s"$n-snap" else n, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -249,7 +249,7 @@ class EventSourcedCleanupSpec
       })
 
       (1 to 10).foreach { n =>
-        p ! Persister.PersistWithAck(s"${if (n == 3) n + "-snap" else n}", ackProbe.ref)
+        p ! Persister.PersistWithAck(if (n == 3) s"$n-snap" else n, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -286,7 +286,7 @@ class EventSourcedCleanupSpec
 
       (1 to 10).foreach { n =>
         persisters.foreach { p =>
-          p ! Persister.PersistWithAck(s"${if (n == 3) n + "-snap" else n}", ackProbe.ref)
+          p ! Persister.PersistWithAck(if (n == 3) s"$n-snap" else n, ackProbe.ref)
           ackProbe.expectMessage(Done)
         }
       }
@@ -321,7 +321,7 @@ class EventSourcedCleanupSpec
 
       (1 to 10).foreach { n =>
         persisters.foreach { p =>
-          p ! Persister.PersistWithAck(s"${if (n == 3) n + "-snap" else n}", ackProbe.ref)
+          p ! Persister.PersistWithAck(if (n == 3) s"$n-snap" else n, ackProbe.ref)
           ackProbe.expectMessage(Done)
         }
       }
@@ -961,7 +961,7 @@ class EventSourcedCleanupSpec
       val s = 5
 
       (1 to n).foreach { i =>
-        persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+        persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -1008,7 +1008,7 @@ class EventSourcedCleanupSpec
       val s = 5
 
       (1 to n).foreach { i =>
-        persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+        persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -1061,7 +1061,7 @@ class EventSourcedCleanupSpec
 
       (1 to n).foreach { i =>
         persisters.foreach { persister =>
-          persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+          persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
           ackProbe.expectMessage(Done)
         }
       }
@@ -1117,7 +1117,7 @@ class EventSourcedCleanupSpec
 
       (1 to n).foreach { i =>
         persisters.foreach { persister =>
-          persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+          persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
           ackProbe.expectMessage(Done)
         }
       }
@@ -1173,7 +1173,7 @@ class EventSourcedCleanupSpec
       val s = 5
 
       (1 to n).foreach { i =>
-        persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+        persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -1207,7 +1207,7 @@ class EventSourcedCleanupSpec
       val stateProbe = createTestProbe[String]()
       val seqNrProbe = createTestProbe[Long]()
       persister2 ! Persister.GetState(stateProbe.ref)
-      stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+      stateProbe.expectMessage((1 to n).map(i => if (i == s) s"$i-snap" else i).mkString("|"))
       persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
       seqNrProbe.expectMessage(n.toLong)
     }
@@ -1229,7 +1229,7 @@ class EventSourcedCleanupSpec
       val s = 5
 
       (1 to n).foreach { i =>
-        persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+        persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -1264,7 +1264,7 @@ class EventSourcedCleanupSpec
       val stateProbe = createTestProbe[String]()
       val seqNrProbe = createTestProbe[Long]()
       persister2 ! Persister.GetState(stateProbe.ref)
-      stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+      stateProbe.expectMessage((1 to n).map(i => if (i == s) s"$i-snap" else i).mkString("|"))
       persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
       seqNrProbe.expectMessage(n.toLong)
     }
@@ -1289,7 +1289,7 @@ class EventSourcedCleanupSpec
 
       (1 to n).foreach { i =>
         persisters.foreach { persister =>
-          persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+          persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
           ackProbe.expectMessage(Done)
         }
       }
@@ -1327,7 +1327,7 @@ class EventSourcedCleanupSpec
       val seqNrProbe = createTestProbe[Long]()
       persisters2.foreach { persister2 =>
         persister2 ! Persister.GetState(stateProbe.ref)
-        stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+        stateProbe.expectMessage((1 to n).map(i => if (i == s) s"$i-snap" else i).mkString("|"))
         persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
         seqNrProbe.expectMessage(n.toLong)
       }
@@ -1353,7 +1353,7 @@ class EventSourcedCleanupSpec
 
       (1 to n).foreach { i =>
         persisters.foreach { persister =>
-          persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+          persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
           ackProbe.expectMessage(Done)
         }
       }
@@ -1392,7 +1392,7 @@ class EventSourcedCleanupSpec
       val seqNrProbe = createTestProbe[Long]()
       persisters2.foreach { persister2 =>
         persister2 ! Persister.GetState(stateProbe.ref)
-        stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+        stateProbe.expectMessage((1 to n).map(i => if (i == s) s"$i-snap" else i).mkString("|"))
         persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
         seqNrProbe.expectMessage(n.toLong)
       }
@@ -1415,7 +1415,7 @@ class EventSourcedCleanupSpec
       val s = 5
 
       (1 to n).foreach { i =>
-        persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+        persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -1462,7 +1462,7 @@ class EventSourcedCleanupSpec
       val s = 5
 
       (1 to n).foreach { i =>
-        persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+        persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -1489,7 +1489,7 @@ class EventSourcedCleanupSpec
       val seqNrProbe = createTestProbe[Long]()
       persister2 ! Persister.GetState(stateProbe.ref)
       // events and snapshot not expired yet (1 minute TTL)
-      stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+      stateProbe.expectMessage((1 to n).map(i => if (i == s) s"$i-snap" else i).mkString("|"))
       persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
       seqNrProbe.expectMessage(n.toLong) // not expired yet
     }
@@ -1511,7 +1511,7 @@ class EventSourcedCleanupSpec
       val s = 5
 
       (1 to n).foreach { i =>
-        persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+        persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -1564,7 +1564,7 @@ class EventSourcedCleanupSpec
       val s = 5
 
       (1 to n).foreach { i =>
-        persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+        persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
         ackProbe.expectMessage(Done)
       }
 
@@ -1597,7 +1597,7 @@ class EventSourcedCleanupSpec
       val seqNrProbe = createTestProbe[Long]()
       persister2 ! Persister.GetState(stateProbe.ref)
       // events and snapshot not expired yet (1 minute TTL)
-      stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+      stateProbe.expectMessage((1 to n).map(i => if (i == s) s"$i-snap" else i).mkString("|"))
       persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
       seqNrProbe.expectMessage(n.toLong) // not expired yet
     }
@@ -1622,7 +1622,7 @@ class EventSourcedCleanupSpec
 
       (1 to n).foreach { i =>
         persisters.foreach { persister =>
-          persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+          persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
           ackProbe.expectMessage(Done)
         }
       }
@@ -1677,7 +1677,7 @@ class EventSourcedCleanupSpec
 
       (1 to n).foreach { i =>
         persisters.foreach { persister =>
-          persister ! Persister.PersistWithAck(s"${if (i == s) i + "-snap" else i}", ackProbe.ref)
+          persister ! Persister.PersistWithAck(if (i == s) s"$i-snap" else i, ackProbe.ref)
           ackProbe.expectMessage(Done)
         }
       }
@@ -1708,7 +1708,7 @@ class EventSourcedCleanupSpec
       persisters2.foreach { persister2 =>
         persister2 ! Persister.GetState(stateProbe.ref)
         // events and snapshot not expired yet (1 minute TTL)
-        stateProbe.expectMessage((1 to n).map(i => if (i == s) i + "-snap" else i).mkString("|"))
+        stateProbe.expectMessage((1 to n).map(i => if (i == s) s"$i-snap" else i).mkString("|"))
         persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
         seqNrProbe.expectMessage(n.toLong) // not expired yet
       }

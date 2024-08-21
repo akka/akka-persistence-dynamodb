@@ -20,12 +20,10 @@ import akka.persistence.query.Offset
 import akka.persistence.query.PersistenceQuery
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.typed.PersistenceId
-import akka.serialization.SerializationExtension
 import akka.stream.testkit.TestSubscriber
 import akka.stream.testkit.scaladsl.TestSink
 import com.typesafe.config.ConfigFactory
 import org.scalatest.wordspec.AnyWordSpecLike
-import org.slf4j.LoggerFactory
 
 object EventsBySliceBacktrackingSpec {
   private val BufferSize = 10 // small buffer for testing
@@ -52,8 +50,6 @@ class EventsBySliceBacktrackingSpec
 
   private val query = PersistenceQuery(testKit.system)
     .readJournalFor[DynamoDBReadJournal](DynamoDBReadJournal.Identifier)
-  private val stringSerializer = SerializationExtension(system).serializerFor(classOf[String])
-  private val log = LoggerFactory.getLogger(getClass)
 
   "eventsBySlices backtracking" should {
 
@@ -151,7 +147,7 @@ class EventsBySliceBacktrackingSpec
       val pid1 = nextPersistenceId(entityType)
       val slice = query.sliceForPersistenceId(pid1.id)
       val pid2 = randomPersistenceIdForSlice(entityType, slice)
-      val sinkProbe = TestSink.probe[EventEnvelope[String]](system.classicSystem)
+      val sinkProbe = TestSink[EventEnvelope[String]]()
 
       // don't let behind-current-time be a reason for not finding events
       val startTime = InstantFactory.now().minusSeconds(10 * 60)

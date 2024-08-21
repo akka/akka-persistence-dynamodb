@@ -225,7 +225,7 @@ class EventsBySliceStartingFromSnapshotSpec
       val numberOfPersisters = 20
       val numberOfEvents = 3
       val persistenceIds = (1 to numberOfPersisters).map(_ => nextPersistenceId(entityType)).toVector
-      val persisters = persistenceIds.map { pid =>
+      persistenceIds.foreach { pid =>
         val ref = testKit.spawn(TestActors.Persister.withSnapshotAck(pid, Set.empty, snapshotAckProbe.ref))
         for (i <- 1 to numberOfEvents) {
           if (i == 2) {

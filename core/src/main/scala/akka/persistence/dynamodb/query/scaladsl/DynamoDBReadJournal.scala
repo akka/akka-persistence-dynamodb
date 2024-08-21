@@ -6,10 +6,8 @@ package akka.persistence.dynamodb.query.scaladsl
 
 import java.time.Instant
 import java.time.{ Duration => JDuration }
-
 import scala.collection.mutable
 import scala.concurrent.Future
-
 import akka.NotUsed
 import akka.actor.ExtendedActorSystem
 import akka.actor.typed.pubsub.Topic
@@ -47,6 +45,8 @@ import akka.stream.scaladsl.Flow
 import akka.stream.scaladsl.Source
 import com.typesafe.config.Config
 import org.slf4j.LoggerFactory
+
+import scala.annotation.nowarn
 
 object DynamoDBReadJournal {
   val Identifier = "akka.persistence.dynamodb.query"
@@ -187,7 +187,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
    * The consumer can keep track of its current position in the event stream by storing the `offset` and restart the
    * query from a given `offset` after a crash/restart.
    *
-   * The supported offset is [[TimestampOffset]] and [[Offset.noOffset]].
+   * The supported offsets are [[akka.persistence.query.TimestampOffset]] and [[akka.persistence.query.NoOffset]].
    *
    * The timestamp is based on the client wall clock and the events are read from a DynamoDB global secondary index,
    * which is eventually consistent. This means that a "later" event may be visible first and when retrieving events
@@ -391,6 +391,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       throw new IllegalArgumentException(
         s"To use $methodName you must enable configuration `akka.persistence.dynamodb.query.start-from-snapshot.enabled`")
 
+  @nowarn("msg=deprecated")
   private def eventsBySlicesPubSubSource[Event](
       entityType: String,
       minSlice: Int,

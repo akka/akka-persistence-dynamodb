@@ -165,7 +165,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         val expression = s"attribute_not_exists($Expiry) OR $Expiry > :now"
         val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
         (Some(expression), attributes)
-      } else (None, Map.empty)
+      } else (None, Map.empty[String, AttributeValue])
 
     val requestBuilder = QueryRequest.builder
       .tableName(settings.journalTable)

@@ -299,6 +299,8 @@ object ProjectionDocExample {
       sourceProvider,
       handler = () => new ShoppingCartTransactHandler)
     //#exactly-once
+
+    val _ = projection
   }
 
   def atLeastOnceExample(
@@ -319,6 +321,8 @@ object ProjectionDocExample {
         .atLeastOnce(projectionId, settings = None, sourceProvider, handler = () => new ShoppingCartHandler(client))
         .withSaveOffset(afterEnvelopes = 100, afterDuration = 500.millis)
     //#at-least-once
+
+    val _ = projection
   }
 
   def exactlyOnceGroupedWithinExample(
@@ -342,6 +346,8 @@ object ProjectionDocExample {
           handler = () => new GroupedShoppingCartTransactHandler)
         .withGroup(groupAfterEnvelopes = 20, groupAfterDuration = 500.millis)
     //#exactly-once-grouped-within
+
+    val _ = projection
   }
 
   def atLeastOnceGroupedWithinExample(
@@ -366,13 +372,15 @@ object ProjectionDocExample {
           handler = () => new GroupedShoppingCartHandler(client))
         .withGroup(groupAfterEnvelopes = 20, groupAfterDuration = 500.millis)
     //#at-least-once-grouped-within
+
+    val _ = projection
   }
 
   object MultiPluginExample {
     val config =
-      """
+      s"""
       // #second-projection-config
-      second-projection-dynamodb = ${akka.projection.dynamodb}
+      second-projection-dynamodb = $${akka.projection.dynamodb}
       second-projection-dynamodb {
         offset-store {
           # specific projection offset store settings here
@@ -382,12 +390,12 @@ object ProjectionDocExample {
       // #second-projection-config
 
       // #second-projection-config-with-client
-      second-projection-dynamodb = ${akka.projection.dynamodb}
+      second-projection-dynamodb = $${akka.projection.dynamodb}
       second-projection-dynamodb {
         offset-store {
           # specific projection offset store settings here
         }
-        client = ${akka.persistence.dynamodb.client}
+        client = $${akka.persistence.dynamodb.client}
         client {
           # specific client settings for offset store and projection handler here
         }
@@ -419,6 +427,8 @@ object ProjectionDocExample {
           sourceProvider,
           handler = () => new ShoppingCartHandler(client))
       //#projection-settings
+
+      val _ = projection
     }
   }
 }

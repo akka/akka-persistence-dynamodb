@@ -65,7 +65,7 @@ final class DynamoDBReadJournal(delegate: scaladsl.DynamoDBReadJournal)
    * The consumer can keep track of its current position in the event stream by storing the `offset` and restart the
    * query from a given `offset` after a crash/restart.
    *
-   * The supported offset is [[akka.persistence.query.TimestampOffset]] and [[Offset.noOffset]].
+   * The supported offsets are [[akka.persistence.query.TimestampOffset]] and [[akka.persistence.query.NoOffset]].
    *
    * The timestamp is based on the client wall clock and the events are read from a DynamoDB global secondary index,
    * which is eventually consistent. This means that a "later" event may be visible first and when retrieving events

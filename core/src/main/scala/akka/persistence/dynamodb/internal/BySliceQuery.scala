@@ -8,7 +8,6 @@ import java.time.Instant
 import java.time.{ Duration => JDuration }
 
 import scala.concurrent.ExecutionContext
-import scala.concurrent.duration.Duration
 import scala.concurrent.duration.FiniteDuration
 
 import akka.NotUsed
@@ -66,14 +65,13 @@ import org.slf4j.Logger
     def source: String
   }
 
-  trait Dao[SerializedItem] {
+  trait Dao[Item] {
     def itemsBySlice(
         entityType: String,
         slice: Int,
         fromTimestamp: Instant,
         toTimestamp: Instant,
-        backtracking: Boolean): Source[SerializedItem, NotUsed]
-
+        backtracking: Boolean): Source[Item, NotUsed]
   }
 }
 

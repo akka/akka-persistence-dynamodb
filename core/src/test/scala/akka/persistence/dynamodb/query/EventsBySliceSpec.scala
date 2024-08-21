@@ -147,7 +147,7 @@ class EventsBySliceSpec
 
         val withOffset =
           doQuery(entityType, slice, slice, offset)
-            .runWith(TestSink.probe[EventEnvelope[String]](system.classicSystem))
+            .runWith(TestSink[EventEnvelope[String]]())
         withOffset.request(12)
         for (i <- 11 to 20) {
           withOffset.expectNext().event shouldBe s"e-$i"
@@ -315,7 +315,7 @@ class EventsBySliceSpec
       val numberOfPersisters = 20
       val numberOfEvents = 3
       val persistenceIds = (1 to numberOfPersisters).map(_ => nextPersistenceId(entityType)).toVector
-      val persisters = persistenceIds.map { pid =>
+      persistenceIds.foreach { pid =>
         val ref = testKit.spawn(Persister(pid))
         for (i <- 1 to numberOfEvents) {
           ref ! PersistWithAck(s"e-$i", probe.ref)
@@ -405,13 +405,12 @@ class EventsBySliceSpec
           .runWith(Sink.seq[EventEnvelope[String]])
 
       val persistenceIds = (1 to numberOfPersisters).map(_ => nextPersistenceId(entityType)).toVector
-      val persisters = persistenceIds.map { pid =>
+      persistenceIds.foreach { pid =>
         val ref = testKit.spawn(Persister(pid))
         for (i <- 1 to numberOfEvents) {
           ref ! PersistWithAck(s"e-$i", probe.ref)
           probe.expectMessage(Done)
         }
-        ref
       }
 
       allEnvelopes.futureValue.size should be(numberOfPersisters * numberOfEvents)
