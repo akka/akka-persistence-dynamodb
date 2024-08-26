@@ -5,8 +5,8 @@
 package akka.persistence.dynamodb.journal
 
 import java.time.Instant
+import java.util.concurrent.CompletionException
 
-import scala.collection.immutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.util.Failure
@@ -41,6 +41,7 @@ import akka.serialization.SerializationExtension
 import akka.serialization.Serializers
 import akka.stream.scaladsl.Sink
 import com.typesafe.config.Config
+import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughputExceededException
 
 /**
  * INTERNAL API
@@ -104,14 +105,14 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
 
   // if there are pending writes when an actor restarts we must wait for
   // them to complete before we can read the highest sequence number or we will miss it
-  private val writesInProgress = new java.util.HashMap[String, Future[Done]]()
+  private val writesInProgress = new java.util.HashMap[String, Future[Seq[Try[Unit]]]]()
 
   override def receivePluginInternal: Receive = { case WriteFinished(pid, f) =>
     writesInProgress.remove(pid, f)
   }
 
-  override def asyncWriteMessages(messages: immutable.Seq[AtomicWrite]): Future[immutable.Seq[Try[Unit]]] = {
-    def atomicWrite(atomicWrite: AtomicWrite): Future[Done] = {
+  override def asyncWriteMessages(messages: Seq[AtomicWrite]): Future[Seq[Try[Unit]]] = {
+    def atomicWrite(atomicWrite: AtomicWrite): Future[Seq[Try[Unit]]] = {
       val serialized: Try[Seq[SerializedJournalItem]] = Try {
         atomicWrite.payload.map { pr =>
           val (event, tags) = pr.payload match {
@@ -166,7 +167,15 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
                   ps.publish(pr, serialized.writeTimestamp)
                 }
               }
-              Done
+              Nil // successful writes
+            }
+            .recoverWith { case e: CompletionException =>
+              e.getCause match {
+                case error: ProvisionedThroughputExceededException => // reject retryable errors
+                  Future.successful(atomicWrite.payload.map(_ => Failure(error)))
+                case error => // otherwise journal failure
+                  Future.failed(error)
+              }
             }
 
         case Failure(exc) =>
@@ -175,7 +184,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
     }
 
     val persistenceId = messages.head.persistenceId
-    val writeResult: Future[Done] =
+    val writeResult: Future[Seq[Try[Unit]]] =
       if (messages.size == 1)
         atomicWrite(messages.head)
       else {
@@ -189,7 +198,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
     writeResult.onComplete { _ =>
       self ! WriteFinished(persistenceId, writeResult)
     }
-    writeResult.map(_ => Nil)(ExecutionContexts.parasitic)
+    writeResult
   }
 
   override def asyncDeleteMessagesTo(persistenceId: String, toSequenceNr: Long): Future[Unit] = {
