@@ -5,8 +5,10 @@
 package akka.persistence.dynamodb.util
 
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters.ListHasAsScala
 import scala.jdk.OptionConverters._
 
+import akka.actor.ClassicActorSystemProvider
 import akka.actor.testkit.typed.scaladsl.ActorTestKit
 import akka.actor.testkit.typed.scaladsl.ActorTestKitBase
 import akka.util.JavaDurationConverters._
@@ -17,6 +19,8 @@ import org.scalatest.wordspec.AnyWordSpec
 import software.amazon.awssdk.core.retry.RetryMode
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
+import software.amazon.awssdk.metrics.MetricCollection
+import software.amazon.awssdk.metrics.MetricPublisher
 
 class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
 
@@ -60,6 +64,20 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
       val compressionConfiguration = overrideConfiguration.compressionConfiguration.toScala.value
       compressionConfiguration.requestCompressionEnabled shouldBe true
       compressionConfiguration.minimumCompressionThresholdInBytes shouldBe 10240
+    }
+
+    "create client with a MetricPublisher" in withActorTestKit("""
+      akka.persistence.dynamodb.client {
+        region = "us-east-1"
+        metrics-providers += akka.persistence.dynamodb.util.TestNoopMetricsProvider
+      }
+    """) { testKit =>
+      val clientConfigLocation = "akka.persistence.dynamodb.client"
+      val client = ClientProvider(testKit.system).clientFor(clientConfigLocation)
+
+      val clientConfiguration = client.serviceClientConfiguration
+      val overrideConfiguration = clientConfiguration.overrideConfiguration
+      overrideConfiguration.metricPublishers.asScala shouldNot be(empty)
     }
 
     "create client with configured settings" in withActorTestKit("""
@@ -157,4 +175,12 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
     finally testKit.shutdownTestKit()
   }
 
+}
+
+class TestNoopMetricsProvider(system: ClassicActorSystemProvider) extends SDKClientMetricsProvider {
+  def metricsProviderFor(configLocation: String): MetricPublisher =
+    new MetricPublisher {
+      def publish(collection: MetricCollection): Unit = ()
+      def close(): Unit = ()
+    }
 }
