@@ -36,7 +36,7 @@ object ClientProvider extends ExtensionId[ClientProvider] {
 class ClientProvider(system: ActorSystem[_]) extends Extension {
   private val clients = new ConcurrentHashMap[String, DynamoDbAsyncClient]
   private val clientSettings = new ConcurrentHashMap[String, ClientSettings]
-  private val metricsProvider = SDKClientMetricsResolver.resolve(system)
+  private val metricsProvider = AWSClientMetricsResolver.resolve(system)
 
   CoordinatedShutdown(system)
     .addTask(CoordinatedShutdown.PhaseBeforeActorSystemTerminate, "close DynamoDB clients") { () =>
@@ -50,7 +50,7 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
       configLocation,
       configLocation => {
         val settings = clientSettingsFor(configLocation)
-        createClient(settings, metricsProvider.map(_.metricsPublisherFor(configLocation)))
+        createClient(settings, metricsProvider.map(_.metricPublisherFor(configLocation)))
       })
   }
 

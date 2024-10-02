@@ -77,7 +77,9 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
 
       val clientConfiguration = client.serviceClientConfiguration
       val overrideConfiguration = clientConfiguration.overrideConfiguration
-      overrideConfiguration.metricPublishers.asScala shouldNot be(empty)
+      val metricPublishers = overrideConfiguration.metricPublishers.asScala.toSeq
+      metricPublishers.size shouldBe 1
+      metricPublishers should contain(TestNoopMetricsProvider.publisher)
     }
 
     "create client with configured settings" in withActorTestKit("""
@@ -177,8 +179,12 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
 
 }
 
-class TestNoopMetricsProvider(system: ClassicActorSystemProvider) extends SDKClientMetricsProvider {
-  def metricsPublisherFor(configLocation: String): MetricPublisher =
+class TestNoopMetricsProvider(system: ClassicActorSystemProvider) extends AWSClientMetricsProvider {
+  def metricPublisherFor(configLocation: String): MetricPublisher = TestNoopMetricsProvider.publisher
+}
+
+object TestNoopMetricsProvider {
+  val publisher =
     new MetricPublisher {
       def publish(collection: MetricCollection): Unit = ()
       def close(): Unit = ()
