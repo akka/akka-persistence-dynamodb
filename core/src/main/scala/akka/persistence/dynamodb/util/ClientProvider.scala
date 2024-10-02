@@ -25,6 +25,7 @@ import software.amazon.awssdk.core.retry.RetryPolicy
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
+import software.amazon.awssdk.metrics.MetricPublisher
 
 object ClientProvider extends ExtensionId[ClientProvider] {
   def createExtension(system: ActorSystem[_]): ClientProvider = new ClientProvider(system)
@@ -35,6 +36,7 @@ object ClientProvider extends ExtensionId[ClientProvider] {
 class ClientProvider(system: ActorSystem[_]) extends Extension {
   private val clients = new ConcurrentHashMap[String, DynamoDbAsyncClient]
   private val clientSettings = new ConcurrentHashMap[String, ClientSettings]
+  private val metricsProvider = AWSClientMetricsResolver.resolve(system)
 
   CoordinatedShutdown(system)
     .addTask(CoordinatedShutdown.PhaseBeforeActorSystemTerminate, "close DynamoDB clients") { () =>
@@ -48,7 +50,7 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
       configLocation,
       configLocation => {
         val settings = clientSettingsFor(configLocation)
-        createClient(settings)
+        createClient(settings, metricsProvider.map(_.metricPublisherFor(configLocation)))
       })
   }
 
@@ -63,7 +65,7 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
     }
   }
 
-  private def createClient(settings: ClientSettings): DynamoDbAsyncClient = {
+  private def createClient(settings: ClientSettings, metricsPublisher: Option[MetricPublisher]): DynamoDbAsyncClient = {
     val httpClientBuilder = NettyNioAsyncHttpClient.builder
       .maxConcurrency(settings.http.maxConcurrency)
       .maxPendingConnectionAcquires(settings.http.maxPendingConnectionAcquires)
@@ -97,6 +99,8 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
       settings.callAttemptTimeout.foreach { timeout =>
         overrideConfigurationBuilder = overrideConfigurationBuilder.apiCallAttemptTimeout(timeout.toJava)
       }
+
+      metricsPublisher.foreach { mp => overrideConfigurationBuilder.addMetricPublisher(mp) }
 
       overrideConfigurationBuilder.build()
     }
