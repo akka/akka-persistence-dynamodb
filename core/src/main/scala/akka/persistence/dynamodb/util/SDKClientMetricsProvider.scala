@@ -34,7 +34,7 @@ trait SDKClientMetricsProvider {
    * Given an overall config path for Akka Persistence DynamoDB (e.g. 'akka.persistence.dynamodb') returns an instance
    * of an AWS SDK MetricPublisher which publishes SDK client metrics to the location of this implementation's choosing.
    */
-  def metricsProviderFor(configLocation: String): MetricPublisher
+  def metricsPublisherFor(configLocation: String): MetricPublisher
 }
 
 /** INTERNAL API */
@@ -70,12 +70,12 @@ private[dynamodb] object SDKClientMetricsResolver {
   // to be reflectively constructed, but we don't reflectively construct it
   private class EnsembleSDKClientMetricsProvider(providers: Seq[SDKClientMetricsProvider])
       extends SDKClientMetricsProvider {
-    def metricsProviderFor(configLocation: String): MetricPublisher =
+    def metricsPublisherFor(configLocation: String): MetricPublisher =
       instances.computeIfAbsent(
         configLocation,
         path =>
           new MetricPublisher {
-            private val publishers = providers.map(_.metricsProviderFor(configLocation))
+            private val publishers = providers.map(_.metricsPublisherFor(configLocation))
 
             def publish(metricCollection: MetricCollection): Unit = {
               publishers.foreach(_.publish(metricCollection))

@@ -40,6 +40,8 @@ object Dependencies {
     val scalaTest = "org.scalatest" %% "scalatest" % "3.2.12" % Test // ApacheV2
     val junit = "junit" % "junit" % "4.12" % Test // Eclipse Public License 1.0
     val junitInterface = "com.novocode" % "junit-interface" % "0.11" % Test // "BSD 2-Clause"
+
+    val cloudwatchMetricPublisher = "software.amazon.awssdk" % "cloudwatch-metric-publisher" % AwsSdkVersion % Test
   }
 
   import Compile._

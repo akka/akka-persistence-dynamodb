@@ -123,7 +123,7 @@ lazy val docs = project
   .settings(dontPublish)
   .settings(
     name := "Akka Persistence plugin for Amazon DynamoDB",
-    libraryDependencies ++= Dependencies.docs,
+    libraryDependencies ++= (Dependencies.TestDeps.cloudwatchMetricPublisher +: Dependencies.docs),
     makeSite := makeSite.dependsOn(LocalRootProject / ScalaUnidoc / doc).value,
     previewPath := (Paradox / siteSubdirName).value,
     Preprocess / siteSubdirName := s"api/akka-persistence-dynamodb/${projectInfoVersion.value}",

@@ -50,7 +50,7 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
       configLocation,
       configLocation => {
         val settings = clientSettingsFor(configLocation)
-        createClient(settings, metricsProvider.map(_.metricsProviderFor(configLocation)))
+        createClient(settings, metricsProvider.map(_.metricsPublisherFor(configLocation)))
       })
   }
 

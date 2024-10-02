@@ -178,7 +178,7 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
 }
 
 class TestNoopMetricsProvider(system: ClassicActorSystemProvider) extends SDKClientMetricsProvider {
-  def metricsProviderFor(configLocation: String): MetricPublisher =
+  def metricsPublisherFor(configLocation: String): MetricPublisher =
     new MetricPublisher {
       def publish(collection: MetricCollection): Unit = ()
       def close(): Unit = ()
