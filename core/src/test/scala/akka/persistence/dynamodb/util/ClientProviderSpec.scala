@@ -55,7 +55,7 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
 
       val retryPolicy = overrideConfiguration.retryPolicy.toScala.value
       retryPolicy.retryMode shouldBe RetryMode.STANDARD
-      retryPolicy.numRetries shouldBe 3
+      retryPolicy.numRetries shouldBe 2
 
       val compressionConfiguration = overrideConfiguration.compressionConfiguration.toScala.value
       compressionConfiguration.requestCompressionEnabled shouldBe true
