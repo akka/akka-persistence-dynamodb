@@ -58,8 +58,8 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
       httpSettings.tcpKeepAlive shouldBe false
 
       val retryPolicy = overrideConfiguration.retryPolicy.toScala.value
-      retryPolicy.retryMode shouldBe RetryMode.LEGACY
-      retryPolicy.numRetries shouldBe 3
+      retryPolicy.retryMode shouldBe RetryMode.STANDARD
+      retryPolicy.numRetries shouldBe 2
 
       val compressionConfiguration = overrideConfiguration.compressionConfiguration.toScala.value
       compressionConfiguration.requestCompressionEnabled shouldBe true
@@ -102,7 +102,7 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
         }
 
         retry-policy {
-          retry-mode = standard
+          retry-mode = legacy
           num-retries = 5
         }
 
@@ -141,7 +141,7 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
       httpSettings.tcpKeepAlive shouldBe true
 
       val retryPolicy = overrideConfiguration.retryPolicy.toScala.value
-      retryPolicy.retryMode shouldBe RetryMode.STANDARD
+      retryPolicy.retryMode shouldBe RetryMode.LEGACY
       retryPolicy.numRetries shouldBe 5
 
       val compressionConfiguration = overrideConfiguration.compressionConfiguration.toScala.value
