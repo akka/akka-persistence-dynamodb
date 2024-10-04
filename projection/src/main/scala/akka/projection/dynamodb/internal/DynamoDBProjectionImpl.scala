@@ -14,9 +14,7 @@ import scala.util.control.NonFatal
 
 import akka.Done
 import akka.actor.typed.ActorSystem
-import akka.actor.typed.scaladsl.LoggerOps
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.event.Logging
 import akka.event.LoggingAdapter
 import akka.persistence.query.DeletedDurableState
@@ -108,9 +106,9 @@ private[projection] object DynamoDBProjectionImpl {
         }).map { loadedEnv =>
           val count = loadEnvelopeCounter.incrementAndGet()
           if (count % 1000 == 0)
-            log.infoN("Loaded event lazily, persistenceId [{}], seqNr [{}]. Load count [{}]", pid, seqNr, count)
+            log.info("Loaded event lazily, persistenceId [{}], seqNr [{}]. Load count [{}]", pid, seqNr, count)
           else
-            log.debugN("Loaded event lazily, persistenceId [{}], seqNr [{}]. Load count [{}]", pid, seqNr, count)
+            log.debug("Loaded event lazily, persistenceId [{}], seqNr [{}]. Load count [{}]", pid, seqNr, count)
           loadedEnv.asInstanceOf[Envelope]
         }
 
@@ -128,13 +126,13 @@ private[projection] object DynamoDBProjectionImpl {
           case GetObjectResult(Some(loadedValue), loadedRevision) =>
             val count = loadEnvelopeCounter.incrementAndGet()
             if (count % 1000 == 0)
-              log.infoN(
+              log.info(
                 "Loaded durable state lazily, persistenceId [{}], revision [{}]. Load count [{}]",
                 pid,
                 loadedRevision,
                 count)
             else
-              log.debugN(
+              log.debug(
                 "Loaded durable state lazily, persistenceId [{}], revision [{}]. Load count [{}]",
                 pid,
                 loadedRevision,
@@ -202,7 +200,7 @@ private[projection] object DynamoDBProjectionImpl {
             case Duplicate =>
               FutureDone
             case RejectedSeqNr =>
-              triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map(_ => Done)(ExecutionContexts.parasitic)
+              triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map(_ => Done)(ExecutionContext.parasitic)
             case RejectedBacktrackingSeqNr =>
               triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map {
                 case true  => Done
@@ -241,7 +239,7 @@ private[projection] object DynamoDBProjectionImpl {
             case Duplicate =>
               FutureDone
             case RejectedSeqNr =>
-              triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map(_ => Done)(ExecutionContexts.parasitic)
+              triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map(_ => Done)(ExecutionContext.parasitic)
             case RejectedBacktrackingSeqNr =>
               triggerReplayIfPossible(sourceProvider, offsetStore, envelope).map {
                 case true  => Done
@@ -266,7 +264,7 @@ private[projection] object DynamoDBProjectionImpl {
           val replayDone =
             Future.sequence(isAcceptedEnvelopes.map {
               case (env, RejectedSeqNr) =>
-                triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => Done)(ExecutionContexts.parasitic)
+                triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => Done)(ExecutionContext.parasitic)
               case (env, RejectedBacktrackingSeqNr) =>
                 triggerReplayIfPossible(sourceProvider, offsetStore, env).map {
                   case true  => Done
@@ -317,7 +315,7 @@ private[projection] object DynamoDBProjectionImpl {
           val replayDone =
             Future.sequence(isAcceptedEnvelopes.map {
               case (env, RejectedSeqNr) =>
-                triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => Done)(ExecutionContexts.parasitic)
+                triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => Done)(ExecutionContext.parasitic)
               case (env, RejectedBacktrackingSeqNr) =>
                 triggerReplayIfPossible(sourceProvider, offsetStore, env).map {
                   case true  => Done
@@ -378,7 +376,7 @@ private[projection] object DynamoDBProjectionImpl {
             case Duplicate =>
               Future.successful(None)
             case RejectedSeqNr =>
-              triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => None)(ExecutionContexts.parasitic)
+              triggerReplayIfPossible(sourceProvider, offsetStore, env).map(_ => None)(ExecutionContext.parasitic)
             case RejectedBacktrackingSeqNr =>
               triggerReplayIfPossible(sourceProvider, offsetStore, env).map {
                 case true  => None

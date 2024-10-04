@@ -4,13 +4,13 @@
 
 package akka.projection.dynamodb.internal
 
+import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
 
 import akka.Done
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.projection.dynamodb.javadsl
 import akka.projection.dynamodb.scaladsl
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
@@ -23,7 +23,7 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
     extends scaladsl.DynamoDBTransactHandler[Envelope] {
 
   override def process(envelope: Envelope): Future[Iterable[TransactWriteItem]] =
-    delegate.process(envelope).asScala.map(_.asScala)(ExecutionContexts.parasitic)
+    delegate.process(envelope).asScala.map(_.asScala)(ExecutionContext.parasitic)
 
   override def start(): Future[Done] =
     delegate.start().asScala
@@ -40,7 +40,7 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
     extends scaladsl.DynamoDBTransactHandler[Seq[Envelope]] {
 
   override def process(envelopes: Seq[Envelope]): Future[Iterable[TransactWriteItem]] =
-    delegate.process(envelopes.asJava).asScala.map(_.asScala)(ExecutionContexts.parasitic)
+    delegate.process(envelopes.asJava).asScala.map(_.asScala)(ExecutionContext.parasitic)
 
   override def start(): Future[Done] =
     delegate.start().asScala

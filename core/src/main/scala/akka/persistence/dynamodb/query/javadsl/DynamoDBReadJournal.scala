@@ -9,12 +9,12 @@ import java.util
 import java.util.Optional
 import java.util.concurrent.CompletionStage
 
+import scala.concurrent.ExecutionContext
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
 import scala.jdk.OptionConverters.RichOption
 
 import akka.NotUsed
-import akka.dispatch.ExecutionContexts
 import akka.japi.Pair
 import akka.persistence.dynamodb.query.scaladsl
 import akka.persistence.query.Offset
@@ -136,7 +136,7 @@ final class DynamoDBReadJournal(delegate: scaladsl.DynamoDBReadJournal)
     delegate.eventsBySlicesStartingFromSnapshots(entityType, minSlice, maxSlice, offset, transformSnapshot(_)).asJava
 
   override def timestampOf(persistenceId: String, sequenceNr: Long): CompletionStage[Optional[Instant]] =
-    delegate.timestampOf(persistenceId, sequenceNr).map(_.toJava)(ExecutionContexts.parasitic).asJava
+    delegate.timestampOf(persistenceId, sequenceNr).map(_.toJava)(ExecutionContext.parasitic).asJava
 
   override def loadEnvelope[Event](persistenceId: String, sequenceNr: Long): CompletionStage[EventEnvelope[Event]] =
     delegate.loadEnvelope[Event](persistenceId, sequenceNr).asJava

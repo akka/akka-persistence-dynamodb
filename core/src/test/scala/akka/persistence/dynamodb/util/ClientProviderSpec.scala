@@ -5,13 +5,12 @@
 package akka.persistence.dynamodb.util
 
 import scala.concurrent.duration._
-import scala.jdk.CollectionConverters.ListHasAsScala
+import scala.jdk.DurationConverters._
 import scala.jdk.OptionConverters._
 
 import akka.actor.ClassicActorSystemProvider
 import akka.actor.testkit.typed.scaladsl.ActorTestKit
 import akka.actor.testkit.typed.scaladsl.ActorTestKitBase
-import akka.util.JavaDurationConverters._
 import com.typesafe.config.ConfigFactory
 import org.scalatest.OptionValues
 import org.scalatest.matchers.should.Matchers
@@ -41,7 +40,7 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
       clientConfiguration.region shouldBe Region.US_EAST_1
 
       val overrideConfiguration = clientConfiguration.overrideConfiguration
-      overrideConfiguration.apiCallTimeout.toScala shouldBe Some(9.seconds.asJava)
+      overrideConfiguration.apiCallTimeout.toScala shouldBe Some(9.seconds.toJava)
       overrideConfiguration.apiCallAttemptTimeout.toScala shouldBe None
 
       val httpSettings = settings.http
@@ -124,8 +123,8 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
       clientConfiguration.region shouldBe Region.US_EAST_1
 
       val overrideConfiguration = clientConfiguration.overrideConfiguration
-      overrideConfiguration.apiCallTimeout.toScala shouldBe Some(3.seconds.asJava)
-      overrideConfiguration.apiCallAttemptTimeout.toScala shouldBe Some(500.millis.asJava)
+      overrideConfiguration.apiCallTimeout.toScala shouldBe Some(3.seconds.toJava)
+      overrideConfiguration.apiCallAttemptTimeout.toScala shouldBe Some(500.millis.toJava)
 
       val httpSettings = settings.http
       httpSettings.maxConcurrency shouldBe 100

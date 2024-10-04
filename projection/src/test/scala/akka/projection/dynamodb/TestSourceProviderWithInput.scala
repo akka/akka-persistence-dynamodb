@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.Promise
+import scala.jdk.CollectionConverters._
 
 import akka.NotUsed
 import akka.actor.typed.ActorRef
@@ -25,7 +26,6 @@ import akka.projection.BySlicesSourceProvider
 import akka.projection.scaladsl.SourceProvider
 import akka.stream.OverflowStrategy
 import akka.stream.scaladsl.Source
-import akka.util.ccompat.JavaConverters._
 
 class TestSourceProviderWithInput()(implicit val system: ActorSystem[_])
     extends SourceProvider[TimestampOffset, EventEnvelope[String]]
