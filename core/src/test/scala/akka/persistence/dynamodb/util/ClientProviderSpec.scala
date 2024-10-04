@@ -5,6 +5,7 @@
 package akka.persistence.dynamodb.util
 
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
 import scala.jdk.DurationConverters._
 import scala.jdk.OptionConverters._
 
