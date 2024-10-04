@@ -17,7 +17,6 @@ import scala.jdk.FutureConverters._
 import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.persistence.Persistence
 import akka.persistence.SnapshotSelectionCriteria
 import akka.persistence.dynamodb.DynamoDBSettings
@@ -106,7 +105,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   private def itemHasExpired(item: JMap[String, AttributeValue]): Boolean = {
@@ -173,10 +172,10 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
     }
 
     result
-      .map(_ => ())(ExecutionContexts.parasitic)
+      .map(_ => ())(ExecutionContext.parasitic)
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   def delete(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Unit] = {
@@ -212,7 +211,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
     }
 
     result
-      .map(_ => ())(ExecutionContexts.parasitic)
+      .map(_ => ())(ExecutionContext.parasitic)
       // ignore if the criteria conditional check failed
       .recover {
         case _: ConditionalCheckFailedException => ()
@@ -221,7 +220,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
             case _: ConditionalCheckFailedException => ()
             case cause                              => throw cause
           }
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   def updateExpiry(
@@ -263,7 +262,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
     }
 
     result
-      .map(_ => ())(ExecutionContexts.parasitic)
+      .map(_ => ())(ExecutionContext.parasitic)
       // ignore if the criteria conditional check failed
       .recover {
         case _: ConditionalCheckFailedException => ()
@@ -272,7 +271,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
             case _: ConditionalCheckFailedException => ()
             case cause                              => throw cause
           }
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   // Used from `BySliceQuery` (only if settings.querySettings.startFromSnapshotEnabled).

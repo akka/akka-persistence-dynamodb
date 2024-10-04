@@ -9,6 +9,7 @@ import java.util.Collections
 import java.util.concurrent.CompletionException
 import java.util.{ HashMap => JHashMap }
 
+import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
@@ -16,7 +17,6 @@ import scala.jdk.FutureConverters._
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.query.TimestampOffset
 import akka.projection.ProjectionId
@@ -109,7 +109,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   def storeTimestampOffsets(offsetsBySlice: Map[Int, TimestampOffset]): Future[Done] = {
@@ -170,10 +170,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
         }
       }
       result
-        .map(_ => Done)(ExecutionContexts.parasitic)
+        .map(_ => Done)(ExecutionContext.parasitic)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
 
     if (offsetsBySlice.size <= MaxBatchSize) {
@@ -182,10 +182,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       val batches = offsetsBySlice.toVector.sliding(MaxBatchSize, MaxBatchSize)
       Future
         .sequence(batches.map(writeBatch))
-        .map(_ => Done)(ExecutionContexts.parasitic)
+        .map(_ => Done)(ExecutionContext.parasitic)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
   }
 
@@ -226,7 +226,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
         }
       }
 
-      result.map(_ => Done)(ExecutionContexts.parasitic)
+      result.map(_ => Done)(ExecutionContext.parasitic)
     }
 
     if (records.size <= MaxBatchSize) {
@@ -235,7 +235,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       val batches = records.sliding(MaxBatchSize, MaxBatchSize)
       Future
         .sequence(batches.map(writeBatch))
-        .map(_ => Done)(ExecutionContexts.parasitic)
+        .map(_ => Done)(ExecutionContext.parasitic)
     }
   }
 
@@ -269,7 +269,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   def transactStoreSequenceNumbers(writeItems: Iterable[TransactWriteItem])(records: Seq[Record]): Future[Done] = {
@@ -314,10 +314,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
     }
 
     result
-      .map(_ => Done)(ExecutionContexts.parasitic)
+      .map(_ => Done)(ExecutionContext.parasitic)
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
 
   }
 
@@ -371,7 +371,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   def updateManagementState(minSlice: Int, maxSlice: Int, paused: Boolean): Future[Done] = {
@@ -411,10 +411,10 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
         }
       }
       result
-        .map(_ => Done)(ExecutionContexts.parasitic)
+        .map(_ => Done)(ExecutionContext.parasitic)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
 
     val sliceRange = (minSlice to maxSlice).toVector
@@ -424,7 +424,7 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest
       val batches = sliceRange.sliding(MaxBatchSize, MaxBatchSize)
       Future
         .sequence(batches.map(writeBatch))
-        .map(_ => Done)(ExecutionContexts.parasitic)
+        .map(_ => Done)(ExecutionContext.parasitic)
     }
   }
 }

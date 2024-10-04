@@ -16,7 +16,6 @@ import scala.jdk.FutureConverters._
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
@@ -115,7 +114,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             response.consumedCapacity.capacityUnits)
         }
       }
-      result.map(_ => Done)(ExecutionContexts.parasitic)
+      result.map(_ => Done)(ExecutionContext.parasitic)
     } else {
       val writeItems =
         events.map { item =>
@@ -143,10 +142,10 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         }
       }
       result
-        .map(_ => Done)(ExecutionContexts.parasitic)
+        .map(_ => Done)(ExecutionContext.parasitic)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
 
   }
@@ -190,7 +189,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
     result
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   private def readLowestSequenceNr(persistenceId: String): Future[Long] = {
@@ -220,7 +219,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
     result
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   def deleteEventsTo(persistenceId: String, toSequenceNr: Long, resetSequenceNumber: Boolean): Future[Unit] = {
@@ -284,10 +283,10 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         }
       }
       result
-        .map(_ => ())(ExecutionContexts.parasitic)
+        .map(_ => ())(ExecutionContext.parasitic)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
 
     // TransactWriteItems has a limit of 100
@@ -317,7 +316,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
     result
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   def updateEventExpiry(
@@ -376,10 +375,10 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         }
       }
       result
-        .map(_ => ())(ExecutionContexts.parasitic)
+        .map(_ => ())(ExecutionContext.parasitic)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
 
     // TransactWriteItems has a limit of 100
@@ -409,7 +408,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
     result
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
 }

@@ -7,12 +7,12 @@ package akka.projection.dynamodb
 import java.time.{ Duration => JDuration }
 
 import scala.concurrent.duration._
+import scala.jdk.DurationConverters._
 import scala.jdk.CollectionConverters._
 
 import akka.actor.typed.ActorSystem
 import akka.persistence.dynamodb.ConfigHelpers
 import akka.persistence.dynamodb.WildcardMap
-import akka.util.JavaDurationConverters._
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigObject
 
@@ -72,7 +72,7 @@ final class DynamoDBProjectionSettings private (
     copy(useClient = clientConfigPath)
 
   def withTimeWindow(timeWindow: FiniteDuration): DynamoDBProjectionSettings =
-    copy(timeWindow = timeWindow.asJava)
+    copy(timeWindow = timeWindow.toJava)
 
   def withTimeWindow(timeWindow: JDuration): DynamoDBProjectionSettings =
     copy(timeWindow = timeWindow)
@@ -81,7 +81,7 @@ final class DynamoDBProjectionSettings private (
     copy(keepNumberOfEntries = keepNumberOfEntries)
 
   def withEvictInterval(evictInterval: FiniteDuration): DynamoDBProjectionSettings =
-    copy(evictInterval = evictInterval.asJava)
+    copy(evictInterval = evictInterval.toJava)
 
   def withEvictInterval(evictInterval: JDuration): DynamoDBProjectionSettings =
     copy(evictInterval = evictInterval)
@@ -180,7 +180,7 @@ final class ProjectionTimeToLiveSettings private (val offsetTimeToLive: Option[F
     copy(offsetTimeToLive = Some(offsetTimeToLive))
 
   def withOffsetTimeToLive(offsetTimeToLive: JDuration): ProjectionTimeToLiveSettings =
-    copy(offsetTimeToLive = Some(offsetTimeToLive.asScala))
+    copy(offsetTimeToLive = Some(offsetTimeToLive.toScala))
 
   def withNoOffsetTimeToLive(): ProjectionTimeToLiveSettings =
     copy(offsetTimeToLive = None)

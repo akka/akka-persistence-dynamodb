@@ -11,7 +11,6 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
 
 import akka.NotUsed
-import akka.actor.typed.scaladsl.LoggerOps
 import akka.annotation.InternalApi
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.query.Offset
@@ -118,7 +117,7 @@ import org.slf4j.Logger
         }
 
         if (state.queryCount != 0 && log.isDebugEnabled())
-          log.debugN(
+          log.debug(
             "{} next query [{}] from slice [{}], between time [{} - {}]. Found [{}] items in previous query.",
             logPrefix,
             state.queryCount,
@@ -136,7 +135,7 @@ import org.slf4j.Logger
             .via(deserializeAndAddOffset(state.latest)))
       } else {
         if (log.isDebugEnabled)
-          log.debugN(
+          log.debug(
             "{} query [{}] from slice [{}] completed. Found [{}] items in previous query.",
             logPrefix,
             state.queryCount,
@@ -149,7 +148,7 @@ import org.slf4j.Logger
 
     val currentTimestamp = InstantFactory.now()
     if (log.isDebugEnabled())
-      log.debugN(
+      log.debug(
         "{} query slice [{}], from time [{}] until now [{}].",
         logPrefix,
         slice,
@@ -174,7 +173,7 @@ import org.slf4j.Logger
     val initialOffset = toTimestampOffset(offset)
 
     if (log.isDebugEnabled())
-      log.debugN("Starting {} query from slice [{}], from time [{}].", logPrefix, slice, initialOffset.timestamp)
+      log.debug("Starting {} query from slice [{}], from time [{}].", logPrefix, slice, initialOffset.timestamp)
 
     def nextOffset(state: QueryState, envelope: Envelope): QueryState = {
       val offset = extractOffset(envelope)
@@ -198,7 +197,7 @@ import org.slf4j.Logger
         if (log.isDebugEnabled()) {
           if (state.latestBacktracking.seen.nonEmpty &&
             offset.timestamp.isAfter(state.latestBacktracking.timestamp.plus(firstBacktrackingQueryWindow)))
-            log.debugN(
+            log.debug(
               "{} next offset is outside the backtracking window, latestBacktracking: [{}], offset: [{}]",
               logPrefix,
               state.latestBacktracking,
@@ -221,7 +220,7 @@ import org.slf4j.Logger
 
         if (log.isDebugEnabled)
           delay.foreach { d =>
-            log.debugN(
+            log.debug(
               "{} query [{}] from slice [{}] delay next [{}] ms.",
               logPrefix,
               state.queryCount,
@@ -308,7 +307,7 @@ import org.slf4j.Logger
             " in backtracking mode,"
           else
             ""
-        log.debugN(
+        log.debug(
           "{} next query [{}]{} from slice [{}], between time [{} - {}]. {}",
           logPrefix,
           newState.queryCount,
@@ -351,7 +350,7 @@ import org.slf4j.Logger
               throw new IllegalStateException(
                 s"Too many events stored with the same timestamp [$currentTimestamp], buffer size [${settings.querySettings.bufferSize}]")
             }
-            log.traceN(
+            log.trace(
               "filtering [{}] [{}] as db timestamp is the same as last offset and is in seen [{}]",
               item.persistenceId,
               item.seqNr,

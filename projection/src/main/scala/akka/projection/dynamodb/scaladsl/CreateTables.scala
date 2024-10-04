@@ -14,7 +14,6 @@ import scala.util.Success
 
 import akka.Done
 import akka.actor.typed.ActorSystem
-import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.util.OnDemandThroughputSettings
 import akka.persistence.dynamodb.util.ProvisionedThroughputSettings
 import akka.persistence.dynamodb.util.TableSettings
@@ -75,7 +74,7 @@ object CreateTables {
         .map(_ => Done)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
 
     def delete(): Future[Done] = {
@@ -86,7 +85,7 @@ object CreateTables {
         .map(_ => Done)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
 
     existingTable.transformWith {
