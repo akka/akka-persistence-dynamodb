@@ -65,10 +65,12 @@ def common: Seq[Setting[_]] =
       version.value) ++ {
       // make use of https://github.com/scala/scala/pull/8663
       if (scalaBinaryVersion.value.startsWith("3")) {
-        Seq(s"-external-mappings:https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api")
-      } else {
-        Seq("-jdk-api-doc-base", s"https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api")
-      }
+        Seq(
+          s"-external-mappings:https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api/java.base/")
+      } else
+        Seq(
+          "-jdk-api-doc-base",
+          s"https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api/java.base/")
     },
     Compile / doc / autoAPIMappings := true,
     headerLicense := Some(HeaderLicense.Custom("""Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>""")),
