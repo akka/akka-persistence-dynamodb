@@ -58,7 +58,18 @@ def common: Seq[Setting[_]] =
     }),
     Compile / console / scalacOptions := defaultScalacOptions,
     Test / console / scalacOptions := defaultScalacOptions,
-    Compile / doc / scalacOptions := defaultScalacOptions,
+    Compile / doc / scalacOptions := defaultScalacOptions ++ Seq(
+      "-doc-title",
+      "Akka Persistence DynamoDB",
+      "-doc-version",
+      version.value) ++ {
+      // make use of https://github.com/scala/scala/pull/8663
+      if (scalaBinaryVersion.value.startsWith("3")) {
+        Seq(s"-external-mappings:https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api")
+      } else {
+        Seq("-jdk-api-doc-base", s"https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api")
+      }
+    },
     Compile / doc / autoAPIMappings := true,
     headerLicense := Some(HeaderLicense.Custom("""Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>""")),
     Test / logBuffered := false,
