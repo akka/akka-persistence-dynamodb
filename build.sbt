@@ -10,7 +10,7 @@ inThisBuild(
   Seq(
     organization := "com.lightbend.akka",
     organizationName := "Lightbend Inc.",
-    homepage := Some(url("https://doc.akka.io/docs/akka-persistence-dynamodb/current")),
+    homepage := Some(url("https://doc.akka.io/libraries/akka-persistence-dynamodb/current")),
     scmInfo := Some(
       ScmInfo(
         url("https://github.com/akka/akka-persistence-dynamodb"),
@@ -19,13 +19,18 @@ inThisBuild(
     developers += Developer(
       "contributors",
       "Contributors",
-      "https://gitter.im/akka/dev",
+      "",
       url("https://github.com/akka/akka-persistence-dynamodb/graphs/contributors")),
     releaseNotesURL := (
       if (isSnapshot.value) None
       else Some(url(s"https://github.com/akka/akka-persistence-dynamodb/releases/tag/v${version.value}"))
     ),
-    licenses := Seq(("BUSL-1.1", url("https://raw.githubusercontent.com/akka/akka-persistence-dynamodb/main/LICENSE"))),
+    licenses := {
+      val tagOrBranch =
+        if (isSnapshot.value) "main"
+        else "v" + version.value
+      Seq(("BUSL-1.1", url(s"https://github.com/akka/akka-persistence-dynamodb/blob/${tagOrBranch}/LICENSE")))
+    },
     description := "An Akka Persistence plugin backed by Amazon DynamoDB",
     // append -SNAPSHOT to version when isSnapshot
     dynverSonatypeSnapshots := true,
@@ -53,7 +58,20 @@ def common: Seq[Setting[_]] =
     }),
     Compile / console / scalacOptions := defaultScalacOptions,
     Test / console / scalacOptions := defaultScalacOptions,
-    Compile / doc / scalacOptions := defaultScalacOptions,
+    Compile / doc / scalacOptions := defaultScalacOptions ++ Seq(
+      "-doc-title",
+      "Akka Persistence DynamoDB",
+      "-doc-version",
+      version.value) ++ {
+      // make use of https://github.com/scala/scala/pull/8663
+      if (scalaBinaryVersion.value.startsWith("3")) {
+        Seq(
+          s"-external-mappings:https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api/java.base/")
+      } else
+        Seq(
+          "-jdk-api-doc-base",
+          s"https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api/java.base/")
+    },
     Compile / doc / autoAPIMappings := true,
     headerLicense := Some(HeaderLicense.Custom("""Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>""")),
     Test / logBuffered := false,
@@ -128,24 +146,24 @@ lazy val docs = project
     previewPath := (Paradox / siteSubdirName).value,
     Preprocess / siteSubdirName := s"api/akka-persistence-dynamodb/${projectInfoVersion.value}",
     Preprocess / sourceDirectory := (LocalRootProject / ScalaUnidoc / unidoc / target).value,
-    Paradox / siteSubdirName := s"docs/akka-persistence-dynamodb/${projectInfoVersion.value}",
+    Paradox / siteSubdirName := s"libraries/akka-persistence-dynamodb/${projectInfoVersion.value}",
     paradoxGroups := Map("Language" -> Seq("Java", "Scala")),
     Compile / paradoxProperties ++= Map(
-      "project.url" -> "https://doc.akka.io/docs/akka-persistence-dynamodb/current/",
-      "canonical.base_url" -> "https://doc.akka.io/docs/akka-persistence-dynamodb/current",
+      "project.url" -> "https://doc.akka.io/libraries/akka-persistence-dynamodb/current/",
+      "canonical.base_url" -> "https://doc.akka.io/libraries/akka-persistence-dynamodb/current",
       "akka.version" -> Dependencies.AkkaVersion,
       "scala.version" -> scalaVersion.value,
       "scala.binary.version" -> scalaBinaryVersion.value,
-      "extref.akka.base_url" -> s"https://doc.akka.io/docs/akka/${Dependencies.AkkaVersionInDocs}/%s",
-      "extref.akka-docs.base_url" -> s"https://doc.akka.io/docs/akka/${Dependencies.AkkaVersionInDocs}/%s",
-      "extref.akka-projection.base_url" -> s"https://doc.akka.io/docs/akka-projection/${Dependencies.AkkaProjectionVersionInDocs}/%s",
+      "extref.akka-core.base_url" -> s"https://doc.akka.io/libraries/akka-core/${Dependencies.AkkaVersionInDocs}/%s",
+      "extref.akka-projection.base_url" -> s"https://doc.akka.io/libraries/akka-projection/${Dependencies.AkkaProjectionVersionInDocs}/%s",
       "extref.java-docs.base_url" -> "https://docs.oracle.com/en/java/javase/11/%s",
+      "scaladoc.com.typesafe.config.base_url" -> s"https://lightbend.github.io/config/latest/api/",
       "scaladoc.scala.base_url" -> s"https://www.scala-lang.org/api/current/",
       "scaladoc.akka.persistence.dynamodb.base_url" -> s"/${(Preprocess / siteSubdirName).value}/",
+      "scaladoc.akka.projection.base_url" -> s"https://doc.akka.io/api/akka-projection/${Dependencies.AkkaProjectionVersionInDocs}/",
+      "scaladoc.akka.base_url" -> s"https://doc.akka.io/api/akka-core/${Dependencies.AkkaVersionInDocs}/",
       "javadoc.akka.persistence.dynamodb.base_url" -> "", // no Javadoc is published
-      "scaladoc.akka.base_url" -> s"https://doc.akka.io/api/akka/${Dependencies.AkkaVersionInDocs}/",
-      "javadoc.akka.base_url" -> s"https://doc.akka.io/japi/akka/${Dependencies.AkkaVersionInDocs}/",
-      "scaladoc.com.typesafe.config.base_url" -> s"https://lightbend.github.io/config/latest/api/"),
+      "javadoc.akka.base_url" -> s"https://doc.akka.io/japi/akka-core/${Dependencies.AkkaVersionInDocs}/"),
     ApidocPlugin.autoImport.apidocRootPackage := "akka",
     apidocRootPackage := "akka",
     resolvers += Resolver.jcenterRepo,

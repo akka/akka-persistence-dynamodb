@@ -12,8 +12,13 @@ object Dependencies {
   val AkkaVersion = System.getProperty("override.akka.version", "2.9.5")
   val AkkaVersionInDocs = VersionNumber(AkkaVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
   val AkkaProjectionVersion = "1.5.4"
-  val AkkaProjectionVersionInDocs = "current"
+  val AkkaProjectionVersionInDocs = VersionNumber(AkkaProjectionVersion).numbers match {
+    case Seq(major, minor, _*) => s"$major.$minor"
+  }
   val AwsSdkVersion = "2.25.59"
+  // Java Platform version for JavaDoc creation
+  // sync with Java version in .github/workflows/publish.yml#documentation
+  val JavaDocLinkVersion = 17
 
   object Compile {
     val akkaActorTyped = "com.typesafe.akka" %% "akka-actor-typed" % AkkaVersion

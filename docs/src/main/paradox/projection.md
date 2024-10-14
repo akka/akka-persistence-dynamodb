@@ -112,7 +112,7 @@ Scala
 The @ref:[`ShoppingCartTransactHandler` is shown below](#transact-handler).
 
 It is possible to dynamically scale the number of Projection instances as described in the @extref:[Sharded Daemon
-Process documentation](akka:typed/cluster-sharded-daemon-process.html#dynamic-scaling-of-number-of-workers).
+Process documentation](akka-core:typed/cluster-sharded-daemon-process.html#dynamic-scaling-of-number-of-workers).
 
 There are alternative ways of running the `ProjectionBehavior` as described in @extref:[Running a Projection](akka-projection:running.html).
 
@@ -291,7 +291,7 @@ instance.
 ### Actor handler
 
 A good alternative for advanced state management is to implement the handler as an
-@extref:[actor](akka:typed/typed/actors.html) which is described in
+@extref:[actor](akka-core:typed/typed/actors.html) which is described in
 @extref:[Processing with Actor](akka-projection:actor.html).
 
 ### Flow handler
