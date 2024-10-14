@@ -12,7 +12,9 @@ object Dependencies {
   val AkkaVersion = System.getProperty("override.akka.version", "2.9.5")
   val AkkaVersionInDocs = VersionNumber(AkkaVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
   val AkkaProjectionVersion = "1.5.4"
-  val AkkaProjectionVersionInDocs = VersionNumber(AkkaProjectionVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
+  val AkkaProjectionVersionInDocs = VersionNumber(AkkaProjectionVersion).numbers match {
+    case Seq(major, minor, _*) => s"$major.$minor"
+  }
   val AwsSdkVersion = "2.25.59"
 
   object Compile {
