@@ -1,7 +1,7 @@
 # Snapshot store plugin
 
 The snapshot plugin enables storing and loading snapshots for
-@extref:[event sourced persistent actors](akka:typed/persistence.html).
+@extref:[event sourced persistent actors](akka-core:typed/persistence.html).
 
 ## Tables
 
@@ -69,11 +69,11 @@ The following can be overridden in your `application.conf` for the snapshot spec
 ## Usage
 
 The snapshot plugin is used whenever a snapshot write is triggered through the
-@extref:[Akka Persistence APIs](akka:typed/persistence-snapshot.html).
+@extref:[Akka Persistence APIs](akka-core:typed/persistence-snapshot.html).
 
 ## Snapshot serialization
 
-The state is serialized with @extref:[Akka Serialization](akka:serialization.html) and the binary snapshot representation
+The state is serialized with @extref:[Akka Serialization](akka-core:serialization.html) and the binary snapshot representation
 is stored in the `snapshot` column together with information about what serializer that was used in the
 `ser_id` and `ser_manifest` columns.
 
