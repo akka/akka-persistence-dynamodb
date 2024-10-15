@@ -2,7 +2,7 @@
 
 ## Event sourced queries
 
-@apidoc[DynamoDBReadJournal] implements the following @extref:[Persistence Queries](akka:persistence-query.html):
+@apidoc[DynamoDBReadJournal] implements the following @extref:[Persistence Queries](akka-core:persistence-query.html):
 
 * `eventsBySlices`, `currentEventsBySlices`
 

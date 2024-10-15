@@ -8,7 +8,7 @@ snapshot](query.md#eventsbyslicesstartingfromsnapshots), and then events can be 
 
 In some cases keeping all events is not possible, or data must be removed for regulatory reasons, such as compliance
 with GDPR. `EventSourcedBehavior`s can also automatically
-@extref:[delete events on snapshot](akka:typed/persistence-snapshot.html#event-deletion). Snapshotting is useful even
+@extref:[delete events on snapshot](akka-core:typed/persistence-snapshot.html#event-deletion). Snapshotting is useful even
 if events aren't deleted as it speeds up recovery.
 
 Deleting all events immediately when an entity has reached its terminal deleted state would have the consequence that

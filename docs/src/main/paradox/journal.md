@@ -1,7 +1,7 @@
 # Journal plugin
 
 The journal plugin enables storing and loading events for
-@extref:[event sourced persistent actors](akka:typed/persistence.html).
+@extref:[event sourced persistent actors](akka-core:typed/persistence.html).
 
 ## Tables
 
@@ -64,14 +64,14 @@ The following can be overridden in your `application.conf` for the journal speci
 
 ## Event serialization
 
-The events are serialized with @extref:[Akka Serialization](akka:serialization.html) and the binary representation
+The events are serialized with @extref:[Akka Serialization](akka-core:serialization.html) and the binary representation
 is stored in the `event_payload` column together with information about what serializer that was used in the
 `event_ser_id` and `event_ser_manifest` columns.
 
 ## Retryable errors
 
 When persisting events, any DynamoDB errors that are considered retryable, such as when provisioned throughput capacity
-is exceeded, will cause events to be @extref:[rejected](akka:typed/persistence.html#journal-rejections) rather than
+is exceeded, will cause events to be @extref:[rejected](akka-core:typed/persistence.html#journal-rejections) rather than
 marked as a journal failure. A supervision strategy for `EventRejectedException` failures can then be added to
 EventSourcedBehaviors, so that entities can be resumed on these retryable errors rather than stopped or restarted.
 
@@ -99,7 +99,7 @@ The TTL attribute to use for the journal or snapshot tables is named `expiry`.
 Time-to-live settings are configured per entity type. The entity type can also be matched by prefix by using a `*` at
 the end of the key.
 
-If events are being @extref:[deleted on snapshot](akka:typed/persistence-snapshot.html#event-deletion), the journal can
+If events are being @extref:[deleted on snapshot](akka-core:typed/persistence-snapshot.html#event-deletion), the journal can
 be configured to instead set an expiry time for the deleted events, given a time-to-live duration to use. For example,
 deleted events can be configured to expire in 7 days, rather than being deleted immediately, for a particular entity
 type:
