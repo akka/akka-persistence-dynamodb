@@ -9,7 +9,6 @@ import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.ActorContext
 import akka.actor.typed.scaladsl.Behaviors
-import akka.actor.typed.scaladsl.LoggerOps
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.ReplicaId
@@ -68,14 +67,14 @@ object TestActors {
         { (state, command) =>
           command match {
             case command: Persist =>
-              context.log.debugN(
+              context.log.debug(
                 "Persist [{}], pid [{}], seqNr [{}]",
                 command.payload,
                 pid.id,
                 EventSourcedBehavior.lastSequenceNumber(context) + 1)
               Effect.persist(command.payload)
             case command: PersistWithAck =>
-              context.log.debugN(
+              context.log.debug(
                 "Persist [{}], pid [{}], seqNr [{}]",
                 command.payload,
                 pid.id,
@@ -83,7 +82,7 @@ object TestActors {
               Effect.persist(command.payload).thenRun(_ => command.replyTo ! Done)
             case command: PersistAll =>
               if (context.log.isDebugEnabled)
-                context.log.debugN(
+                context.log.debug(
                   "PersistAll [{}], pid [{}], seqNr [{}]",
                   command.payloads.mkString(","),
                   pid.id,

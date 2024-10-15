@@ -16,7 +16,6 @@ import scala.concurrent.Future
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.query.DeletedDurableState
@@ -239,7 +238,7 @@ private[projection] class DynamoDBOffsetStore(
         readTimestampOffset().map { offsetBySlice =>
           if (offsetBySlice.offsets.isEmpty) None
           else Some(offsetBySlice.asInstanceOf[Offset])
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
       case None =>
         // FIXME primitive offsets not supported, maybe we can change the sourceProvider parameter
         throw new IllegalStateException("BySlicesSourceProvider is required. Primitive offsets not supported.")

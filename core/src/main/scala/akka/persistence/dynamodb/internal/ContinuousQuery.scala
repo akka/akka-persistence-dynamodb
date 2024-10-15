@@ -4,15 +4,15 @@
 
 package akka.persistence.dynamodb.internal
 
-import scala.concurrent.Future
 import scala.concurrent.duration._
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
 import scala.util.Failure
 import scala.util.Success
 import scala.util.Try
 
 import akka.NotUsed
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.stream.Attributes
 import akka.stream.Outlet
 import akka.stream.SourceShape
@@ -118,7 +118,7 @@ final private[dynamodb] class ContinuousQuery[S, T](
             beforeQuery(state) match {
               case None => runNextQuery()
               case Some(beforeQueryFuture) =>
-                beforeQueryFuture.onComplete(beforeQueryCallback.invoke)(ExecutionContexts.parasitic)
+                beforeQueryFuture.onComplete(beforeQueryCallback.invoke)(ExecutionContext.parasitic)
             }
         }
       }

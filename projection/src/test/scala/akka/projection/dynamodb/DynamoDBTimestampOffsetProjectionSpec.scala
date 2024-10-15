@@ -31,7 +31,6 @@ import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorRef
 import akka.actor.typed.ActorSystem
-import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.query.Offset
 import akka.persistence.query.TimestampOffset
@@ -223,7 +222,7 @@ object DynamoDBTimestampOffsetProjectionSpec {
             .map(_ => Done)
             .recoverWith { case c: CompletionException =>
               Future.failed(c.getCause)
-            }(ExecutionContexts.parasitic)
+            }(ExecutionContext.parasitic)
       }
     }
 
@@ -246,7 +245,7 @@ object DynamoDBTimestampOffsetProjectionSpec {
         }
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
-        }(ExecutionContexts.parasitic)
+        }(ExecutionContext.parasitic)
     }
   }
 

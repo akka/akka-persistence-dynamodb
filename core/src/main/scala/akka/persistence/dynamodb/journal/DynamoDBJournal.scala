@@ -18,7 +18,6 @@ import akka.actor.ActorRef
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.adapter._
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.event.Logging
 import akka.persistence.AtomicWrite
 import akka.persistence.PersistentRepr
@@ -226,7 +225,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
       case Some(f) =>
         log.debug("Write in progress for [{}], deferring replayMessages until write completed", persistenceId)
         // we only want to make write - replay sequential, not fail if previous write failed
-        f.recover { case _ => Done }(ExecutionContexts.parasitic)
+        f.recover { case _ => Done }(ExecutionContext.parasitic)
       case None => FutureDone
     }
     pendingWrite.flatMap { _ =>

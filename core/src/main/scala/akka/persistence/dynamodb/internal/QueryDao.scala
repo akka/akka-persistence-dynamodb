@@ -8,6 +8,7 @@ import java.time.Instant
 import java.util.concurrent.CompletionException
 import java.util.{ Map => JMap }
 
+import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
@@ -15,7 +16,6 @@ import scala.jdk.FutureConverters._
 import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
-import akka.dispatch.ExecutionContexts
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
 import akka.stream.scaladsl.Source
@@ -303,7 +303,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
   }
 
   def loadEvent(persistenceId: String, seqNr: Long, includePayload: Boolean): Future[Option[SerializedJournalItem]] = {
@@ -353,7 +353,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
-      }(ExecutionContexts.parasitic)
+      }(ExecutionContext.parasitic)
 
   }
 
