@@ -1,4 +1,4 @@
-# Amazon DynamoDB Plugin for Akka Persistence
+# Amazon DynamoDB Plugin for Akka Persistence 
 
 The Akka family of projects is managed by teams at [Lightbend](https://lightbend.com/) with help from the community.
 
