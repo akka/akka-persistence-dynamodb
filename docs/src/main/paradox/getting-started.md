@@ -74,4 +74,4 @@ See the table definitions in the individual plugins for more information on the 
 
 * @ref:[journal tables](journal.md#tables)
 * @ref:[snapshot tables](snapshots.md#tables)
-* @ref:[projection tables](projection.md#tables)
+* @extref:[projection tables](akka-projection:dynamodb.html#tables)

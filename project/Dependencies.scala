@@ -26,7 +26,6 @@ object Dependencies {
     val akkaPersistence = "com.typesafe.akka" %% "akka-persistence-typed" % AkkaVersion
     val akkaPersistenceTyped = "com.typesafe.akka" %% "akka-persistence-typed" % AkkaVersion
     val akkaPersistenceQuery = "com.typesafe.akka" %% "akka-persistence-query" % AkkaVersion
-    val akkaProjectionEventsourced = "com.lightbend.akka" %% "akka-projection-eventsourced" % AkkaProjectionVersion
     val dynamodbSdk = "software.amazon.awssdk" % "dynamodb" % AwsSdkVersion
 
   }
@@ -38,7 +37,6 @@ object Dependencies {
     val akkaPersistenceTck = "com.typesafe.akka" %% "akka-persistence-tck" % AkkaVersion % Test
     val akkaTestkit = "com.typesafe.akka" %% "akka-actor-testkit-typed" % AkkaVersion % Test
     val akkaStreamTestkit = "com.typesafe.akka" %% "akka-stream-testkit" % AkkaVersion % Test
-    val akkaProjectionTestkit = "com.lightbend.akka" %% "akka-projection-testkit" % AkkaProjectionVersion % Test
     val akkaJackson = "com.typesafe.akka" %% "akka-serialization-jackson" % AkkaVersion % Test
 
     val logback = "ch.qos.logback" % "logback-classic" % "1.5.8" % Test // EPL 1.0 / LGPL 2.1
@@ -58,19 +56,6 @@ object Dependencies {
     TestDeps.akkaPersistenceTck,
     TestDeps.akkaStreamTestkit,
     TestDeps.akkaTestkit,
-    TestDeps.akkaJackson,
-    TestDeps.akkaStreamTyped,
-    TestDeps.logback,
-    TestDeps.scalaTest)
-
-  val projection = Seq(
-    dynamodbSdk.exclude("software.amazon.awssdk", "apache-client"),
-    akkaProjectionEventsourced,
-    akkaPersistenceQuery,
-    akkaPersistenceTyped,
-    TestDeps.akkaStreamTestkit,
-    TestDeps.akkaTestkit,
-    TestDeps.akkaProjectionTestkit,
     TestDeps.akkaJackson,
     TestDeps.akkaStreamTyped,
     TestDeps.logback,

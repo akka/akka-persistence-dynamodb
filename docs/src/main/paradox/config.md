@@ -55,5 +55,5 @@ For queries and projection `SourceProvider` you would use `"second-dynamodb.quer
 @scala[`DynamoDBReadJournal.Identifier`]@java[`DynamoDBReadJournal.Identifier()`]
 (`"akka.persistence.dynamodb.query"`).
 
-For additional details on multiple plugin configuration for projections see the @ref:[Akka Projection DynamoDB
-docs](projection.md#multiple-plugins).
+For additional details on multiple plugin configuration for projections see the @extref:[Akka Projection DynamoDB
+docs](akka-projection:dynamodb.html#multiple-plugins).
