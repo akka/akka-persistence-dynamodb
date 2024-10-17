@@ -39,8 +39,8 @@ jobs:
         run: |-
           sbt +publish
         env:
-          PUBLISH_USER: ${{ secrets.CLOUDSMITH_MACHINE_USER }}
-          PUBLISH_PASSWORD: ${{ secrets.CLOUDSMITH_MACHINE_PASSWORD }}
+          PUBLISH_USER: ${{ secrets.PUBLISH_USER }}
+          PUBLISH_PASSWORD: ${{ secrets.PUBLISH_PASSWORD }}
 
   documentation:
     name: Documentation
