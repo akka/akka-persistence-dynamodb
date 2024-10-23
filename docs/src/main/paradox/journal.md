@@ -24,8 +24,9 @@ An example `aws` CLI command for creating the event journal table:
 ### Indexes
 
 If @ref:[queries](query.md) or @ref:[projections](projection.md) are being used, then a global secondary index needs to
-be added to the event journal table, to index events by slice. The default name for the secondary index is
-`event_journal_slice_idx`. The following attribute definitions should be added to the event journal table, with key
+be added to the event journal table, to index events by slice. The default name (derived from the configured @ref:[table name](#tables))
+for the secondary index is `event_journal_slice_idx` and may be explicitly set (see the
+@ref:[reference configuration](#reference-configuration)). The following attribute definitions should be added to the event journal table, with key
 schema for the event journal slice index:
 
 | Attribute name    | Attribute type | Key type |

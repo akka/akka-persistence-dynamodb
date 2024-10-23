@@ -45,13 +45,25 @@ object DynamoDBSettings {
 
     val timeToLiveSettings = new TimeToLiveSettings(config.getConfig("time-to-live"))
 
+    val journalBySliceGsi =
+      if (config.getString("journal.by-slice-idx").nonEmpty) {
+        config.getString("journal.by-slice-idx")
+      } else journalTable + "_slice_idx"
+
+    val snapshotBySliceGsi =
+      if (config.getString("snapshot.by-slice-idx").nonEmpty) {
+        config.getString("snapshot.by-slice-idx")
+      } else snapshotTable + "_slice_idx"
+
     new DynamoDBSettings(
       journalTable,
       journalPublishEvents,
       snapshotTable,
       querySettings,
       cleanupSettings,
-      timeToLiveSettings)
+      timeToLiveSettings,
+      journalBySliceGsi,
+      snapshotBySliceGsi)
   }
 
   /**
@@ -68,11 +80,9 @@ final class DynamoDBSettings private (
     val snapshotTable: String,
     val querySettings: QuerySettings,
     val cleanupSettings: CleanupSettings,
-    val timeToLiveSettings: TimeToLiveSettings) {
-
-  val journalBySliceGsi: String = journalTable + "_slice_idx"
-  val snapshotBySliceGsi: String = snapshotTable + "_slice_idx"
-}
+    val timeToLiveSettings: TimeToLiveSettings,
+    val journalBySliceGsi: String,
+    val snapshotBySliceGsi: String)
 
 final class QuerySettings(config: Config) {
   val refreshInterval: FiniteDuration = config.getDuration("refresh-interval").toScala
