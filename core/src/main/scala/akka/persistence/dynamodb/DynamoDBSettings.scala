@@ -45,15 +45,15 @@ object DynamoDBSettings {
 
     val timeToLiveSettings = new TimeToLiveSettings(config.getConfig("time-to-live"))
 
-    val journalBySliceGsi =
-      if (config.getString("journal.by-slice-idx").nonEmpty) {
-        config.getString("journal.by-slice-idx")
-      } else journalTable + "_slice_idx"
+    val journalBySliceGsi = {
+      val indexName = config.getString("journal.by-slice-idx")
+      if (indexName.nonEmpty) indexName else journalTable + "_slice_idx"
+    }
 
-    val snapshotBySliceGsi =
-      if (config.getString("snapshot.by-slice-idx").nonEmpty) {
-        config.getString("snapshot.by-slice-idx")
-      } else snapshotTable + "_slice_idx"
+    val snapshotBySliceGsi = {
+      val indexName = config.getString("snapshot.by-slice-idx")
+      if (indexName.nonEmpty) indexName else snapshotTable + "_slice_idx"
+    }
 
     new DynamoDBSettings(
       journalTable,
