@@ -23,8 +23,9 @@ An example `aws` CLI command for creating the snapshot table:
 ### Indexes
 
 If @ref:[start-from-snapshot queries](query.md#eventsbyslicesstartingfromsnapshots) are being used, then a global
-secondary index needs to be added to the snapshot table, to index snapshots by slice. The default name for the
-secondary index is `snapshot_slice_idx`. The following attribute definitions should be added to the snapshot table,
+secondary index needs to be added to the snapshot table, to index snapshots by slice. The default name (derived from
+the configured @ref:[table name](#tables)) for the secondary index is `snapshot_slice_idx` and may be explicitly set
+(see the @ref:[reference configuration](#reference-configuration)). The following attribute definitions should be added to the snapshot table,
 with key schema for the snapshot slice index:
 
 | Attribute name    | Attribute type | Key type |
