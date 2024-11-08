@@ -124,8 +124,12 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             .build()
         }.asJava
 
+      val firstEvent = events.head;
+      val token = s"${firstEvent.writerUuid}-${firstEvent.seqNr.toString}"
+
       val req = TransactWriteItemsRequest
         .builder()
+        .clientRequestToken(token)
         .transactItems(writeItems)
         .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
         .build()
