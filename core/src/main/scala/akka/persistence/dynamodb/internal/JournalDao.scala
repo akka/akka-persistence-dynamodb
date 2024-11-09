@@ -125,7 +125,13 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         }.asJava
 
       val firstEvent = events.head;
-      val token = s"${firstEvent.writerUuid}-${firstEvent.seqNr.toString}"
+      val token = {
+        val base = s"${firstEvent.writerUuid}-${firstEvent.seqNr.toString}"
+        val len = base.length
+        if (len > 36) {
+          base.substring(len - 36, len)
+        } else base
+      }
 
       val req = TransactWriteItemsRequest
         .builder()
