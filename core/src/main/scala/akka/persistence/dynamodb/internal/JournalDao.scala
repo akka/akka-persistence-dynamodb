@@ -4,9 +4,12 @@
 
 package akka.persistence.dynamodb.internal
 
+import java.nio.ByteBuffer
 import java.time.Instant
 import java.util.concurrent.CompletionException
+import java.util.Base64
 import java.util.{ HashMap => JHashMap }
+import java.util.UUID
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
@@ -39,6 +42,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 @InternalApi private[akka] object JournalDao {
   private val log: Logger = LoggerFactory.getLogger(classOf[JournalDao])
 
+  private val base64Encoder = Base64.getEncoder
 }
 
 /**
@@ -124,8 +128,22 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             .build()
         }.asJava
 
+      val token = {
+        val firstEvent = events.head
+        val uuid = UUID.fromString(firstEvent.writerUuid)
+        val seqNr = firstEvent.seqNr
+        val bb = ByteBuffer.allocate(24)
+        bb.asLongBuffer()
+          .put(uuid.getMostSignificantBits)
+          .put(uuid.getLeastSignificantBits)
+          .put(seqNr)
+
+        new String(base64Encoder.encode(bb.array))
+      }
+
       val req = TransactWriteItemsRequest
         .builder()
+        .clientRequestToken(token)
         .transactItems(writeItems)
         .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
         .build()
