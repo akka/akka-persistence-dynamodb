@@ -4,8 +4,10 @@
 
 package akka.persistence.dynamodb.query.scaladsl
 
+import java.time.Clock
 import java.time.Instant
 import java.time.{ Duration => JDuration }
+import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable
 import scala.concurrent.Future
 import akka.NotUsed
@@ -47,6 +49,8 @@ import com.typesafe.config.Config
 import org.slf4j.LoggerFactory
 
 import scala.annotation.nowarn
+import java.util.UUID
+import scala.annotation.tailrec
 
 object DynamoDBReadJournal {
   val Identifier = "akka.persistence.dynamodb.query"
@@ -77,25 +81,63 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   private val filteredPayloadSerId = SerializationExtension(system).findSerializerFor(FilteredPayload).identifier
 
-  private val _bySlice: BySliceQuery[SerializedJournalItem, EventEnvelope[Any]] = {
-    val createEnvelope: (TimestampOffset, SerializedJournalItem) => EventEnvelope[Any] = createEventEnvelope
+  // keyed by entity type and slice
+  private val heartbeatPersistenceIds = new ConcurrentHashMap[(String, Int), String]
+  private val heartbeatUuid = UUID.randomUUID().toString
+  log.debug("Using heartbeat UUID [{}]", heartbeatUuid)
 
-    val extractOffset: EventEnvelope[Any] => TimestampOffset = env => env.offset.asInstanceOf[TimestampOffset]
+  private def heartbeatPersistenceId(entityType: String, slice: Int): String = {
+    val key = entityType -> slice
+    heartbeatPersistenceIds.get(key) match {
+      case null =>
+        // just a cache, don't block other threads
+        val pid = generateHeartbeatPersistenceId(entityType, slice)
+        heartbeatPersistenceIds.put(key, pid)
+        pid
 
-    new BySliceQuery(queryDao, createEnvelope, extractOffset, settings, log)
+      case pid => pid
+    }
   }
 
-  private def bySlice[Event]: BySliceQuery[SerializedJournalItem, EventEnvelope[Event]] =
-    _bySlice.asInstanceOf[BySliceQuery[SerializedJournalItem, EventEnvelope[Event]]]
+  @tailrec private def generateHeartbeatPersistenceId(entityType: String, slice: Int, n: Int = 1): String =
+    // Inspired by Nakamoto, 2008...
+    if (n < 1000000) { // a million attempts should be enough to find a match
+      // UUID included to make sure not the same as any application persistence ID
+      val pid = PersistenceId.concat(entityType, s"_hb-$heartbeatUuid-$n")
+      if (persistenceExt.sliceForPersistenceId(pid) == slice) {
+        pid
+      } else {
+        generateHeartbeatPersistenceId(entityType, slice, n + 1)
+      }
+    } else
+      throw new IllegalStateException(
+        s"Couldn't find a heartbeat persistence ID for [$entityType] with slice [$slice] and UUID [$heartbeatUuid]")
+
+  private val clock = Clock.systemUTC
+
+  private def bySlice[Event](
+      entityType: String,
+      slice: Int): BySliceQuery[SerializedJournalItem, EventEnvelope[Event]] = {
+    val createEnvelope: (TimestampOffset, SerializedJournalItem) => EventEnvelope[Event] = createEventEnvelope
+    val extractOffset = (env: EventEnvelope[Event]) => env.offset.asInstanceOf[TimestampOffset]
+    val createHeartbeat = (timestamp: Instant) =>
+      Some(createEventEnvelopeHeartbeat[Event](entityType, slice, timestamp))
+
+    new BySliceQuery(queryDao, createEnvelope, extractOffset, createHeartbeat, clock, settings, log)
+  }
 
   private def snapshotsBySlice[Snapshot, Event](
+      entityType: String,
+      slice: Int,
       transformSnapshot: Snapshot => Event): BySliceQuery[SerializedSnapshotItem, EventEnvelope[Event]] = {
     val createEnvelope: (TimestampOffset, SerializedSnapshotItem) => EventEnvelope[Event] =
       (offset, row) => createEnvelopeFromSnapshot(row, offset, transformSnapshot)
 
     val extractOffset: EventEnvelope[Event] => TimestampOffset = env => env.offset.asInstanceOf[TimestampOffset]
+    val createHeartbeat = (timestamp: Instant) =>
+      Some(createEventEnvelopeHeartbeat[Event](entityType, slice, timestamp))
 
-    new BySliceQuery(snapshotDao, createEnvelope, extractOffset, settings, log)(typedSystem.executionContext)
+    new BySliceQuery(snapshotDao, createEnvelope, extractOffset, createHeartbeat, clock, settings, log)
   }
 
   private def createEnvelopeFromSnapshot[Snapshot, Event](
@@ -149,6 +191,20 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       tags = item.tags)
   }
 
+  def createEventEnvelopeHeartbeat[Event](entityType: String, slice: Int, timestamp: Instant): EventEnvelope[Event] =
+    new EventEnvelope(
+      TimestampOffset(timestamp, Map.empty),
+      heartbeatPersistenceId(entityType, slice),
+      1L,
+      eventOption = None,
+      timestamp.toEpochMilli,
+      eventMetadata = None,
+      entityType,
+      slice,
+      filtered = true,
+      source = EnvelopeOrigin.SourceHeartbeat,
+      Set.empty)
+
   /**
    * INTERNAL API: Used by both journal replay and currentEventsByPersistenceId
    */
@@ -174,9 +230,12 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       maxSlice: Int,
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-      bySlice[Event].currentBySlice("currentEventsBySlices", entityType, slice, sliceStartOffset(slice, offset))
+      bySlice[Event](entityType, slice)
+        .currentBySlice("currentEventsBySlices", entityType, slice, sliceStartOffset(slice, offset))
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
+
+    // FIXME: can we replace mergeAll with a stage that does more to stagger demand?
     bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
   }
 
@@ -213,7 +272,11 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
 
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-      bySlice[Event].liveBySlice("eventsBySlices", entityType, slice, sliceStartOffset(slice, offset))
+      bySlice[Event](entityType, slice).liveBySlice(
+        "eventsBySlices",
+        entityType,
+        slice,
+        sliceStartOffset(slice, offset))
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
 
@@ -256,7 +319,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
       val timestampOffset = TimestampOffset.toTimestampOffset(sliceStartOffset(slice, offset))
 
-      val snapshotSource = snapshotsBySlice[Snapshot, Event](transformSnapshot)
+      val snapshotSource = snapshotsBySlice[Snapshot, Event](entityType, slice, transformSnapshot)
         .currentBySlice("currentSnapshotsBySlice", entityType, slice, timestampOffset)
 
       Source.fromGraph(
@@ -280,7 +343,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
               initOffset,
               snapshotOffsets.size)
 
-            bySlice[Event].currentBySlice(
+            bySlice[Event](entityType, slice).currentBySlice(
               "currentEventsBySlice",
               entityType,
               slice,
@@ -318,7 +381,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
       val timestampOffset = TimestampOffset.toTimestampOffset(sliceStartOffset(slice, offset))
 
-      val snapshotSource = snapshotsBySlice[Snapshot, Event](transformSnapshot)
+      val snapshotSource = snapshotsBySlice[Snapshot, Event](entityType, slice, transformSnapshot)
         .currentBySlice("snapshotsBySlice", entityType, slice, timestampOffset)
 
       Source.fromGraph(
@@ -342,7 +405,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
               initOffset,
               snapshotOffsets.size)
 
-            bySlice[Event].liveBySlice(
+            bySlice[Event](entityType, slice).liveBySlice(
               "eventsBySlice",
               entityType,
               slice,
@@ -497,6 +560,9 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
                 if (EnvelopeOrigin.fromBacktracking(env)) {
                   latestBacktracking = t.timestamp
                   env :: Nil
+                } else if (EnvelopeOrigin.fromHeartbeat(env)) {
+                  latestBacktracking = t.timestamp
+                  Nil // always drop heartbeats
                 } else if (EnvelopeOrigin.fromPubSub(env) && latestBacktracking == Instant.EPOCH) {
                   log.trace(
                     "Dropping pubsub event for persistenceId [{}] seqNr [{}] because no event from backtracking yet.",
