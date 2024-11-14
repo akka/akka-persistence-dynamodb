@@ -220,7 +220,7 @@ class EventsBySliceBacktrackingSpec
         query
           .eventsBySlices[String](entityType, slice, slice, offset)
           .runWith(sinkProbe)
-          .request(100)
+          .request(204)
 
       def expect(env: EventEnvelope[String], pid: PersistenceId, seqNr: Long, eventOption: Option[String]): Offset = {
         env.persistenceId shouldBe pid.id
