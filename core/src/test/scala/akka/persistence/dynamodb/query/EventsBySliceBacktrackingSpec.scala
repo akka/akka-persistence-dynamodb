@@ -5,6 +5,7 @@
 package akka.persistence.dynamodb.query
 
 import scala.concurrent.duration._
+import scala.jdk.DurationConverters._
 
 import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
@@ -18,6 +19,7 @@ import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.query.NoOffset
 import akka.persistence.query.Offset
 import akka.persistence.query.PersistenceQuery
+import akka.persistence.query.TimestampOffset
 import akka.persistence.query.typed.EventEnvelope
 import akka.persistence.typed.PersistenceId
 import akka.stream.testkit.TestSubscriber
@@ -62,7 +64,7 @@ class EventsBySliceBacktrackingSpec
       val sinkProbe = TestSink[EventEnvelope[String]]()(system.classicSystem)
 
       // don't let behind-current-time be a reason for not finding events
-      val startTime = InstantFactory.now().minusSeconds(10 * 60)
+      val startTime = InstantFactory.now().minusSeconds(90)
 
       writeEvent(slice, pid1, 1L, startTime, "e1-1")
       writeEvent(slice, pid1, 2L, startTime.plusMillis(1), "e1-2")
@@ -150,7 +152,7 @@ class EventsBySliceBacktrackingSpec
       val sinkProbe = TestSink[EventEnvelope[String]]()
 
       // don't let behind-current-time be a reason for not finding events
-      val startTime = InstantFactory.now().minusSeconds(10 * 60)
+      val startTime = InstantFactory.now().minusSeconds(90)
 
       writeEvent(slice, pid1, 1L, startTime, "e1-1")
       writeEvent(slice, pid1, 2L, startTime.plusMillis(2), "e1-2")
@@ -199,6 +201,120 @@ class EventsBySliceBacktrackingSpec
       result2.cancel()
     }
 
+    "not backtrack when too far behind current time" in {
+      val entityType = nextEntityType()
+      val pid1 = nextPersistenceId(entityType)
+      val slice = query.sliceForPersistenceId(pid1.id)
+      val pid2 = randomPersistenceIdForSlice(entityType, slice)
+      val sinkProbe = TestSink[EventEnvelope[String]]()
+
+      // one day behind
+      val startTime = InstantFactory.now().minusSeconds(60 * 60 * 24)
+
+      (1 to 100).foreach { n =>
+        writeEvent(slice, pid1, n, startTime.plusSeconds(n).plusMillis(1), s"e1-$n")
+        writeEvent(slice, pid2, n, startTime.plusSeconds(n).plusMillis(2), s"e2-$n")
+      }
+
+      def startQuery(offset: Offset): TestSubscriber.Probe[EventEnvelope[String]] =
+        query
+          .eventsBySlices[String](entityType, slice, slice, offset)
+          .runWith(sinkProbe)
+          .request(204)
+
+      def expect(env: EventEnvelope[String], pid: PersistenceId, seqNr: Long, eventOption: Option[String]): Offset = {
+        env.persistenceId shouldBe pid.id
+        env.sequenceNr shouldBe seqNr
+
+        if (eventOption.isEmpty) env.source shouldBe EnvelopeOrigin.SourceBacktracking
+        else env.source shouldBe EnvelopeOrigin.SourceQuery
+
+        env.eventOption shouldBe eventOption
+
+        env.offset
+      }
+
+      val result1 = startQuery(NoOffset)
+      (1 to 100).foreach { n =>
+        // These are Some events, viz. they come from the query, not from backtracking
+        expect(result1.expectNext(), pid1, n, Some(s"e1-$n"))
+        expect(result1.expectNext(), pid2, n, Some(s"e2-$n"))
+      }
+
+      result1.expectNoMessage()
+
+      val recent = InstantFactory.now().minus(settings.querySettings.backtrackingBehindCurrentTime.toJava)
+      writeEvent(slice, pid1, 101, recent, "e1-101")
+      writeEvent(slice, pid2, 101, recent.plusMillis(1), "e2-101")
+
+      // live
+      expect(result1.expectNext(), pid1, 101, Some("e1-101"))
+      expect(result1.expectNext(), pid2, 101, Some("e2-101"))
+
+      // backtracking
+      expect(result1.expectNext(), pid1, 101, None)
+      expect(result1.expectNext(), pid2, 101, None)
+
+      result1.cancel()
+    }
+
+    "still make initial backtracking until ahead of start offset" in {
+      val entityType = nextEntityType()
+      val pid1 = nextPersistenceId(entityType)
+      val slice = query.sliceForPersistenceId(pid1.id)
+      val pid2 = randomPersistenceIdForSlice(entityType, slice)
+      val sinkProbe = TestSink[EventEnvelope[String]]()
+
+      // one day behind
+      val startTime = InstantFactory.now().minusSeconds(60 * 60 * 24)
+
+      (1 to 4).foreach { n =>
+        // odd: pid1, even: pid2
+        val (pid, mod) = if (n % 2 == 1) (pid1, 1) else (pid2, 2)
+        val seqNr = (n + 1) / 2
+        writeEvent(slice, pid, seqNr, startTime.plusMillis(n), s"e${mod}-${seqNr}")
+      }
+
+      (3 to 10).foreach { n =>
+        writeEvent(slice, pid1, n, startTime.plusSeconds(20 + n).plusMillis(1), s"e1-$n")
+        writeEvent(slice, pid2, n, startTime.plusSeconds(20 + n).plusMillis(2), s"e2-$n")
+      }
+
+      def startQuery(offset: Offset): TestSubscriber.Probe[EventEnvelope[String]] =
+        query
+          .eventsBySlices[String](entityType, slice, slice, offset)
+          .runWith(sinkProbe)
+          .request(1000)
+
+      def expect(env: EventEnvelope[String], pid: PersistenceId, seqNr: Long, eventOption: Option[String]): Offset = {
+        env.persistenceId shouldBe pid.id
+        env.sequenceNr shouldBe seqNr
+
+        if (eventOption.isEmpty) env.source shouldBe EnvelopeOrigin.SourceBacktracking
+        else env.source shouldBe EnvelopeOrigin.SourceQuery
+
+        env.eventOption shouldBe eventOption
+
+        env.offset
+      }
+
+      val result1 = startQuery(TimestampOffset(startTime.plusSeconds(20), Map.empty))
+      // from backtracking
+      expect(result1.expectNext(), pid1, 1, None)
+      expect(result1.expectNext(), pid2, 1, None)
+      expect(result1.expectNext(), pid1, 2, None)
+      expect(result1.expectNext(), pid2, 2, None)
+
+      // from normal
+      (3 to 10).foreach { n =>
+        expect(result1.expectNext(), pid1, n, Some(s"e1-$n"))
+        expect(result1.expectNext(), pid2, n, Some(s"e2-$n"))
+      }
+
+      result1.expectNoMessage()
+
+      result1.cancel()
+    }
   }
 
 }
