@@ -11,7 +11,7 @@ The documentation can be found [here](https://doc.akka.io/docs/akka-persistence-
 
 ## Project status
 
-This library is under development, and not ready to be used in production, APIs are unstable, and the Lightbend subscription doesn't support for this project yet.
+This library is ready to be used in production, APIs are stable, and the Lightbend subscription covers support for this project.
 
 ## License
 
