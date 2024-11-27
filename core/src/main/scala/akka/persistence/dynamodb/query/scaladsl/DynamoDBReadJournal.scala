@@ -552,34 +552,43 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     else
       Flow[EventEnvelope[Event]]
         .statefulMapConcat(() => {
-          // track backtracking offset
-          var latestBacktracking = Instant.EPOCH
+          // track backtracking offset per slice
+          var latestBacktrackingPerSlice = Map.empty[Int, Instant]
+          def latestBacktracking(slice: Int): Instant = latestBacktrackingPerSlice.get(slice) match {
+            case Some(instant) => instant
+            case None          => Instant.EPOCH
+          }
           env => {
             env.offset match {
               case t: TimestampOffset =>
-                if (EnvelopeOrigin.fromBacktracking(env)) {
-                  latestBacktracking = t.timestamp
+                if (EnvelopeOrigin.fromQuery(env)) {
                   env :: Nil
-                } else if (EnvelopeOrigin.fromHeartbeat(env)) {
-                  latestBacktracking = t.timestamp
-                  Nil // always drop heartbeats
-                } else if (EnvelopeOrigin.fromPubSub(env) && latestBacktracking == Instant.EPOCH) {
-                  log.trace(
-                    "Dropping pubsub event for persistenceId [{}] seqNr [{}] because no event from backtracking yet.",
-                    env.persistenceId,
-                    env.sequenceNr)
-                  Nil
-                } else if (EnvelopeOrigin.fromPubSub(env) && JDuration
-                    .between(latestBacktracking, t.timestamp)
-                    .compareTo(maxAheadOfBacktracking) > 0) {
-                  // drop from pubsub when too far ahead from backtracking
-                  log.debug(
-                    "Dropping pubsub event for persistenceId [{}] seqNr [{}] because too far ahead of backtracking.",
-                    env.persistenceId,
-                    env.sequenceNr)
-                  Nil
                 } else {
-                  env :: Nil
+                  val slice = persistenceExt.sliceForPersistenceId(env.persistenceId)
+                  if (EnvelopeOrigin.fromBacktracking(env)) {
+                    latestBacktrackingPerSlice = latestBacktrackingPerSlice.updated(slice, t.timestamp)
+                    env :: Nil
+                  } else if (EnvelopeOrigin.fromHeartbeat(env)) {
+                    latestBacktrackingPerSlice = latestBacktrackingPerSlice.updated(slice, t.timestamp)
+                    Nil // always drop heartbeats
+                  } else if (EnvelopeOrigin.fromPubSub(env) && latestBacktracking(slice) == Instant.EPOCH) {
+                    log.trace(
+                      "Dropping pubsub event for persistenceId [{}] seqNr [{}] because no event from backtracking yet.",
+                      env.persistenceId,
+                      env.sequenceNr)
+                    Nil
+                  } else if (EnvelopeOrigin.fromPubSub(env) && JDuration
+                      .between(latestBacktracking(slice), t.timestamp)
+                      .compareTo(maxAheadOfBacktracking) > 0) {
+                    // drop from pubsub when too far ahead from backtracking
+                    log.debug(
+                      "Dropping pubsub event for persistenceId [{}] seqNr [{}] because too far ahead of backtracking.",
+                      env.persistenceId,
+                      env.sequenceNr)
+                    Nil
+                  } else {
+                    env :: Nil
+                  }
                 }
               case _ =>
                 env :: Nil
