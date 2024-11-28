@@ -8,8 +8,10 @@ import java.time.Clock
 import java.time.Instant
 import java.time.{ Duration => JDuration }
 import java.util.concurrent.ConcurrentHashMap
+
 import scala.collection.mutable
 import scala.concurrent.Future
+
 import akka.NotUsed
 import akka.actor.ExtendedActorSystem
 import akka.actor.typed.pubsub.Topic
@@ -47,10 +49,12 @@ import akka.stream.scaladsl.Flow
 import akka.stream.scaladsl.Source
 import com.typesafe.config.Config
 import org.slf4j.LoggerFactory
-
 import scala.annotation.nowarn
 import java.util.UUID
+
 import scala.annotation.tailrec
+
+import akka.persistence.query.typed.scaladsl.CurrentEventsByPersistenceIdTypedQuery
 
 object DynamoDBReadJournal {
   val Identifier = "akka.persistence.dynamodb.query"
@@ -62,6 +66,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     with EventsBySliceQuery
     with CurrentEventsBySliceStartingFromSnapshotsQuery
     with EventsBySliceStartingFromSnapshotsQuery
+    with CurrentEventsByPersistenceIdTypedQuery
     with EventTimestampQuery
     with LoadEventQuery {
 
@@ -215,6 +220,14 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       includeDeleted: Boolean): Source[SerializedJournalItem, NotUsed] = {
 
     queryDao.eventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted)
+  }
+
+  override def currentEventsByPersistenceIdTyped[Event](
+      persistenceId: String,
+      fromSequenceNr: Long,
+      toSequenceNr: Long): Source[EventEnvelope[Event], NotUsed] = {
+    internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = false)
+      .map(deserializeBySliceItem[Event])
   }
 
   override def sliceForPersistenceId(persistenceId: String): Int = {
@@ -613,4 +626,5 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
             s"Event with persistenceId [$persistenceId] and sequenceNr [$sequenceNr] not found.")
       }
   }
+
 }
