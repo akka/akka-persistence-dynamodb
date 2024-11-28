@@ -20,6 +20,7 @@ import akka.persistence.dynamodb.query.scaladsl
 import akka.persistence.query.Offset
 import akka.persistence.query.javadsl._
 import akka.persistence.query.typed.EventEnvelope
+import akka.persistence.query.typed.javadsl.CurrentEventsByPersistenceIdTypedQuery
 import akka.persistence.query.typed.javadsl.CurrentEventsBySliceQuery
 import akka.persistence.query.typed.javadsl.CurrentEventsBySliceStartingFromSnapshotsQuery
 import akka.persistence.query.typed.javadsl.EventTimestampQuery
@@ -38,6 +39,7 @@ final class DynamoDBReadJournal(delegate: scaladsl.DynamoDBReadJournal)
     with EventsBySliceQuery
     with CurrentEventsBySliceStartingFromSnapshotsQuery
     with EventsBySliceStartingFromSnapshotsQuery
+    with CurrentEventsByPersistenceIdTypedQuery
     with EventTimestampQuery
     with LoadEventQuery {
 
@@ -135,9 +137,16 @@ final class DynamoDBReadJournal(delegate: scaladsl.DynamoDBReadJournal)
       transformSnapshot: java.util.function.Function[Snapshot, Event]): Source[EventEnvelope[Event], NotUsed] =
     delegate.eventsBySlicesStartingFromSnapshots(entityType, minSlice, maxSlice, offset, transformSnapshot(_)).asJava
 
+  override def currentEventsByPersistenceIdTyped[Event](
+      persistenceId: String,
+      fromSequenceNr: Long,
+      toSequenceNr: Long): Source[EventEnvelope[Event], NotUsed] =
+    delegate.currentEventsByPersistenceIdTyped(persistenceId, fromSequenceNr, toSequenceNr).asJava
+
   override def timestampOf(persistenceId: String, sequenceNr: Long): CompletionStage[Optional[Instant]] =
     delegate.timestampOf(persistenceId, sequenceNr).map(_.toJava)(ExecutionContext.parasitic).asJava
 
   override def loadEnvelope[Event](persistenceId: String, sequenceNr: Long): CompletionStage[EventEnvelope[Event]] =
     delegate.loadEnvelope[Event](persistenceId, sequenceNr).asJava
+
 }
