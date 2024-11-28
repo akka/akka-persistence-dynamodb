@@ -300,7 +300,7 @@ import org.slf4j.Logger
     }
 
     def nextQuery(state: QueryState): (QueryState, Option[Source[Envelope, NotUsed]]) = {
-      val newIdleCount = if (state.itemCount == 0) state.idleCount + 1 else 0
+      val newIdleCount = if (state.itemCount == 0 && !state.backtracking) state.idleCount + 1 else 0
       // start tracking query wall clock for heartbeats after initial backtracking query
       val newQueryWallClock =
         if (state.latestBacktracking != TimestampOffset.Zero) clock.instant()
