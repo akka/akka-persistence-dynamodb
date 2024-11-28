@@ -408,7 +408,7 @@ import org.slf4j.Logger
     }
 
     def heartbeat(state: QueryState): Option[Envelope] = {
-      if (state.idleCountBeforeHeartbeat >= 3 && state.previousQueryWallClock != Instant.EPOCH) {
+      if (state.idleCountBeforeHeartbeat >= 2 && state.previousQueryWallClock != Instant.EPOCH) {
         // use wall clock to measure duration since start, up to idle backtracking limit
         val timestamp = state.startTimestamp.plus(
           JDuration.between(state.startWallClock, state.previousQueryWallClock.minus(backtrackingBehindCurrentTime)))
