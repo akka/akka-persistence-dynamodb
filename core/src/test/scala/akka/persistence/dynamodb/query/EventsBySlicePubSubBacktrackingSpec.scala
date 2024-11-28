@@ -32,7 +32,7 @@ object EventsBySlicePubSubBacktrackingSpec {
       akka.persistence.dynamodb {
         journal.publish-events = on
         query {
-          refresh-interval = 1 s
+          refresh-interval = 300 ms
           
           # Ensure pubsub arrives first
           behind-current-time = 2s
