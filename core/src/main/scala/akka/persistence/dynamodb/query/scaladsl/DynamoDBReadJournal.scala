@@ -572,12 +572,24 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
             case None          => Instant.EPOCH
           }
           env => {
+            val slice = persistenceExt.sliceForPersistenceId(env.persistenceId)
             env.offset match {
               case t: TimestampOffset =>
                 if (EnvelopeOrigin.fromQuery(env)) {
+                  if (log.isDebugEnabled()) {
+                    val l = latestBacktracking(slice)
+                    if (l.isAfter(t.timestamp))
+                      log.debug(
+                        "event from query for persistenceId [{}] seqNr [{}] " +
+                        s"timestamp [{}] was before last event from backtracking or heartbeat [{}].",
+                        env.persistenceId,
+                        env.sequenceNr,
+                        t.timestamp,
+                        l)
+                  }
+
                   env :: Nil
                 } else {
-                  val slice = persistenceExt.sliceForPersistenceId(env.persistenceId)
                   if (EnvelopeOrigin.fromBacktracking(env)) {
                     latestBacktrackingPerSlice = latestBacktrackingPerSlice.updated(slice, t.timestamp)
                     env :: Nil
