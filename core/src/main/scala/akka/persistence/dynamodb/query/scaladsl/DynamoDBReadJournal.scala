@@ -563,16 +563,17 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
             env.offset match {
               case t: TimestampOffset =>
                 if (EnvelopeOrigin.fromQuery(env)) {
-                  // FIXME this can probably be changed to debug level or removed completely
-                  val l = latestBacktracking(slice)
-                  if (l.isAfter(t.timestamp) && log.isInfoEnabled)
-                    log.info(
-                      "event from query for persistenceId [{}] seqNr [{}] " +
-                      s"timestamp [{}] was before last event from backtracking or heartbeat [{}].",
-                      env.persistenceId,
-                      env.sequenceNr,
-                      t.timestamp,
-                      l)
+                  if (log.isDebugEnabled()) {
+                    val l = latestBacktracking(slice)
+                    if (l.isAfter(t.timestamp))
+                      log.debug(
+                        "event from query for persistenceId [{}] seqNr [{}] " +
+                        s"timestamp [{}] was before last event from backtracking or heartbeat [{}].",
+                        env.persistenceId,
+                        env.sequenceNr,
+                        t.timestamp,
+                        l)
+                  }
 
                   env :: Nil
                 } else {
