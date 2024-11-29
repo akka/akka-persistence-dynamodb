@@ -10,7 +10,6 @@ import java.util.concurrent.CompletionException
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.util.Failure
-import scala.util.Success
 import scala.util.Try
 
 import akka.Done
@@ -25,6 +24,7 @@ import akka.persistence.SerializedEvent
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.dynamodb.internal.JournalDao
+import akka.persistence.dynamodb.internal.MonotonicTimestamps
 import akka.persistence.dynamodb.internal.PubSub
 import akka.persistence.dynamodb.internal.SerializedEventMetadata
 import akka.persistence.dynamodb.internal.SerializedJournalItem
@@ -102,6 +102,10 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
     if (settings.journalPublishEvents) Some(PubSub(system))
     else None
 
+  private val monotonicTimestamps = MonotonicTimestamps(system)
+  private val minTimestampFor: String => Option[Instant] = monotonicTimestamps.minTimestampFor(cfgPath)
+  private val recordTimestampFor: (String, Instant) => Future[Done] = monotonicTimestamps.recordTimestampFor(cfgPath)
+
   // if there are pending writes when an actor restarts we must wait for
   // them to complete before we can read the highest sequence number or we will miss it
   private val writesInProgress = new java.util.HashMap[String, Future[Seq[Try[Unit]]]]()
@@ -112,8 +116,8 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
 
   override def asyncWriteMessages(messages: Seq[AtomicWrite]): Future[Seq[Try[Unit]]] = {
     def atomicWrite(atomicWrite: AtomicWrite): Future[Seq[Try[Unit]]] = {
-      val serialized: Try[Seq[SerializedJournalItem]] = Try {
-        atomicWrite.payload.map { pr =>
+      val serialized: Future[Seq[SerializedJournalItem]] =
+        Future.sequence(atomicWrite.payload.map { pr =>
           val (event, tags) = pr.payload match {
             case Tagged(payload, tags) =>
               (payload.asInstanceOf[AnyRef], tags)
@@ -140,45 +144,54 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
           }
 
           // monotonically increasing, at least 1 microsecond more than previous timestamp
-          val timestamp = InstantFactory.now()
-
-          SerializedJournalItem(
-            pr.persistenceId,
-            pr.sequenceNr,
-            timestamp,
-            InstantFactory.EmptyTimestamp,
-            Some(serializedEvent.bytes),
-            serializedEvent.serializerId,
-            serializedEvent.serializerManifest,
-            pr.writerUuid,
-            tags,
-            metadata)
-        }
-      }
-
-      serialized match {
-        case Success(writes) =>
-          journalDao
-            .writeEvents(writes)
-            .map { _ =>
-              pubSub.foreach { ps =>
-                atomicWrite.payload.zip(writes).foreach { case (pr, serialized) =>
-                  ps.publish(pr, serialized.writeTimestamp)
-                }
+          val timestampFut = {
+            val now = InstantFactory.now()
+            minTimestampFor(pr.persistenceId)
+              .fold(Future.successful(now)) { min =>
+                if (min.isAfter(now)) {
+                  log.warning(
+                    "Detected possible clock skew: current timestamp [{}], required for monotonicity [{}]",
+                    now,
+                    min)
+                  recordTimestampFor(pr.persistenceId, min).map(_ => min)(ExecutionContext.parasitic)
+                } else Future.successful(now)
               }
-              Nil // successful writes
-            }
-            .recoverWith { case e: CompletionException =>
-              e.getCause match {
-                case error: ProvisionedThroughputExceededException => // reject retryable errors
-                  Future.successful(atomicWrite.payload.map(_ => Failure(error)))
-                case error => // otherwise journal failure
-                  Future.failed(error)
+          }
+
+          timestampFut.map { timestamp =>
+            SerializedJournalItem(
+              pr.persistenceId,
+              pr.sequenceNr,
+              timestamp,
+              InstantFactory.EmptyTimestamp,
+              Some(serializedEvent.bytes),
+              serializedEvent.serializerId,
+              serializedEvent.serializerManifest,
+              pr.writerUuid,
+              tags,
+              metadata)
+          }(ExecutionContext.parasitic)
+        })
+
+      serialized.flatMap { writes =>
+        journalDao
+          .writeEvents(writes)
+          .map { _ =>
+            pubSub.foreach { ps =>
+              atomicWrite.payload.zip(writes).foreach { case (pr, serialized) =>
+                ps.publish(pr, serialized.writeTimestamp)
               }
             }
-
-        case Failure(exc) =>
-          Future.failed(exc)
+            Nil // successful writes
+          }
+          .recoverWith { case e: CompletionException =>
+            e.getCause match {
+              case error: ProvisionedThroughputExceededException => // reject retryable errors
+                Future.successful(atomicWrite.payload.map(_ => Failure(error)))
+              case error => // otherwise journal failure
+                Future.failed(error)
+            }
+          }
       }
     }
 
@@ -231,16 +244,25 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
     pendingWrite.flatMap { _ =>
       if (toSequenceNr == Long.MaxValue && max == Long.MaxValue) {
         // this is the normal case, highest sequence number from last event
-        query
-          .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = true)
-          .runWith(Sink.fold(0L) { (_, item) =>
-            // payload is empty for deleted item
-            if (item.payload.isDefined) {
-              val repr = deserializeItem(serialization, item)
-              recoveryCallback(repr)
-            }
-            item.seqNr
-          })
+        val lastItem =
+          query
+            .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = true)
+            .runWith(Sink.fold(Option.empty[SerializedJournalItem]) { (_, item) =>
+              // payload is empty for deleted item
+              if (item.payload.isDefined) {
+                val repr = deserializeItem(serialization, item)
+                recoveryCallback(repr)
+              }
+              Some(item)
+            })
+
+        lastItem.flatMap { itemOpt =>
+          itemOpt.fold(Future.successful[Long](0)) { item =>
+            recordTimestampFor(item.persistenceId, item.eventTimestamp).map { _ =>
+              item.seqNr
+            }(ExecutionContext.parasitic)
+          }
+        }(ExecutionContext.parasitic)
       } else if (toSequenceNr <= 0) {
         // no replay
         journalDao.readHighestSequenceNr(persistenceId)
