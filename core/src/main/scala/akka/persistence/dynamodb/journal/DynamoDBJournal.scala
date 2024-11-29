@@ -117,61 +117,65 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
   override def asyncWriteMessages(messages: Seq[AtomicWrite]): Future[Seq[Try[Unit]]] = {
     def atomicWrite(atomicWrite: AtomicWrite): Future[Seq[Try[Unit]]] = {
       val serialized: Future[Seq[SerializedJournalItem]] =
-        Future.sequence(atomicWrite.payload.map { pr =>
-          val (event, tags) = pr.payload match {
-            case Tagged(payload, tags) =>
-              (payload.asInstanceOf[AnyRef], tags)
-            case other =>
-              (other.asInstanceOf[AnyRef], Set.empty[String])
-          }
-
-          val serializedEvent = event match {
-            case s: SerializedEvent => s // already serialized
-            case _ =>
-              val bytes = serialization.serialize(event).get
-              val serializer = serialization.findSerializerFor(event)
-              val manifest = Serializers.manifestFor(serializer, event)
-              new SerializedEvent(bytes, serializer.identifier, manifest)
-          }
-
-          val metadata = pr.metadata.map { meta =>
-            val m = meta.asInstanceOf[AnyRef]
-            val serializedMeta = serialization.serialize(m).get
-            val metaSerializer = serialization.findSerializerFor(m)
-            val metaManifest = Serializers.manifestFor(metaSerializer, m)
-            val id: Int = metaSerializer.identifier
-            SerializedEventMetadata(id, metaManifest, serializedMeta)
-          }
-
-          // monotonically increasing, at least 1 microsecond more than previous timestamp
-          val timestampFut = {
-            val now = InstantFactory.now()
-            minTimestampFor(pr.persistenceId)
-              .fold(Future.successful(now)) { min =>
-                if (min.isAfter(now)) {
-                  log.warning(
-                    "Detected possible clock skew: current timestamp [{}], required for monotonicity [{}]",
-                    now,
-                    min)
-                  recordTimestampFor(pr.persistenceId, min).map(_ => min)(ExecutionContext.parasitic)
-                } else Future.successful(now)
+        atomicWrite.payload
+          .foldLeft(Future.successful(List.empty[SerializedJournalItem])) { (acc, pr) =>
+            acc.flatMap { previousItems =>
+              val (event, tags) = pr.payload match {
+                case Tagged(payload, tags) =>
+                  (payload.asInstanceOf[AnyRef], tags)
+                case other =>
+                  (other.asInstanceOf[AnyRef], Set.empty[String])
               }
-          }
 
-          timestampFut.map { timestamp =>
-            SerializedJournalItem(
-              pr.persistenceId,
-              pr.sequenceNr,
-              timestamp,
-              InstantFactory.EmptyTimestamp,
-              Some(serializedEvent.bytes),
-              serializedEvent.serializerId,
-              serializedEvent.serializerManifest,
-              pr.writerUuid,
-              tags,
-              metadata)
-          }(ExecutionContext.parasitic)
-        })
+              val serializedEvent = event match {
+                case s: SerializedEvent => s // already serialized
+                case _ =>
+                  val bytes = serialization.serialize(event).get
+                  val serializer = serialization.findSerializerFor(event)
+                  val manifest = Serializers.manifestFor(serializer, event)
+                  new SerializedEvent(bytes, serializer.identifier, manifest)
+              }
+
+              val metadata = pr.metadata.map { meta =>
+                val m = meta.asInstanceOf[AnyRef]
+                val serializedMeta = serialization.serialize(m).get
+                val metaSerializer = serialization.findSerializerFor(m)
+                val metaManifest = Serializers.manifestFor(metaSerializer, m)
+                val id: Int = metaSerializer.identifier
+                SerializedEventMetadata(id, metaManifest, serializedMeta)
+              }
+
+              // monotonically increasing, at least 1 microsecond more than previous timestamp
+              val timestampFut = {
+                val now = InstantFactory.now()
+                minTimestampFor(pr.persistenceId)
+                  .fold(Future.successful(now)) { min =>
+                    if (min.isAfter(now)) {
+                      log.warning(
+                        "Detected possible clock skew: current timestamp [{}], required for monotonicity [{}]",
+                        now,
+                        min)
+                      recordTimestampFor(pr.persistenceId, min).map(_ => min)(ExecutionContext.parasitic)
+                    } else Future.successful(now)
+                  }
+              }
+
+              timestampFut.map { timestamp =>
+                SerializedJournalItem(
+                  pr.persistenceId,
+                  pr.sequenceNr,
+                  timestamp,
+                  InstantFactory.EmptyTimestamp,
+                  Some(serializedEvent.bytes),
+                  serializedEvent.serializerId,
+                  serializedEvent.serializerManifest,
+                  pr.writerUuid,
+                  tags,
+                  metadata) :: previousItems
+              }(ExecutionContext.parasitic)
+            }
+          }
+          .map(_.reverse)(ExecutionContext.parasitic)
 
       serialized.flatMap { writes =>
         journalDao
