@@ -35,6 +35,7 @@ object MonotonicTimestamps extends ExtensionId[MonotonicTimestamps] {
 
   def get(system: ActorSystem[_]): MonotonicTimestamps = createExtension(system)
 
+  /** INTERNAL API */
   @InternalApi
   private[internal] final class PerPlugin(
       system: ActorSystem[_],
@@ -192,9 +193,14 @@ object MonotonicTimestamps extends ExtensionId[MonotonicTimestamps] {
       }
   }
 
-  private val Cleanup = "Cleanup"
+  /** INTERNAL API */
+  @InternalApi
+  private[internal] case class Record(pid: String, nextTimestamp: Instant)
 
-  private case class Record(pid: String, nextTimestamp: Instant)
+  /** INTERNAL API */
+  @InternalApi
+  private[internal] val Cleanup = "Cleanup"
+
   private object Record {
     implicit val ordering: Ordering[Record] =
       new Ordering[Record] {
