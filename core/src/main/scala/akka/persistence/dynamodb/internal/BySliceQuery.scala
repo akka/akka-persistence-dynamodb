@@ -281,7 +281,8 @@ import org.slf4j.Logger
 
       def disableBacktrackingWhenFarBehindCurrentWallClockTime: Boolean = {
         val aheadOfInitial =
-          initialOffset == TimestampOffset.Zero || state.latestBacktracking.timestamp.isAfter(initialOffset.timestamp)
+          initialOffset == TimestampOffset.Zero ||
+          state.latestBacktracking.timestamp.compareTo(initialOffset.timestamp) >= 0
 
         val previousTimestamp =
           if (state.previous == TimestampOffset.Zero) state.latest.timestamp
