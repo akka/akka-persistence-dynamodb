@@ -229,25 +229,25 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
       case None => FutureDone
     }
     pendingWrite.flatMap { _ =>
-      if (toSequenceNr == Long.MaxValue && max == Long.MaxValue) {
+      val highestSeqNrAndTimestamp = if (toSequenceNr == Long.MaxValue && max == Long.MaxValue) {
         // this is the normal case, highest sequence number from last event
         query
           .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = true)
-          .runWith(Sink.fold(0L) { (_, item) =>
+          .runWith(Sink.fold((0L, Instant.EPOCH)) { (_, item) =>
             // payload is empty for deleted item
             if (item.payload.isDefined) {
               val repr = deserializeItem(serialization, item)
               recoveryCallback(repr)
             }
-            item.seqNr
+            (item.seqNr, item.writeTimestamp)
           })
       } else if (toSequenceNr <= 0) {
         // no replay
-        journalDao.readHighestSequenceNr(persistenceId)
+        journalDao.readHighestSequenceNrAndTimestamp(persistenceId)
       } else {
         // replay to custom sequence number
 
-        val highestSeqNr = journalDao.readHighestSequenceNr(persistenceId)
+        val highestSeqNrAndTimestamp = journalDao.readHighestSequenceNrAndTimestamp(persistenceId)
 
         val effectiveToSequenceNr =
           if (max == Long.MaxValue) toSequenceNr
@@ -264,7 +264,19 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
               val repr = deserializeItem(serialization, item)
               recoveryCallback(repr)
             })
-          .flatMap(_ => highestSeqNr)
+          .flatMap(_ => highestSeqNrAndTimestamp)
+      }
+      highestSeqNrAndTimestamp.map { case (highestSeqNr, timestamp) =>
+        val now = Instant.now()
+        if (now.isBefore(timestamp)) {
+          log.warning(
+            "Detected clock skew when replaying events: persistence id [{}], highest seq nr [{}] written at [{}], current time is [{}]",
+            persistenceId,
+            highestSeqNr,
+            timestamp,
+            now)
+        }
+        highestSeqNr
       }
     }
   }
