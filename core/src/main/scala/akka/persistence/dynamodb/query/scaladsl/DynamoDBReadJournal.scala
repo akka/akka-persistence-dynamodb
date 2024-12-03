@@ -219,6 +219,8 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       toSequenceNr: Long,
       includeDeleted: Boolean): Source[SerializedJournalItem, NotUsed] = {
 
+    log.debug("[{}] eventsByPersistenceId from seqNr [{}] to [{}]", persistenceId, fromSequenceNr, toSequenceNr)
+
     queryDao.eventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted)
   }
 
@@ -244,7 +246,11 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
       bySlice[Event](entityType, slice)
-        .currentBySlice("currentEventsBySlices", entityType, slice, sliceStartOffset(slice, offset))
+        .currentBySlice(
+          s"[$entityType] currentEventsBySlice [$slice]: ",
+          entityType,
+          slice,
+          sliceStartOffset(slice, offset))
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
 
@@ -286,7 +292,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
       bySlice[Event](entityType, slice).liveBySlice(
-        "eventsBySlices",
+        s"[$entityType] eventsBySlice [$slice]: ",
         entityType,
         slice,
         sliceStartOffset(slice, offset))
@@ -333,7 +339,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       val timestampOffset = TimestampOffset.toTimestampOffset(sliceStartOffset(slice, offset))
 
       val snapshotSource = snapshotsBySlice[Snapshot, Event](entityType, slice, transformSnapshot)
-        .currentBySlice("currentSnapshotsBySlice", entityType, slice, timestampOffset)
+        .currentBySlice(s"[$entityType] currentSnapshotsBySlice [$slice]: ", entityType, slice, timestampOffset)
 
       Source.fromGraph(
         new StartingFromSnapshotStage[Event](
@@ -357,7 +363,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
               snapshotOffsets.size)
 
             bySlice[Event](entityType, slice).currentBySlice(
-              "currentEventsBySlice",
+              s"[$entityType] currentEventsBySlice [$slice]: ",
               entityType,
               slice,
               initOffset,
@@ -395,7 +401,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       val timestampOffset = TimestampOffset.toTimestampOffset(sliceStartOffset(slice, offset))
 
       val snapshotSource = snapshotsBySlice[Snapshot, Event](entityType, slice, transformSnapshot)
-        .currentBySlice("snapshotsBySlice", entityType, slice, timestampOffset)
+        .currentBySlice(s"[$entityType] snapshotsBySlice [$slice]: ", entityType, slice, timestampOffset)
 
       Source.fromGraph(
         new StartingFromSnapshotStage[Event](
@@ -419,7 +425,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
               snapshotOffsets.size)
 
             bySlice[Event](entityType, slice).liveBySlice(
-              "eventsBySlice",
+              s"[$entityType] eventsBySlice [$slice]: ",
               entityType,
               slice,
               initOffset,
@@ -624,11 +630,18 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   // EventTimestampQuery
   override def timestampOf(persistenceId: String, sequenceNr: Long): Future[Option[Instant]] = {
-    queryDao.timestampOfEvent(persistenceId, sequenceNr)
+    val result = queryDao.timestampOfEvent(persistenceId, sequenceNr)
+    if (log.isDebugEnabled) {
+      result.foreach { t =>
+        log.debug("[{}] timestampOf seqNr [{}] is [{}]", persistenceId, sequenceNr, t)
+      }
+    }
+    result
   }
 
   //LoadEventQuery
   override def loadEnvelope[Event](persistenceId: String, sequenceNr: Long): Future[EventEnvelope[Event]] = {
+    log.debug("[{}] loadEnvelope seqNr [{}]", persistenceId, sequenceNr)
     queryDao
       .loadEvent(persistenceId, sequenceNr, includePayload = true)
       .map {
