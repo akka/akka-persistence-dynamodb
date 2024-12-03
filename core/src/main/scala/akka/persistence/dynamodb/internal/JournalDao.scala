@@ -73,7 +73,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         if (dateHeaderOpt.isPresent) {
           val dateHeader = dateHeaderOpt.get
           val awsInstant = Instant.from(dateHeaderParser.parse(dateHeader))
-          val now = InstantFactory.now()
+          val now = Instant.now()
           // The Date header only has precision of seconds so this is just a rough check
           if (math.abs(java.time.Duration.between(awsInstant, now).toMillis) >= 2000) {
             log.warn(
