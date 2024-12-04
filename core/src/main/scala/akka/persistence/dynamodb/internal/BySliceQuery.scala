@@ -150,10 +150,9 @@ import org.slf4j.Logger
 
         if (state.queryCount != 0 && log.isDebugEnabled())
           log.debug(
-            "{} next query [{}] from slice [{}], between time [{} - {}]. Found [{}] items in previous query.",
+            "{} next query [{}], between time [{} - {}]. Found [{}] items in previous query.",
             logPrefix,
             state.queryCount,
-            slice,
             state.latest.timestamp,
             toTimestamp,
             state.itemCount)
@@ -168,10 +167,9 @@ import org.slf4j.Logger
       } else {
         if (log.isDebugEnabled)
           log.debug(
-            "{} query [{}] from slice [{}] completed. Found [{}] items in previous query.",
+            "{} query [{}] completed. Found [{}] items in previous query.",
             logPrefix,
             state.queryCount,
-            slice,
             state.itemCount)
 
         state -> None
@@ -180,12 +178,7 @@ import org.slf4j.Logger
 
     val currentTimestamp = InstantFactory.now()
     if (log.isDebugEnabled())
-      log.debug(
-        "{} query slice [{}], from time [{}] until now [{}].",
-        logPrefix,
-        slice,
-        initialOffset.timestamp,
-        currentTimestamp)
+      log.debug("{} query from time [{}] until now [{}].", logPrefix, initialOffset.timestamp, currentTimestamp)
 
     ContinuousQuery[QueryState, Envelope](
       initialState = QueryState.empty.copy(latest = initialOffset),
@@ -205,7 +198,7 @@ import org.slf4j.Logger
     val initialOffset = toTimestampOffset(offset)
 
     if (log.isDebugEnabled())
-      log.debug("Starting {} query from slice [{}], from time [{}].", logPrefix, slice, initialOffset.timestamp)
+      log.debug("{} starting query from time [{}].", logPrefix, initialOffset.timestamp)
 
     def nextOffset(state: QueryState, envelope: Envelope): QueryState = {
       if (EnvelopeOrigin.isHeartbeatEvent(envelope)) state
@@ -256,12 +249,7 @@ import org.slf4j.Logger
 
         if (log.isDebugEnabled)
           delay.foreach { d =>
-            log.debug(
-              "{} query [{}] from slice [{}] delay next [{}] ms.",
-              logPrefix,
-              state.queryCount,
-              slice,
-              d.toMillis)
+            log.debug("{} query [{}] delay next [{}] ms.", logPrefix, state.queryCount, d.toMillis)
           }
 
         delay
@@ -413,7 +401,10 @@ import org.slf4j.Logger
         val timestamp = state.startTimestamp.plus(
           JDuration.between(state.startWallClock, state.previousQueryWallClock.minus(backtrackingBehindCurrentTime)))
 
-        createHeartbeat(timestamp)
+        val h = createHeartbeat(timestamp)
+        if (h.isDefined)
+          log.debug("{} heartbeat timestamp [{}]", logPrefix, timestamp)
+        h
       } else None
     }
 
