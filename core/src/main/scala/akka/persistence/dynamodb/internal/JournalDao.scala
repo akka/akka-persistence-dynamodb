@@ -6,15 +6,19 @@ package akka.persistence.dynamodb.internal
 
 import java.nio.ByteBuffer
 import java.time.Instant
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.CompletionException
 import java.util.Base64
+import java.util.Locale
 import java.util.{ HashMap => JHashMap }
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
+import scala.util.control.NonFatal
 
 import akka.Done
 import akka.actor.typed.ActorSystem
@@ -25,6 +29,7 @@ import akka.persistence.typed.PersistenceId
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.SdkBytes
+import software.amazon.awssdk.core.SdkResponse
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.Delete
@@ -57,6 +62,36 @@ import software.amazon.awssdk.services.dynamodb.model.Update
   private val persistenceExt: Persistence = Persistence(system)
 
   private implicit val ec: ExecutionContext = system.executionContext
+
+  private val dateHeaderLogCounter = new AtomicLong
+  private val dateHeaderParser = DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss z", Locale.US)
+  private val clockSkewToleranceMillis = settings.clockSkewSettings.warningTolerance.toMillis
+
+  private def checkClockSkew(response: SdkResponse): Unit = {
+    try {
+      if (clockSkewToleranceMillis > 0 &&
+        dateHeaderLogCounter.getAndIncrement() % 1000 == 0) {
+        val dateHeaderOpt = response.sdkHttpResponse().firstMatchingHeader("Date")
+        if (dateHeaderOpt.isPresent) {
+          val dateHeader = dateHeaderOpt.get
+          val awsInstant = Instant.from(dateHeaderParser.parse(dateHeader))
+          val now = Instant.now()
+          // The Date header only has precision of seconds so this is just a rough check
+          if (math.abs(java.time.Duration.between(awsInstant, now).toMillis) >= clockSkewToleranceMillis) {
+            log.warn(
+              "Possible clock skew, make sure clock synchronization is installed. " +
+              "Local time [{}] vs DynamoDB response time [{}]",
+              now,
+              awsInstant)
+          }
+        }
+      }
+    } catch {
+      case NonFatal(exc) =>
+        log.warn("check clock skew failed", exc)
+    }
+
+  }
 
   def writeEvents(events: Seq[SerializedJournalItem]): Future[Done] = {
     require(events.nonEmpty)
@@ -118,7 +153,14 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             response.consumedCapacity.capacityUnits)
         }
       }
-      result.map(_ => Done)(ExecutionContext.parasitic)
+      result
+        .map { response =>
+          checkClockSkew(response)
+          Done
+        }(ExecutionContext.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContext.parasitic)
     } else {
       val writeItems =
         events.map { item =>
@@ -160,7 +202,10 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         }
       }
       result
-        .map(_ => Done)(ExecutionContext.parasitic)
+        .map { response =>
+          checkClockSkew(response)
+          Done
+        }(ExecutionContext.parasitic)
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
         }(ExecutionContext.parasitic)

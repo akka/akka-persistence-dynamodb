@@ -4,6 +4,7 @@
 
 package akka.persistence.dynamodb
 
+import scala.concurrent.duration.Duration
 import scala.concurrent.duration.FiniteDuration
 import scala.jdk.CollectionConverters._
 import scala.jdk.DurationConverters._
@@ -55,6 +56,8 @@ object DynamoDBSettings {
       if (indexName.nonEmpty) indexName else snapshotTable + "_slice_idx"
     }
 
+    val clockSkewSettings = new ClockSkewSettings(config)
+
     new DynamoDBSettings(
       journalTable,
       journalPublishEvents,
@@ -63,7 +66,8 @@ object DynamoDBSettings {
       cleanupSettings,
       timeToLiveSettings,
       journalBySliceGsi,
-      snapshotBySliceGsi)
+      snapshotBySliceGsi,
+      clockSkewSettings)
   }
 
   /**
@@ -74,6 +78,9 @@ object DynamoDBSettings {
 
 }
 
+/**
+ * Use `DynamoDBSettings.apply` or `DynamoDBSettings.create` for construction.
+ */
 final class DynamoDBSettings private (
     val journalTable: String,
     val journalPublishEvents: Boolean,
@@ -82,7 +89,8 @@ final class DynamoDBSettings private (
     val cleanupSettings: CleanupSettings,
     val timeToLiveSettings: TimeToLiveSettings,
     val journalBySliceGsi: String,
-    val snapshotBySliceGsi: String)
+    val snapshotBySliceGsi: String,
+    val clockSkewSettings: ClockSkewSettings)
 
 final class QuerySettings(config: Config) {
   val refreshInterval: FiniteDuration = config.getDuration("refresh-interval").toScala
@@ -276,6 +284,22 @@ final class EventSourcedEntityTimeToLiveSettings(config: Config) {
   val eventTimeToLive: Option[FiniteDuration] = ConfigHelpers.optDuration(config, "event-time-to-live")
 
   val snapshotTimeToLive: Option[FiniteDuration] = ConfigHelpers.optDuration(config, "snapshot-time-to-live")
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalStableApi
+final class ClockSkewSettings(config: Config) {
+  val warningTolerance: FiniteDuration = {
+    val path = "clock-skew-detection.warning-tolerance"
+    Helpers.toRootLowerCase(config.getString(path)) match {
+      case "off" | "none" => Duration.Zero
+      case _              => config.getDuration(path).toScala
+    }
+  }
+
+  override def toString: String = s"ClockSkewSettings($warningTolerance)"
 }
 
 private[akka] object ConfigHelpers {
