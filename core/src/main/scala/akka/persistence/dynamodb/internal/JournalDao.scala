@@ -169,6 +169,10 @@ import software.amazon.awssdk.services.dynamodb.model.Update
   }
 
   def readHighestSequenceNr(persistenceId: String): Future[Long] = {
+    readHighestSequenceNrAndTimestamp(persistenceId).map(_._1)(ExecutionContext.parasitic)
+  }
+
+  def readHighestSequenceNrAndTimestamp(persistenceId: String): Future[(Long, Instant)] = {
     import JournalAttributes._
 
     val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId))
@@ -189,20 +193,22 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       .consistentRead(true)
       .keyConditionExpression(s"$Pid = :pid")
       .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
-      .projectionExpression(s"$SeqNr")
+      .projectionExpression(s"$SeqNr, $Timestamp")
       .scanIndexForward(false) // get last item (highest sequence nr)
       .limit(1)
 
     filterExpression.foreach(requestBuilder.filterExpression)
 
     val result = client.query(requestBuilder.build()).asScala.map { response =>
-      response.items().asScala.headOption.fold(0L) { item =>
-        item.get(SeqNr).n().toLong
+      response.items().asScala.headOption.fold((0L, Instant.EPOCH)) { item =>
+        (item.get(SeqNr).n().toLong, InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong))
       }
     }
 
     if (log.isDebugEnabled)
-      result.foreach(seqNr => log.debug("Highest sequence nr for persistenceId [{}]: [{}]", persistenceId, seqNr))
+      result.foreach { case (seqNr, timestamp) =>
+        log.debug("Highest sequence nr for persistenceId [{}]: [{}] (written at [{}])", persistenceId, seqNr, timestamp)
+      }
 
     result
       .recoverWith { case c: CompletionException =>
