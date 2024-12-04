@@ -65,17 +65,19 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 
   private val dateHeaderLogCounter = new AtomicLong
   private val dateHeaderParser = DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss z", Locale.US)
+  private val clockSkewToleranceMillis = settings.clockSkewSettings.warningTolerance.toMillis
 
   private def checkClockSkew(response: SdkResponse): Unit = {
     try {
-      if (dateHeaderLogCounter.getAndIncrement() % 1000 == 0) {
+      if (clockSkewToleranceMillis > 0 &&
+        dateHeaderLogCounter.getAndIncrement() % 1000 == 0) {
         val dateHeaderOpt = response.sdkHttpResponse().firstMatchingHeader("Date")
         if (dateHeaderOpt.isPresent) {
           val dateHeader = dateHeaderOpt.get
           val awsInstant = Instant.from(dateHeaderParser.parse(dateHeader))
           val now = Instant.now()
           // The Date header only has precision of seconds so this is just a rough check
-          if (math.abs(java.time.Duration.between(awsInstant, now).toMillis) >= 2000) {
+          if (math.abs(java.time.Duration.between(awsInstant, now).toMillis) >= clockSkewToleranceMillis) {
             log.warn(
               "Possible clock skew, make sure clock synchronization is installed. " +
               "Local time [{}] vs DynamoDB response time [{}]",
