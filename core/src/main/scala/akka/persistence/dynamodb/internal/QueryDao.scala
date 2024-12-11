@@ -213,7 +213,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
       def getTimestamp(item: JMap[String, AttributeValue]): Instant =
         InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong)
 
-      val logName = s"itemsBySlice - $entityTypeSlice - ${if (backtracking) "backtracking" else "query"}"
+      val logName = s"[$entityType] itemsBySlice [$slice] [${if (backtracking) "backtracking" else "query"}]"
 
       def logQueryResponse: QueryResponse => String = response => {
         if (response.hasItems && !response.items.isEmpty) {
