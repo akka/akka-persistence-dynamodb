@@ -19,6 +19,7 @@ import akka.annotation.InternalApi
 import akka.event.Logging
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
+import akka.stream.Attributes
 import akka.stream.scaladsl.Source
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
@@ -229,7 +230,10 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
 
       Source
         .fromPublisher(publisher)
+        // note that this is not logging each item, only the QueryResponse
         .log(logName, logQueryResponse)(logging)
+        .withAttributes(Attributes
+          .logLevels(onElement = Logging.DebugLevel, onFinish = Logging.DebugLevel, onFailure = Logging.WarningLevel))
         .mapConcat(_.items.iterator.asScala)
         .take(settings.querySettings.bufferSize)
         .map { item =>
