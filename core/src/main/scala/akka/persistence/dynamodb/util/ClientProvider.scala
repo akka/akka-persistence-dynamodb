@@ -19,13 +19,14 @@ import akka.actor.typed.ExtensionId
 import akka.persistence.dynamodb.ClientSettings
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.awscore.retry.AwsRetryStrategy
 import software.amazon.awssdk.core.CompressionConfiguration
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration
-import software.amazon.awssdk.core.retry.RetryPolicy
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient
-import software.amazon.awssdk.regions.Region
-import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.metrics.MetricPublisher
+import software.amazon.awssdk.regions.Region
+import software.amazon.awssdk.retries.api.RetryStrategy
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 
 object ClientProvider extends ExtensionId[ClientProvider] {
   def createExtension(system: ActorSystem[_]): ClientProvider = new ClientProvider(system)
@@ -80,10 +81,11 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
       .tcpKeepAlive(settings.http.tcpKeepAlive)
 
     val overrideConfiguration = {
-      val retryPolicy = settings.retry.fold(RetryPolicy.none()) { retrySettings =>
-        val builder = RetryPolicy.builder(retrySettings.mode)
-        retrySettings.numRetries.foreach(numRetries => builder.numRetries(numRetries))
-        builder.build()
+
+      val retryStrategy = settings.retry.fold(AwsRetryStrategy.doNotRetry()) { retrySettings =>
+        val builder: RetryStrategy.Builder[_, _] = AwsRetryStrategy.forRetryMode(retrySettings.mode).toBuilder
+        retrySettings.maxAttempts.foreach(maxAttempts => builder.maxAttempts(maxAttempts))
+        builder.build().asInstanceOf[RetryStrategy]
       }
 
       val compressionConfiguration = CompressionConfiguration.builder
@@ -93,7 +95,7 @@ class ClientProvider(system: ActorSystem[_]) extends Extension {
 
       var overrideConfigurationBuilder = ClientOverrideConfiguration.builder
         .apiCallTimeout(settings.callTimeout.toJava)
-        .retryPolicy(retryPolicy)
+        .retryStrategy(retryStrategy)
         .compressionConfiguration(compressionConfiguration)
 
       settings.callAttemptTimeout.foreach { timeout =>

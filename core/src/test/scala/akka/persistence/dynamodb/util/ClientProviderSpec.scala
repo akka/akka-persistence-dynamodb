@@ -12,15 +12,17 @@ import scala.jdk.OptionConverters._
 import akka.actor.ClassicActorSystemProvider
 import akka.actor.testkit.typed.scaladsl.ActorTestKit
 import akka.actor.testkit.typed.scaladsl.ActorTestKitBase
+import akka.actor.testkit.typed.scaladsl.LoggingTestKit
 import com.typesafe.config.ConfigFactory
 import org.scalatest.OptionValues
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
-import software.amazon.awssdk.core.retry.RetryMode
-import software.amazon.awssdk.regions.Region
-import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.metrics.MetricCollection
 import software.amazon.awssdk.metrics.MetricPublisher
+import software.amazon.awssdk.regions.Region
+import software.amazon.awssdk.retries.LegacyRetryStrategy
+import software.amazon.awssdk.retries.StandardRetryStrategy
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 
 class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
 
@@ -57,9 +59,9 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
       httpSettings.tlsNegotiationTimeout shouldBe 5.seconds
       httpSettings.tcpKeepAlive shouldBe false
 
-      val retryPolicy = overrideConfiguration.retryPolicy.toScala.value
-      retryPolicy.retryMode shouldBe RetryMode.STANDARD
-      retryPolicy.numRetries shouldBe 2
+      val retryStrategy = overrideConfiguration.retryStrategy.toScala.value
+      retryStrategy shouldBe a[StandardRetryStrategy]
+      retryStrategy.maxAttempts shouldBe 3
 
       val compressionConfiguration = overrideConfiguration.compressionConfiguration.toScala.value
       compressionConfiguration.requestCompressionEnabled shouldBe true
@@ -101,9 +103,9 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
           tcp-keep-alive = true
         }
 
-        retry-policy {
+        retry-strategy {
           retry-mode = legacy
-          num-retries = 5
+          max-attempts = 5
         }
 
         compression {
@@ -140,18 +142,18 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
       httpSettings.tlsNegotiationTimeout shouldBe 10.seconds
       httpSettings.tcpKeepAlive shouldBe true
 
-      val retryPolicy = overrideConfiguration.retryPolicy.toScala.value
-      retryPolicy.retryMode shouldBe RetryMode.LEGACY
-      retryPolicy.numRetries shouldBe 5
+      val retryStrategy = overrideConfiguration.retryStrategy.toScala.value
+      retryStrategy shouldBe a[LegacyRetryStrategy]
+      retryStrategy.maxAttempts shouldBe 5
 
       val compressionConfiguration = overrideConfiguration.compressionConfiguration.toScala.value
       compressionConfiguration.requestCompressionEnabled shouldBe false
       compressionConfiguration.minimumCompressionThresholdInBytes shouldBe 20480
     }
 
-    "create client with no retry policy if configured" in withActorTestKit("""
+    "create client with no retry strategy if configured" in withActorTestKit("""
       akka.persistence.dynamodb.client {
-        retry-policy {
+        retry-strategy {
           enabled = off
         }
         
@@ -164,9 +166,66 @@ class ClientProviderSpec extends AnyWordSpec with Matchers with OptionValues {
       client shouldBe a[DynamoDbAsyncClient]
 
       val overrideConfiguration = client.serviceClientConfiguration.overrideConfiguration
-      val retryPolicy = overrideConfiguration.retryPolicy.toScala.value
-      retryPolicy.retryMode shouldBe RetryMode.LEGACY
-      retryPolicy.numRetries shouldBe 0
+      val retryStrategy = overrideConfiguration.retryStrategy.toScala.value
+      retryStrategy shouldBe a[StandardRetryStrategy]
+      retryStrategy.maxAttempts shouldBe 1
+    }
+
+    "create client using deprecated retry policy settings" in withActorTestKit("""
+      akka.persistence.dynamodb.client {
+        retry-policy {
+          retry-mode = legacy
+          num-retries = 9
+        }
+
+        # region usually picked up automatically, set manually for test
+        region = "us-east-1"
+      }
+      """) { testKit =>
+      import testKit.system
+
+      val clientConfigLocation = "akka.persistence.dynamodb.client"
+      val client =
+        LoggingTestKit
+          .warn(
+            "Configuration for `akka.persistence.dynamodb.client.retry-policy` is deprecated. Use `retry-strategy` instead.")
+          .expect {
+            ClientProvider(testKit.system).clientFor(clientConfigLocation)
+          }
+      client shouldBe a[DynamoDbAsyncClient]
+
+      val overrideConfiguration = client.serviceClientConfiguration.overrideConfiguration
+      val retryStrategy = overrideConfiguration.retryStrategy.toScala.value
+      retryStrategy shouldBe a[LegacyRetryStrategy]
+      retryStrategy.maxAttempts shouldBe 10
+    }
+
+    "create client with no retry strategy if configured using deprecated retry policy settings" in withActorTestKit("""
+      akka.persistence.dynamodb.client {
+        retry-policy {
+          enabled = off
+        }
+
+        # region usually picked up automatically, set manually for test
+        region = "us-east-1"
+      }
+      """) { testKit =>
+      import testKit.system
+
+      val clientConfigLocation = "akka.persistence.dynamodb.client"
+      val client =
+        LoggingTestKit
+          .warn(
+            "Configuration for `akka.persistence.dynamodb.client.retry-policy` is deprecated. Use `retry-strategy` instead.")
+          .expect {
+            ClientProvider(testKit.system).clientFor(clientConfigLocation)
+          }
+      client shouldBe a[DynamoDbAsyncClient]
+
+      val overrideConfiguration = client.serviceClientConfiguration.overrideConfiguration
+      val retryStrategy = overrideConfiguration.retryStrategy.toScala.value
+      retryStrategy shouldBe a[StandardRetryStrategy]
+      retryStrategy.maxAttempts shouldBe 1
     }
   }
 
