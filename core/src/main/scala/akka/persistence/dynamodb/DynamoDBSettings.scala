@@ -14,9 +14,12 @@ import akka.annotation.InternalStableApi
 import akka.util.Helpers
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigObject
+import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.retry.RetryMode
 
 object DynamoDBSettings {
+
+  private[akka] val log = LoggerFactory.getLogger(classOf[DynamoDBSettings])
 
   /**
    * Scala API: Load configuration from `akka.persistence.dynamodb`.
@@ -150,24 +153,39 @@ object ClientSettings {
     }
   }
 
-  final class RetrySettings(val mode: RetryMode, val numRetries: Option[Int]) {
+  final class RetrySettings(val mode: RetryMode, val maxAttempts: Option[Int]) {
     override def toString: String =
-      s"RetryPolicySettings(" +
+      s"RetrySettings(" +
       s"mode=$mode, " +
-      s"numRetries=${numRetries.fold("default")(_.toString)})"
+      s"maxAttempts=${maxAttempts.fold("default")(_.toString)})"
   }
 
   object RetrySettings {
     def get(clientConfig: Config): Option[RetrySettings] = {
-      val config = clientConfig.getConfig("retry-policy")
-      if (config.getBoolean("enabled")) {
-        val mode = Helpers.toRootLowerCase(config.getString("retry-mode")) match {
+      if (clientConfig.hasPath("retry-policy")) {
+        DynamoDBSettings.log.warn(
+          "Configuration for `akka.persistence.dynamodb.client.retry-policy` is deprecated. Use `retry-strategy` instead.")
+      }
+      val config = clientConfig.getConfig("retry-strategy")
+      // prefer and adapt deprecated retry-policy settings if they exist
+      val enabled =
+        if (clientConfig.hasPath("retry-policy.enabled")) clientConfig.getBoolean("retry-policy.enabled")
+        else config.getBoolean("enabled")
+      val retryMode =
+        if (clientConfig.hasPath("retry-policy.retry-mode")) clientConfig.getString("retry-policy.retry-mode")
+        else config.getString("retry-mode")
+      val maxAttempts =
+        if (clientConfig.hasPath("retry-policy.num-retries"))
+          ConfigHelpers.optInt(clientConfig, "retry-policy.num-retries").map(_ + 1)
+        else ConfigHelpers.optInt(config, "max-attempts")
+      if (enabled) {
+        val mode = Helpers.toRootLowerCase(retryMode) match {
           case "default"  => RetryMode.defaultRetryMode()
           case "legacy"   => RetryMode.LEGACY
           case "standard" => RetryMode.STANDARD
-          case "adaptive" => RetryMode.ADAPTIVE
+          case "adaptive" => RetryMode.ADAPTIVE_V2
         }
-        Some(new RetrySettings(mode = mode, numRetries = ConfigHelpers.optInt(config, "num-retries")))
+        Some(new RetrySettings(mode = mode, maxAttempts = maxAttempts))
       } else None
     }
   }
