@@ -639,7 +639,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     result
   }
 
-  //LoadEventQuery
+  // LoadEventQuery
   override def loadEnvelope[Event](persistenceId: String, sequenceNr: Long): Future[EventEnvelope[Event]] = {
     log.debug("[{}] loadEnvelope seqNr [{}]", persistenceId, sequenceNr)
     queryDao
