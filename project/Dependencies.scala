@@ -5,7 +5,7 @@
 import sbt._
 
 object Dependencies {
-  val Scala213 = "2.13.13"
+  val Scala213 = "2.13.15"
   val Scala3 = "3.3.4"
   val Scala2Versions = Seq(Scala213)
   val ScalaVersions = Dependencies.Scala2Versions :+ Dependencies.Scala3
@@ -41,7 +41,7 @@ object Dependencies {
     val akkaStreamTestkit = "com.typesafe.akka" %% "akka-stream-testkit" % AkkaVersion % Test
     val akkaJackson = "com.typesafe.akka" %% "akka-serialization-jackson" % AkkaVersion % Test
 
-    val logback = "ch.qos.logback" % "logback-classic" % "1.5.8" % Test // EPL 1.0 / LGPL 2.1
+    val logback = "ch.qos.logback" % "logback-classic" % "1.5.16" % Test // EPL 1.0 / LGPL 2.1
     val scalaTest = "org.scalatest" %% "scalatest" % "3.2.12" % Test // ApacheV2
     val junit = "junit" % "junit" % "4.12" % Test // Eclipse Public License 1.0
     val junitInterface = "com.novocode" % "junit-interface" % "0.11" % Test // "BSD 2-Clause"
