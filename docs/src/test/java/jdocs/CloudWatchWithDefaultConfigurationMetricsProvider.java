@@ -7,8 +7,7 @@ import software.amazon.awssdk.metrics.MetricPublisher;
 import software.amazon.awssdk.metrics.publishers.cloudwatch.CloudWatchMetricPublisher;
 
 public class CloudWatchWithDefaultConfigurationMetricsProvider implements AWSClientMetricsProvider {
-  public CloudWatchWithDefaultConfigurationMetricsProvider(ClassicActorSystemProvider system) {
-  }
+  public CloudWatchWithDefaultConfigurationMetricsProvider(ClassicActorSystemProvider system) {}
 
   @Override
   public MetricPublisher metricPublisherFor(String configLocation) {
