@@ -17,7 +17,7 @@ object Dependencies {
   val AkkaProjectionVersionInDocs = VersionNumber(AkkaProjectionVersion).numbers match {
     case Seq(major, minor, _*) => s"$major.$minor"
   }
-  val AwsSdkVersion = "2.30.38"
+  val AwsSdkVersion = "2.31.21"
   // Java Platform version for JavaDoc creation
   // sync with Java version in .github/workflows/publish.yml#documentation
   val JavaDocLinkVersion = 17
