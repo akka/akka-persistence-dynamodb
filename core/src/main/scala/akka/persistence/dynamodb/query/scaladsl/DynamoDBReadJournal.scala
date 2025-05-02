@@ -203,7 +203,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       1L,
       eventOption = None,
       timestamp.toEpochMilli,
-      eventMetadata = None,
+      _eventMetadata = None,
       entityType,
       slice,
       filtered = true,
