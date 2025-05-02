@@ -109,7 +109,7 @@ class EventsBySlicePubSubSpec
       env.sequenceNr,
       eventOption = None,
       env.timestamp,
-      env.eventMetadata,
+      env.internalEventMetadata,
       env.entityType,
       env.slice,
       env.filtered,
