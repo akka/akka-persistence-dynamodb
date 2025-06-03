@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
+import scala.concurrent.duration.Duration
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
 import scala.util.control.NonFatal
@@ -26,6 +27,10 @@ import akka.annotation.InternalApi
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
+import akka.serialization.SerializationExtension
+import akka.serialization.Serializers
+import akka.stream.scaladsl.Sink
+import akka.stream.scaladsl.Source
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.SdkBytes
@@ -60,6 +65,8 @@ import software.amazon.awssdk.services.dynamodb.model.Update
   import JournalDao._
 
   private val persistenceExt: Persistence = Persistence(system)
+  private val serialization = SerializationExtension(system)
+  private val fallbackStoreProvider = FallbackStoreProvider(system)
 
   private implicit val ec: ExecutionContext = system.executionContext
 
@@ -94,6 +101,163 @@ import software.amazon.awssdk.services.dynamodb.model.Update
   }
 
   def writeEvents(events: Seq[SerializedJournalItem]): Future[Done] = {
+    require(events.nonEmpty)
+
+    // it's always the same persistenceId for all events
+    val persistenceId = events.head.persistenceId
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val slice = persistenceExt.sliceForPersistenceId(persistenceId)
+
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+    val ttlEnabled = timeToLiveSettings.eventTimeToLive.exists(_ > Duration.Zero)
+
+    val estimatedTotalSize = events.foldLeft(0)(_ + _.estimatedDynamoSize(entityType, ttlEnabled))
+
+    if (settings.journalFallbackSettings.isEnabled && estimatedTotalSize > settings.journalFallbackSettings.threshold) {
+      val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.journalFallbackSettings.plugin)
+
+      def putItemAttributes(item: JournalItemWithBreadcrumb) = {
+        import JournalAttributes._
+        val attributes = new JHashMap[String, AttributeValue]
+        attributes.put(Pid, AttributeValue.fromS(persistenceId))
+        attributes.put(SeqNr, AttributeValue.fromN(item.seqNr.toString))
+        attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
+        val timestampMicros = InstantFactory.toEpochMicros(item.writeTimestamp)
+        attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
+        attributes.put(Writer, AttributeValue.fromS(item.writerUuid))
+
+        if (item.tags.nonEmpty) { // note: DynamoDB does not support empty sets
+          attributes.put(Tags, AttributeValue.fromSs(item.tags.toSeq.asJava))
+        }
+
+        item.metadata.foreach { meta =>
+          attributes.put(MetaSerId, AttributeValue.fromN(meta.serId.toString))
+          attributes.put(MetaSerManifest, AttributeValue.fromS(meta.serManifest))
+          attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
+        }
+
+        timeToLiveSettings.eventTimeToLive.foreach { timeToLive =>
+          val expiryTimestamp = item.writeTimestamp.plusSeconds(timeToLive.toSeconds)
+          attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
+        }
+
+        attributes.put(BreadcrumbSerId, AttributeValue.fromN(item.breadcrumbSerId.toString))
+        attributes.put(BreadcrumbSerManifest, AttributeValue.fromS(item.breadcrumbSerManifest))
+        attributes.put(BreadcrumbPayload, AttributeValue.fromB(SdkBytes.fromByteArray(item.breadcrumbPayload.get)))
+
+        attributes
+      }
+
+      implicit val mat: ActorSystem[_] = system
+
+      Source(events)
+        .mapAsync(settings.journalFallbackSettings.batchSize) { event =>
+          fallbackStore
+            .saveEvent(persistenceId, event.seqNr, event.serId, event.serManifest, event.payload.get)
+            .map(_ -> event)(ExecutionContext.parasitic)
+        }
+        .runWith(Sink.seq)
+        .flatMap { writtenEvents =>
+          // All have been saved to S3, so we can save the breadcrumbs
+          val withBreadcrumbs = writtenEvents.map { case (breadcrumb, evt) =>
+            val bytes = serialization.serialize(breadcrumb).get
+            val serializer = serialization.findSerializerFor(breadcrumb)
+            val manifest = Serializers.manifestFor(serializer, breadcrumb)
+
+            JournalItemWithBreadcrumb(
+              persistenceId = persistenceId,
+              seqNr = evt.seqNr,
+              writeTimestamp = evt.writeTimestamp,
+              readTimestamp = evt.readTimestamp,
+              writerUuid = evt.writerUuid,
+              tags = evt.tags,
+              metadata = evt.metadata,
+              breadcrumbSerId = serializer.identifier,
+              breadcrumbSerManifest = manifest,
+              breadcrumbPayload = Some(bytes))
+          }
+
+          val totalEvents = withBreadcrumbs.size
+
+          if (totalEvents == 1) {
+            val result = client
+              .putItem(
+                PutItemRequest
+                  .builder()
+                  .tableName(settings.journalTable)
+                  .item(putItemAttributes(withBreadcrumbs.head))
+                  .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+                  .build)
+              .asScala
+
+            if (log.isDebugEnabled) {
+              result.foreach { response =>
+                log.debug(
+                  "Wrote [{}] events with breadcrumbs for persistenceId [{}], consumed [{}] WCU",
+                  1,
+                  persistenceId,
+                  response.consumedCapacity.capacityUnits)
+              }
+            }
+
+            result.map { response =>
+              checkClockSkew(response)
+              Done
+            }(ExecutionContext.parasitic)
+          } else {
+            val writeItems = withBreadcrumbs.map { item =>
+              TransactWriteItem
+                .builder()
+                .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build)
+                .build
+            }.asJava
+
+            val token = {
+              val firstEvent = withBreadcrumbs.head
+              val uuid = UUID.fromString(firstEvent.writerUuid)
+              val seqNr = firstEvent.seqNr
+              val bb = ByteBuffer.allocate(24)
+              bb.asLongBuffer().put(uuid.getMostSignificantBits).put(uuid.getLeastSignificantBits).put(seqNr)
+
+              new String(base64Encoder.encode(bb.array))
+            }
+
+            val result = client
+              .transactWriteItems(
+                TransactWriteItemsRequest
+                  .builder()
+                  .clientRequestToken(token)
+                  .transactItems(writeItems)
+                  .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+                  .build)
+              .asScala
+
+            if (log.isDebugEnabled) {
+              result.foreach { response =>
+                log.debug(
+                  "Wrote [{}] events with breadcrumbs for persistenceId [{}], consumed [{}] WCU",
+                  totalEvents,
+                  persistenceId,
+                  response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue).sum)
+              }
+            }
+
+            result
+              .map { response =>
+                checkClockSkew(response)
+                Done
+              }(ExecutionContext.parasitic)
+              .recoverWith { case c: CompletionException =>
+                Future.failed(c.getCause)
+              }(ExecutionContext.parasitic)
+
+          }
+        }
+
+    } else doWriteEvents(events)
+  }
+
+  private def doWriteEvents(events: Seq[SerializedJournalItem]): Future[Done] = {
     require(events.nonEmpty)
 
     // it's always the same persistenceId for all events
@@ -210,7 +374,6 @@ import software.amazon.awssdk.services.dynamodb.model.Update
           Future.failed(c.getCause)
         }(ExecutionContext.parasitic)
     }
-
   }
 
   def readHighestSequenceNr(persistenceId: String): Future[Long] = {

@@ -18,6 +18,7 @@ object Dependencies {
     case Seq(major, minor, _*) => s"$major.$minor"
   }
   val AwsSdkVersion = "2.31.44"
+  val MinioVersion = "8.5.17"
   // Java Platform version for JavaDoc creation
   // sync with Java version in .github/workflows/publish.yml#documentation
   val JavaDocLinkVersion = 17
@@ -29,7 +30,7 @@ object Dependencies {
     val akkaPersistenceTyped = "com.typesafe.akka" %% "akka-persistence-typed" % AkkaVersion
     val akkaPersistenceQuery = "com.typesafe.akka" %% "akka-persistence-query" % AkkaVersion
     val dynamodbSdk = "software.amazon.awssdk" % "dynamodb" % AwsSdkVersion
-
+    val s3Sdk = "software.amazon.awssdk" % "s3" % AwsSdkVersion
   }
 
   object TestDeps {
@@ -45,6 +46,7 @@ object Dependencies {
     val scalaTest = "org.scalatest" %% "scalatest" % "3.2.19" % Test // ApacheV2
     val junit = "junit" % "junit" % "4.12" % Test // Eclipse Public License 1.0
     val junitInterface = "com.novocode" % "junit-interface" % "0.11" % Test // "BSD 2-Clause"
+    val minioSdk = "io.minio" % "minio" % MinioVersion % Test // ApacheV2
 
     val cloudwatchMetricPublisher = "software.amazon.awssdk" % "cloudwatch-metric-publisher" % AwsSdkVersion % Test
   }
@@ -61,6 +63,16 @@ object Dependencies {
     TestDeps.akkaJackson,
     TestDeps.akkaStreamTyped,
     TestDeps.logback,
+    TestDeps.scalaTest)
+
+  val s3Fallback = Seq(
+    akkaPersistence,
+    akkaPersistenceQuery,
+    s3Sdk,
+    TestDeps.akkaStreamTestkit,
+    TestDeps.akkaTestkit,
+    TestDeps.logback,
+    TestDeps.minioSdk,
     TestDeps.scalaTest)
 
   val docs = Seq(

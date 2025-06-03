@@ -125,6 +125,14 @@ lazy val core = (project in file("core"))
   .enablePlugins(AutomateHeaderPlugin)
   .disablePlugins(CiReleasePlugin)
 
+lazy val s3Fallback = (project in file("s3-fallback-store"))
+  .settings(common)
+  .settings(name := "akka-persistence-s3-fallback-store")
+  .settings(libraryDependencies ++= Dependencies.s3Fallback)
+  .dependsOn(core % "compile->compile;test->test")
+  .enablePlugins(AutomateHeaderPlugin)
+  .disablePlugins(CiReleasePlugin)
+
 lazy val docs = project
   .in(file("docs"))
   .enablePlugins(AkkaParadoxPlugin, ParadoxSitePlugin, PreprocessPlugin, PublishRsyncPlugin)
