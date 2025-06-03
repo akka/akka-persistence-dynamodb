@@ -37,7 +37,7 @@ class NoS3FallbackSpec extends AnyWordSpec with TestSuite with Matchers {
           .withFallback(ConfigFactory.defaultReference)
           .resolve
 
-      val system = ActorSystem[Nothing](Behaviors.empty, "test", config)
+      val system = ActorSystem[Nothing](Behaviors.empty[Nothing], "test", config)
       val settings = DynamoDBSettings(system)
       val clientSettings = ClientProvider(system).clientSettingsFor("akka.persistence.dynamodb.client")
 
@@ -45,7 +45,7 @@ class NoS3FallbackSpec extends AnyWordSpec with TestSuite with Matchers {
     }
 
     "not be returned if S3 fallback is not enabled" in {
-      val system = ActorSystem[Nothing](Behaviors.empty, "test")
+      val system = ActorSystem(Behaviors.empty, "test")
       val settings = DynamoDBSettings(system)
       val clientSettings = ClientProvider(system).clientSettingsFor("akka.persistence.dynamodb.client")
 
