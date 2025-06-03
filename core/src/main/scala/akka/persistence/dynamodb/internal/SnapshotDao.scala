@@ -160,6 +160,8 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
   def store(snapshot: SerializedSnapshotItem): Future[Unit] = {
     import SnapshotAttributes._
 
+    log.info("Persisting snapshot of {} bytes", snapshot.payload.length)
+
     if (s3Fallback.nonEmpty &&
       snapshot.payload.length > settings.s3FallbackSettings.threshold &&
       snapshot.serManifest != S3FallbackSerializer.BreadcrumbManifest) {

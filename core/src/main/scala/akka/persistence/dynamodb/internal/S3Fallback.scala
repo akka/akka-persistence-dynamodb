@@ -391,7 +391,6 @@ object S3FallbackSerializer {
   // OK to share this, even between ActorSystems in the same JVM
   private val cache = new ConcurrentHashMap[S3Breadcrumb, Array[Byte]]
   val BreadcrumbManifest = "akka.persistence.dynamodb.S3Breadcrumb"
-  val SnapshotManifest = "akka.persistence.dynamodb.SnapshotInS3"
   val Utf8 = StandardCharsets.UTF_8
 }
 
