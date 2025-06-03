@@ -435,10 +435,3 @@ class S3FallbackSerializer(system: ExtendedActorSystem) extends SerializerWithSt
 /** INTERNAL API */
 @InternalApi
 case class S3Breadcrumb(bucket: String)
-
-/** INTERNAL API */
-@InternalApi
-private[internal] case class SnapshotInS3(
-    payload: Array[Byte],
-    tags: Set[String],
-    metadata: Option[SerializedSnapshotMetadata])
