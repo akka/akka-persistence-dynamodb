@@ -10,6 +10,12 @@ It can be started with the docker-compose file in the docker folder:
 docker-compose -f docker/docker-compose.yml up --wait
 ```
 
+Or if not running tests of the S3 fallback functionality:
+
+```
+docker-compose -f docker/docker-compose-no-s3.yml up --wait
+```
+
 ## General Workflow
 
 This is the process for committing code into main.

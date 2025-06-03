@@ -65,8 +65,8 @@ final class EventSourcedCleanup(systemProvider: ClassicActorSystemProvider, conf
   private val settings = DynamoDBSettings(system.settings.config.getConfig(sharedConfigPath))
 
   private val client = ClientProvider(system).clientFor(sharedConfigPath + ".client")
-  private val journalDao = new JournalDao(system, settings, client)
-  private val snapshotDao = new SnapshotDao(system, settings, client)
+  private val journalDao = new JournalDao(system, settings, client, None) // FIXME: support cleaning up S3 events
+  private val snapshotDao = new SnapshotDao(system, settings, client, None) // FIXME: support cleaning up S3 snapshots
 
   /**
    * Delete all events before a sequenceNr for the given persistence id. Snapshots are not deleted.

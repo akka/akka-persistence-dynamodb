@@ -40,6 +40,8 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
 import software.amazon.awssdk.services.dynamodb.model.Update
+import akka.serialization.SerializationExtension
+import akka.serialization.Serializers
 
 /**
  * INTERNAL API
@@ -56,7 +58,8 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 @InternalApi private[akka] class JournalDao(
     system: ActorSystem[_],
     settings: DynamoDBSettings,
-    client: DynamoDbAsyncClient) {
+    client: DynamoDbAsyncClient,
+    s3Fallback: Option[S3Fallback]) {
   import JournalDao._
 
   private val persistenceExt: Persistence = Persistence(system)
@@ -134,83 +137,113 @@ import software.amazon.awssdk.services.dynamodb.model.Update
       attributes
     }
 
-    val totalEvents = events.size
-    if (totalEvents == 1) {
-      val req = PutItemRequest
-        .builder()
-        .tableName(settings.journalTable)
-        .item(putItemAttributes(events.head))
-        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-        .build()
-      val result = client.putItem(req).asScala
+    val totalSize = events.iterator.map(_.payload.fold(0)(_.size)).sum
 
-      if (log.isDebugEnabled()) {
-        result.foreach { response =>
-          log.debug(
-            "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
-            1,
-            persistenceId,
-            response.consumedCapacity.capacityUnits)
-        }
+    if (s3Fallback.nonEmpty &&
+      totalSize > settings.s3FallbackSettings.threshold &&
+      events.forall(_.serManifest != S3FallbackSerializer.BreadcrumbManifest)) {
+
+      val FutureDone = Future.successful[Done](Done)
+      val batchedWrites = events.grouped(settings.s3FallbackSettings.eventBatchSize).map { batch =>
+        Future.sequence(batch.map(s3Fallback.get.saveEvent)).map(_.head)(ExecutionContext.parasitic)
       }
-      result
-        .map { response =>
-          checkClockSkew(response)
-          Done
-        }(ExecutionContext.parasitic)
-        .recoverWith { case c: CompletionException =>
-          Future.failed(c.getCause)
-        }(ExecutionContext.parasitic)
+
+      batchedWrites
+        .foldLeft(FutureDone) { (overall, fut) => overall.flatMap(_ => fut)(ExecutionContext.parasitic) }
+        .flatMap { _ =>
+          // All have been saved to S3, so we can save breadcrumbs
+          val breadcrumb = S3Breadcrumb(settings.s3FallbackSettings.eventsBucket)
+          val serialization = SerializationExtension(system)
+
+          val bytes = serialization.serialize(breadcrumb).get
+          val serializer = serialization.findSerializerFor(breadcrumb)
+          val manifest = Serializers.manifestFor(serializer, breadcrumb)
+
+          val withBreadcrumbs = events.map { evt =>
+            evt.copy(serId = serializer.identifier, serManifest = manifest, payload = Some(bytes))
+          }
+
+          writeEvents(withBreadcrumbs)
+        }
     } else {
-      val writeItems =
-        events.map { item =>
-          TransactWriteItem
-            .builder()
-            .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build())
-            .build()
-        }.asJava
+      val totalEvents = events.size
+      if (totalEvents == 1) {
+        val req = PutItemRequest
+          .builder()
+          .tableName(settings.journalTable)
+          .item(putItemAttributes(events.head))
+          .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+          .build()
+        val result = client.putItem(req).asScala
 
-      val token = {
-        val firstEvent = events.head
-        val uuid = UUID.fromString(firstEvent.writerUuid)
-        val seqNr = firstEvent.seqNr
-        val bb = ByteBuffer.allocate(24)
-        bb.asLongBuffer()
-          .put(uuid.getMostSignificantBits)
-          .put(uuid.getLeastSignificantBits)
-          .put(seqNr)
-
-        new String(base64Encoder.encode(bb.array))
-      }
-
-      val req = TransactWriteItemsRequest
-        .builder()
-        .clientRequestToken(token)
-        .transactItems(writeItems)
-        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-        .build()
-
-      val result = client.transactWriteItems(req).asScala
-
-      if (log.isDebugEnabled()) {
-        result.foreach { response =>
-          log.debug(
-            "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
-            events.size,
-            persistenceId,
-            response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
+        if (log.isDebugEnabled()) {
+          result.foreach { response =>
+            log.debug(
+              "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
+              1,
+              persistenceId,
+              response.consumedCapacity.capacityUnits)
+          }
         }
-      }
-      result
-        .map { response =>
-          checkClockSkew(response)
-          Done
-        }(ExecutionContext.parasitic)
-        .recoverWith { case c: CompletionException =>
-          Future.failed(c.getCause)
-        }(ExecutionContext.parasitic)
-    }
+        result
+          .map { response =>
+            checkClockSkew(response)
+            Done
+          }(ExecutionContext.parasitic)
+          .recoverWith { case c: CompletionException =>
+            Future.failed(c.getCause)
+          }(ExecutionContext.parasitic)
+      } else {
+        val writeItems =
+          events.map { item =>
+            TransactWriteItem
+              .builder()
+              .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build())
+              .build()
+          }.asJava
 
+        val token = {
+          val firstEvent = events.head
+          val uuid = UUID.fromString(firstEvent.writerUuid)
+          val seqNr = firstEvent.seqNr
+          val bb = ByteBuffer.allocate(24)
+          bb.asLongBuffer()
+            .put(uuid.getMostSignificantBits)
+            .put(uuid.getLeastSignificantBits)
+            .put(seqNr)
+
+          new String(base64Encoder.encode(bb.array))
+        }
+
+        val req = TransactWriteItemsRequest
+          .builder()
+          .clientRequestToken(token)
+          .transactItems(writeItems)
+          .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+          .build()
+
+        val result = client.transactWriteItems(req).asScala
+
+        if (log.isDebugEnabled()) {
+          result.foreach { response =>
+            log.debug(
+              "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
+              events.size,
+              persistenceId,
+              response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
+          }
+        }
+        result
+          .map { response =>
+            checkClockSkew(response)
+            Done
+          }(ExecutionContext.parasitic)
+          .recoverWith { case c: CompletionException =>
+            Future.failed(c.getCause)
+          }(ExecutionContext.parasitic)
+      }
+
+    }
   }
 
   def readHighestSequenceNr(persistenceId: String): Future[Long] = {

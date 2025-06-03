@@ -16,6 +16,7 @@ import com.typesafe.config.Config
 import com.typesafe.config.ConfigObject
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.retry.RetryMode
+import java.util.Objects
 
 object DynamoDBSettings {
 
@@ -61,6 +62,28 @@ object DynamoDBSettings {
 
     val clockSkewSettings = new ClockSkewSettings(config)
 
+    val s3FallbackSettings = {
+      val cfg = config.getConfig("fallback-to-s3")
+      val enabled = cfg.getBoolean("enabled")
+      val threshold = java.lang.Long.min(400 * 1000, cfg.getBytes("threshold")).toInt
+      val eventsBucket = cfg.getString("events-bucket")
+      val snapshotsBucket = cfg.getString("snapshots-bucket")
+      val eventBatchSize = cfg.getInt("event-batch-size")
+
+      val minioLocalSettings = {
+        val localCfg = cfg.getConfig("minio-local")
+        val enabled = localCfg.getBoolean("enabled")
+        val host = localCfg.getString("host")
+        val port = localCfg.getInt("port")
+        val accessKey = localCfg.getString("access-key")
+        val secretKey = localCfg.getString("secret-key")
+
+        new MinioLocalSettings(enabled, host, port, accessKey, secretKey)
+      }
+
+      new S3FallbackSettings(enabled, threshold, eventsBucket, snapshotsBucket, eventBatchSize, minioLocalSettings)
+    }
+
     new DynamoDBSettings(
       journalTable,
       journalPublishEvents,
@@ -70,7 +93,8 @@ object DynamoDBSettings {
       timeToLiveSettings,
       journalBySliceGsi,
       snapshotBySliceGsi,
-      clockSkewSettings)
+      clockSkewSettings,
+      s3FallbackSettings)
   }
 
   /**
@@ -93,7 +117,15 @@ final class DynamoDBSettings private (
     val timeToLiveSettings: TimeToLiveSettings,
     val journalBySliceGsi: String,
     val snapshotBySliceGsi: String,
-    val clockSkewSettings: ClockSkewSettings)
+    val clockSkewSettings: ClockSkewSettings,
+    val s3FallbackSettings: S3FallbackSettings) {
+  override def toString: String =
+    s"DynamoDBSettings(journalTable=$journalTable, journalPublishEvents=$journalPublishEvents, " +
+    s"snapshotTable=$snapshotTable, querySettings=$querySettings, cleanupSettings=$cleanupSettings, " +
+    s"timeToLiveSettings=$timeToLiveSettings, journalBySliceGsi=$journalBySliceGsi, " +
+    s"snapshotBySliceGsi=$snapshotBySliceGsi, clockSkewSettings=$clockSkewSettings, " +
+    s"s3FallbackSettings=$s3FallbackSettings)"
+}
 
 final class QuerySettings(config: Config) {
   val refreshInterval: FiniteDuration = config.getDuration("refresh-interval").toScala
@@ -318,6 +350,52 @@ final class ClockSkewSettings(config: Config) {
   }
 
   override def toString: String = s"ClockSkewSettings($warningTolerance)"
+}
+
+final class S3FallbackSettings(
+    val enabled: Boolean,
+    val threshold: Int,
+    val eventsBucket: String,
+    val snapshotsBucket: String,
+    val eventBatchSize: Int,
+    val minioLocal: MinioLocalSettings) {
+  require(threshold > 0, "threshold must be positive")
+  require(threshold <= (400 * 1000), "threshold must be at most 400 KB") // close enough...
+  require(!enabled || eventsBucket.nonEmpty, "if enabled, eventsBucket must not be empty")
+  require(!enabled || snapshotsBucket.nonEmpty, "if enabled, snapshotBucket must not be empty")
+  require(!enabled || eventBatchSize > 0, "if enabled, eventBatchSize must be positive")
+
+  override def toString: String =
+    if (enabled)
+      s"S3FallbackSettings(threshold=${threshold}B, eventsBucket=$eventsBucket, snapshotsBucket=$snapshotsBucket, minioLocal=$minioLocal)"
+    else "disabled"
+}
+
+final class MinioLocalSettings(
+    val enabled: Boolean,
+    val host: String,
+    val port: Int,
+    val accessKey: String,
+    val secretKey: String) {
+  override def toString: String =
+    if (enabled) s"MinioLocalSettings(host=$host, port=$port)" else "disabled"
+
+  override def equals(other: Any): Boolean =
+    other match {
+      case o: MinioLocalSettings =>
+        (!enabled && !o.enabled) || // Treat any disabled as equal
+          (enabled == o.enabled) &&
+          (host == o.host) &&
+          (port == o.port) &&
+          (accessKey == o.accessKey) &&
+          (secretKey == o.secretKey)
+
+      case _ => false
+    }
+
+  override def hashCode: Int =
+    if (!enabled) 0
+    else Objects.hash(host, port, accessKey, secretKey)
 }
 
 private[akka] object ConfigHelpers {
