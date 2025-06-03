@@ -126,8 +126,8 @@ private[internal] class RealS3Fallback(
 
         val metadata = response.metadata.asScala
 
-        val serId = metadata.get("akkaSerId")
-        val serManifest = metadata.get("akkaSerManifest")
+        val serId = metadata.get("akka-ser-id")
+        val serManifest = metadata.get("akka-ser-manifest")
 
         val attrs = Iterator(serId, serManifest).flatten.toIndexedSeq
 
@@ -152,10 +152,10 @@ private[internal] class RealS3Fallback(
           .bucket(settings.eventsBucket)
           .key(key)
           .metadata(Map(
-            "akkaTimestamp" -> item.writeTimestamp.toString, // really here for observation/debugging/analysis
-            "akkaSerId" -> item.serId.toString,
-            "akkaSerManifest" -> item.serManifest,
-            "akkaWriterUuid" -> item.writerUuid).asJava) // really here for observation/debugging/analysis
+            "akka-timestamp" -> item.writeTimestamp.toString, // really here for observation/debugging/analysis
+            "akka-ser-id" -> item.serId.toString,
+            "akka-ser-manifest" -> item.serManifest,
+            "akka-writer-uuid" -> item.writerUuid).asJava) // really here for observation/debugging/analysis
           .contentType("application/octet-stream")
           .build()
 
@@ -182,18 +182,18 @@ private[internal] class RealS3Fallback(
 
         val metadata = response.metadata.asScala
 
-        val seqNr = metadata.get("akkaEntitySeqNr")
-        val writeTimestamp = metadata.get("akkaWriteTimestamp")
-        val serId = metadata.get("akkaSerId")
-        val serManifest = metadata.get("akkaSerManifest")
-        val eventTimestamp = metadata.get("akkaEventTimestamp")
+        val seqNr = metadata.get("akka-entity-seq-nr")
+        val writeTimestamp = metadata.get("akka-write-timestamp")
+        val serId = metadata.get("akka-ser-id")
+        val serManifest = metadata.get("akka-ser-manifest")
+        val eventTimestamp = metadata.get("akka-event-timestamp")
 
         val baseAttrs = Iterator(seqNr, writeTimestamp, serId, serManifest, eventTimestamp).flatten.toIndexedSeq
 
         if (baseAttrs.size == 5) {
-          val metaSerId = metadata.get("akkaMetaSerId")
-          val metaSerManifest = metadata.get("akkaMetaSerManifest")
-          val metaPayload = metadata.get("akkaMetaPayload")
+          val metaSerId = metadata.get("akka-meta-ser-id")
+          val metaSerManifest = metadata.get("akka-meta-ser-manifest")
+          val metaPayload = metadata.get("akka-meta-payload")
 
           val metaAttrs = Iterator(metaSerId, metaSerManifest, metaPayload).flatten.toIndexedSeq
 
@@ -255,21 +255,21 @@ private[internal] class RealS3Fallback(
 
   def s3MetadataFor(item: SerializedSnapshotItem): Map[String, String] = {
     val baseMap = Map(
-      "akkaEntitySeqNr" -> item.seqNr.toString,
-      "akkaWriteTimestamp" -> item.writeTimestamp.toString,
-      "akkaEventTimestamp" -> item.eventTimestamp.toString,
-      "akkaSerId" -> item.serId.toString,
-      "akkaSerManifest" -> item.serManifest.toString)
+      "akka-entity-seq-nr" -> item.seqNr.toString,
+      "akka-write-timestamp" -> item.writeTimestamp.toString,
+      "akka-event-timestamp" -> item.eventTimestamp.toString,
+      "akka-ser-id" -> item.serId.toString,
+      "akka-ser-manifest" -> item.serManifest.toString)
 
     val withAkkaMeta = item.metadata.fold(baseMap) { m =>
       baseMap ++ Map(
-        "akkaMetaSerId" -> m.serId.toString,
-        "akkaMetaSerManifest" -> m.serManifest,
-        "akkaMetaPayload" -> Base62.encode(m.payload))
+        "akka-meta-ser-id" -> m.serId.toString,
+        "akka-meta-ser-manifest" -> m.serManifest,
+        "akka-meta-payload" -> Base62.encode(m.payload))
     }
 
     val sortedTags = item.tags.toSeq.sorted.iterator.zipWithIndex.map { case (tag, idx) =>
-      s"akkaTag-$idx" -> tag
+      s"akka-tag-$idx" -> tag
     }
 
     withAkkaMeta ++ sortedTags
