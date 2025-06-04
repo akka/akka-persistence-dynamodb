@@ -11,7 +11,7 @@ import org.scalatest.Suite
 trait TestDbAndS3Lifecycle extends TestDbLifecycle { this: Suite =>
   lazy val localS3 = settings.s3FallbackSettings.minioLocal.enabled
 
-  lazy val _minioClient: MinioAsyncClient =
+  lazy val minioClient: MinioAsyncClient =
     MinioAsyncClient
       .builder()
       .endpoint("http://localhost:9000")
@@ -22,7 +22,7 @@ trait TestDbAndS3Lifecycle extends TestDbLifecycle { this: Suite =>
     super.beforeAll()
 
     if (localS3) {
-      MinioInteraction.createBuckets(typedSystem.settings.config)(_minioClient)
+      MinioInteraction.createBuckets(typedSystem.settings.config)(minioClient)
     }
   }
 
@@ -30,7 +30,7 @@ trait TestDbAndS3Lifecycle extends TestDbLifecycle { this: Suite =>
     super.afterAll()
 
     if (localS3) {
-      MinioInteraction.deleteBuckets(typedSystem.settings.config)(_minioClient)
+      MinioInteraction.deleteBuckets(typedSystem.settings.config)(minioClient)
     }
   }
 }

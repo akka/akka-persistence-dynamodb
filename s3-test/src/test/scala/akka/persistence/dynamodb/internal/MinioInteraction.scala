@@ -23,8 +23,8 @@ object MinioInteraction {
   val FutureDone = Future.successful(Done)
 
   def createBuckets(config: Config)(implicit minioClient: MinioAsyncClient): Future[Done] = {
-    val eventsBucket = config.getString("akka.persistence.dynamodb.events-bucket")
-    val snapshotsBucket = config.getString("akka.persistence.dynamodb.snapshots-bucket")
+    val eventsBucket = config.getString("akka.persistence.dynamodb.fallback-to-s3.events-bucket")
+    val snapshotsBucket = config.getString("akka.persistence.dynamodb.fallback-to-s3.snapshots-bucket")
 
     Seq(eventsBucket, snapshotsBucket).foldLeft(FutureDone) { (fut, bucket) =>
       fut.flatMap { _ =>
@@ -35,7 +35,6 @@ object MinioInteraction {
           .flatMap { exists =>
             if (exists) FutureDone
             else {
-              println(s"Making bucket $bucket")
               val args = MakeBucketArgs.builder().bucket(bucket).build()
               minioClient.makeBucket(args).asScala.map(_ => Done)(ExecutionContext.parasitic)
             }
@@ -45,35 +44,38 @@ object MinioInteraction {
   }
 
   def deleteBuckets(config: Config)(implicit minioClient: MinioAsyncClient): Future[Done] = {
-    val eventsBucket = config.getString("akka.persistence.dynamodb.events-bucket")
-    val snapshotsBucket = config.getString("akka.persistence.dynamodb.snapshots-bucket")
+    val eventsBucket = config.getString("akka.persistence.dynamodb.fallback-to-s3.events-bucket")
+    val snapshotsBucket = config.getString("akka.persistence.dynamodb.fallback-to-s3.snapshots-bucket")
 
     Seq(eventsBucket, snapshotsBucket).foldLeft(FutureDone) { (fut, bucket) =>
-      fut.flatMap { _ =>
-        minioClient
-          .listObjects(ListObjectsArgs.builder.bucket(bucket).build())
-          .iterator
-          .asScala
-          .foldLeft(FutureDone) { (fut, result) =>
-            fut.flatMap { _ =>
-              try {
-                val item = result.get
-                minioClient
-                  .removeObject(RemoveObjectArgs.builder.bucket(bucket).`object`(item.objectName).build())
-                  .asScala
-                  .map(_ => Done)(ExecutionContext.parasitic)
-              } catch {
-                case NonFatal(ex) => Future.failed(ex)
-              }
+      fut
+        .flatMap { _ =>
+          minioClient
+            .listObjects(ListObjectsArgs.builder.bucket(bucket).build())
+            .iterator
+            .asScala
+            .foldLeft(FutureDone) { (fut, result) =>
+              fut.flatMap { _ =>
+                try {
+                  val item = result.get
+                  minioClient
+                    .removeObject(RemoveObjectArgs.builder.bucket(bucket).`object`(item.objectName).build())
+                    .asScala
+                    .map { _ =>
+                      Done
+                    }(ExecutionContext.parasitic)
+                } catch {
+                  case NonFatal(ex) => Future.failed(ex)
+                }
+              }(ExecutionContext.parasitic)
+            }
+            .flatMap { _ =>
+              minioClient
+                .removeBucket(RemoveBucketArgs.builder.bucket(bucket).build())
+                .asScala
+                .map(_ => Done)(ExecutionContext.parasitic)
             }(ExecutionContext.parasitic)
-          }
-          .flatMap { _ =>
-            minioClient
-              .removeBucket(RemoveBucketArgs.builder.bucket(bucket).build())
-              .asScala
-              .map(_ => Done)(ExecutionContext.parasitic)
-          }(ExecutionContext.parasitic)
-      }(ExecutionContext.parasitic)
+        }(ExecutionContext.parasitic)
     }
   }
 }
