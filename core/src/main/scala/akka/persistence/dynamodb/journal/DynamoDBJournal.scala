@@ -26,6 +26,7 @@ import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.dynamodb.internal.JournalDao
 import akka.persistence.dynamodb.internal.PubSub
+import akka.persistence.dynamodb.internal.S3Fallback
 import akka.persistence.dynamodb.internal.SerializedEventMetadata
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
@@ -93,8 +94,10 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
   private val settings = DynamoDBSettings(context.system.settings.config.getConfig(sharedConfigPath))
   log.debug("DynamoDB journal starting up")
 
+  private val clientSettings = ClientProvider(system).clientSettingsFor(sharedConfigPath + ".client")
   private val client = ClientProvider(system).clientFor(sharedConfigPath + ".client")
-  private val journalDao = new JournalDao(system, settings, client)
+  private val s3Fallback = S3Fallback(settings, clientSettings, system)
+  private val journalDao = new JournalDao(system, settings, client, s3Fallback)
 
   private val query = PersistenceQuery(system).readJournalFor[DynamoDBReadJournal](sharedConfigPath + ".query")
 

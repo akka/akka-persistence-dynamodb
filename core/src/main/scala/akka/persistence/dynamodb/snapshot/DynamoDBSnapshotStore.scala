@@ -17,6 +17,7 @@ import akka.persistence.SnapshotMetadata
 import akka.persistence.SnapshotSelectionCriteria
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.QueryDao
+import akka.persistence.dynamodb.internal.S3Fallback
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.internal.SerializedSnapshotItem
 import akka.persistence.dynamodb.internal.SerializedSnapshotMetadata
@@ -62,9 +63,11 @@ private[dynamodb] final class DynamoDBSnapshotStore(cfg: Config, cfgPath: String
   private val settings = DynamoDBSettings(context.system.settings.config.getConfig(sharedConfigPath))
   log.debug("DynamoDB snapshot store starting up")
 
+  private val clientSettings = ClientProvider(system).clientSettingsFor(sharedConfigPath + ".client")
   private val client = ClientProvider(system).clientFor(sharedConfigPath + ".client")
-  private val snapshotDao = new SnapshotDao(system, settings, client)
-  private val queryDao = new QueryDao(system, settings, client)
+  private val s3Fallback = S3Fallback(settings, clientSettings, system)
+  private val snapshotDao = new SnapshotDao(system, settings, client, s3Fallback)
+  private val queryDao = new QueryDao(system, settings, client, s3Fallback)
 
   def loadAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Option[SelectedSnapshot]] = {
     snapshotDao

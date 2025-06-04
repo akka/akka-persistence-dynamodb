@@ -25,6 +25,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse
+import akka.serialization.SerializationExtension
 
 /**
  * INTERNAL API
@@ -32,7 +33,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
 @InternalApi private[akka] class QueryDao(
     system: ActorSystem[_],
     settings: DynamoDBSettings,
-    client: DynamoDbAsyncClient)
+    client: DynamoDbAsyncClient,
+    s3Fallback: Option[S3Fallback])
     extends BySliceQuery.Dao[SerializedJournalItem] {
   import system.executionContext
 
@@ -142,6 +144,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
             }
           }
         }
+        .mapAsync(settings.s3FallbackSettings.eventBatchSize)(followBreadcrumb)
         .mapError { case c: CompletionException =>
           c.getCause
         }
@@ -253,6 +256,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
             createSerializedJournalItem(item, includePayload = true)
           }
         }
+        .mapAsync(settings.s3FallbackSettings.eventBatchSize)(followBreadcrumb)
         .mapError { case c: CompletionException =>
           c.getCause
         }
@@ -333,6 +337,20 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
   }
 
   def loadEvent(persistenceId: String, seqNr: Long, includePayload: Boolean): Future[Option[SerializedJournalItem]] = {
+    val queryResult = queryForEvent(persistenceId, seqNr, includePayload)
+
+    queryResult.flatMap { maybeItem =>
+      maybeItem match {
+        case None       => queryResult
+        case Some(item) => followBreadcrumb(item).map(Some.apply)(ExecutionContext.parasitic)
+      }
+    }(ExecutionContext.parasitic)
+  }
+
+  private def queryForEvent(
+      persistenceId: String,
+      seqNr: Long,
+      includePayload: Boolean): Future[Option[SerializedJournalItem]] = {
     import JournalAttributes._
     val attributeValues =
       Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString))
@@ -370,17 +388,71 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
     client
       .query(req)
       .asScala
-      .map { response =>
+      .flatMap { response =>
         val items = response.items()
         if (items.isEmpty)
-          None
-        else
-          Some(createSerializedJournalItem(items.get(0), includePayload))
+          Future.successful(None)
+        else {
+          Future.successful(Some(createSerializedJournalItem(items.get(0), includePayload)))
+        }
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
       }(ExecutionContext.parasitic)
-
   }
 
+  private def followBreadcrumb(evt: SerializedJournalItem): Future[SerializedJournalItem] =
+    if (s3Fallback.nonEmpty && evt.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
+      deserializeBreadcrumb(evt).flatMap { bucket =>
+        s3Fallback.get
+          .loadEvent(evt.persistenceId, evt.seqNr, bucket, evt.payload.isDefined)
+          .flatMap { maybeFromS3 =>
+            // Unlike with a snapshot, we know that we're getting the event with a specific sequence number
+            maybeFromS3 match {
+              case Some(fromS3) =>
+                Future.successful(
+                  evt.copy(payload = fromS3.payload, serId = fromS3.serId, serManifest = fromS3.serManifest))
+
+              case None =>
+                val msg =
+                  s"Failed to retrieve event from S3 for persistenceId=[${evt.persistenceId}], seqNr=[${evt.seqNr}]"
+                logging.error(msg)
+                Future.failed(new NoSuchElementException(msg))
+            }
+          }(ExecutionContext.parasitic)
+      }
+    } else Future.successful(evt)
+
+  protected def deserializeBreadcrumb(breadcrumbItem: SerializedJournalItem): Future[String] =
+    breadcrumbItem.payload match {
+      case None =>
+        // We don't want the ultimate event payload, but we need to deserialize the breadcrumb in order to fill in the manifest etc.
+        queryForEvent(breadcrumbItem.persistenceId, breadcrumbItem.seqNr, true).flatMap { reloadedOpt =>
+          reloadedOpt match {
+            case None =>
+              Future.failed(new IllegalStateException(
+                s"Event for persistence ID [${breadcrumbItem.persistenceId}] at seqNr [${breadcrumbItem.seqNr}] disappeared"))
+            case Some(reloaded) =>
+              if (reloaded.serManifest != S3FallbackSerializer.BreadcrumbManifest)
+                Future.failed(new IllegalStateException(
+                  s"Event for persistence ID [${breadcrumbItem.persistenceId}] at seqNr [${breadcrumbItem.seqNr}] had unexpected manifest change"))
+              else deserializeBreadcrumb(reloaded)
+          }
+        }(ExecutionContext.parasitic)
+
+      case Some(payload) =>
+        Future {
+          val serialization = SerializationExtension(system)
+
+          serialization.deserialize(payload, breadcrumbItem.serId, breadcrumbItem.serManifest).get match {
+            case S3Breadcrumb(bucket) => bucket
+            case o =>
+              val msg =
+                "Tried to decode apparent S3Breadcrumb (event) that wasn't " +
+                s"(persistence ID [${breadcrumbItem.persistenceId}], seqNr [${breadcrumbItem.seqNr}])"
+              logging.error(msg)
+              throw new RuntimeException(msg)
+          }
+        }
+    }
 }
