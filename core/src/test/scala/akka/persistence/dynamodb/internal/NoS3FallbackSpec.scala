@@ -53,10 +53,15 @@ class NoS3FallbackSpec extends AnyWordSpec with TestSuite with Matchers {
     }
 
     "fail to load event" in {
-      val result = NoS3Fallback.loadEvent("pid", 42, "somebucket")
+      val result = NoS3Fallback.loadEvent("pid", 42, "somebucket", true)
       result.value shouldNot be(empty)
       result.value.get shouldBe a[Failure[_]]
       result.value.get.failed.get.getMessage shouldBe "S3 Client not on classpath"
+
+      val result2 = NoS3Fallback.loadEvent("pid", 42, "somebucket", false)
+      result2.value shouldNot be(empty)
+      result2.value.get shouldBe a[Failure[_]]
+      result2.value.get.failed.get.getMessage shouldBe "S3 Client not on classpath"
     }
 
     "fail to save event" in {

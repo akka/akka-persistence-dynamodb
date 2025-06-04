@@ -44,11 +44,16 @@ import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest
 
 /** INTERNAL API */
 @InternalApi
 private[internal] trait S3Fallback {
-  def loadEvent(persistenceId: String, seqNr: Long, bucket: String): Future[Option[S3Fallback.EventFromS3]]
+  def loadEvent(
+      persistenceId: String,
+      seqNr: Long,
+      bucket: String,
+      includePayload: Boolean): Future[Option[S3Fallback.EventFromS3]]
   def saveEvent(item: SerializedJournalItem): Future[Done]
   def loadSnapshot(persistenceId: String, bucket: String): Future[Option[S3Fallback.SnapshotFromS3]]
   def saveSnapshot(item: SerializedSnapshotItem): Future[Done]
@@ -87,13 +92,17 @@ private[dynamodb] object S3Fallback {
   // The event lacks the seqNr and timestamp because those are stored with the breadcrumb in DDB:
   // since the read journal asks for an event for a particular persistenceId and seqNr it can rely
   // on those
-  case class EventFromS3(payload: Array[Byte], serId: Int, serManifest: String)
+  case class EventFromS3(payload: Option[Array[Byte]], serId: Int, serManifest: String)
 }
 
 /** INTERNAL API */
 @InternalApi
 private[internal] object NoS3Fallback extends S3Fallback {
-  def loadEvent(persistenceId: String, seqNr: Long, bucket: String): Future[Option[S3Fallback.EventFromS3]] =
+  def loadEvent(
+      persistenceId: String,
+      seqNr: Long,
+      bucket: String,
+      includePayload: Boolean): Future[Option[S3Fallback.EventFromS3]] =
     noS3ClientOnClasspath
   def saveEvent(item: SerializedJournalItem): Future[Done] = noS3ClientOnClasspath
   def loadSnapshot(persistenceId: String, bucket: String): Future[Option[S3Fallback.SnapshotFromS3]] =
@@ -110,36 +119,55 @@ private[internal] class RealS3Fallback(
     clientSettings: ClientSettings,
     system: ActorSystem[_])
     extends S3Fallback {
-  def loadEvent(pid: String, seqNr: Long, bucket: String): Future[Option[S3Fallback.EventFromS3]] = {
+  def loadEvent(
+      pid: String,
+      seqNr: Long,
+      bucket: String,
+      includePayload: Boolean): Future[Option[S3Fallback.EventFromS3]] = {
     val eventFolder = seqNr / eventsPerFolder
     val key = s"${keyForPid(pid)}/$eventFolder/$seqNr"
 
-    val req = GetObjectRequest.builder.bucket(bucket).key(key).build()
+    if (includePayload) {
+      val req = GetObjectRequest.builder.bucket(bucket).key(key).build()
 
-    client
-      .getObject(req, AsyncResponseTransformer.toBytes[GetObjectResponse])
-      .asScala
-      .flatMap { respBytes =>
-        val response = respBytes.response
-        // AWS SDK constructs the byte array and promises not to modify
-        val bytes = respBytes.asByteArrayUnsafe
+      client
+        .getObject(req, AsyncResponseTransformer.toBytes[GetObjectResponse])
+        .asScala
+        .flatMap { respBytes =>
+          val response = respBytes.response
+          // AWS SDK constructs the byte array and promises not to modify
+          val bytes = respBytes.asByteArrayUnsafe
 
-        val metadata = response.metadata.asScala
+          val metadata = response.metadata.asScala.toMap
 
-        val serId = metadata.get("akka-ser-id")
-        val serManifest = metadata.get("akka-ser-manifest")
+          eventFromS3(Some(bytes), metadata)
+        }(system.executionContext)
+        .recover { case _: NoSuchKeyException | _: NoSuchBucketException =>
+          None
+        }(ExecutionContext.parasitic)
+    } else {
+      client
+        .headObject(HeadObjectRequest.builder.bucket(bucket).key(key).build)
+        .asScala
+        .flatMap { response =>
+          eventFromS3(None, response.metadata.asScala.toMap)
+        }(system.executionContext)
+    }
+  }
 
-        val attrs = Iterator(serId, serManifest).flatten.toIndexedSeq
+  private def eventFromS3(
+      bytesOpt: Option[Array[Byte]],
+      metadata: Map[String, String]): Future[Option[S3Fallback.EventFromS3]] = {
+    val serId = metadata.get("akka-ser-id")
+    val serManifest = metadata.get("akka-ser-manifest")
 
-        if (attrs.size == 2) {
-          Future.successful(Some(S3Fallback.EventFromS3(bytes, attrs(0).toInt, attrs(1))))
-        } else {
-          Future.failed(new IllegalStateException("No Akka event metadata found"))
-        }
-      }(system.executionContext)
-      .recover { case _: NoSuchKeyException | _: NoSuchBucketException =>
-        None
-      }(ExecutionContext.parasitic)
+    val attrs = Iterator(serId, serManifest).flatten.toIndexedSeq
+
+    if (attrs.size == 2) {
+      Future.successful(Some(S3Fallback.EventFromS3(bytesOpt, attrs(0).toInt, attrs(1))))
+    } else {
+      Future.failed(new IllegalStateException("No Akka event metadata found"))
+    }
   }
 
   def saveEvent(item: SerializedJournalItem): Future[Done] = {

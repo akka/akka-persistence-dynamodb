@@ -337,6 +337,20 @@ import akka.serialization.SerializationExtension
   }
 
   def loadEvent(persistenceId: String, seqNr: Long, includePayload: Boolean): Future[Option[SerializedJournalItem]] = {
+    val queryResult = queryForEvent(persistenceId, seqNr, includePayload)
+
+    queryResult.flatMap { maybeItem =>
+      maybeItem match {
+        case None       => queryResult
+        case Some(item) => followBreadcrumb(item).map(Some.apply)(ExecutionContext.parasitic)
+      }
+    }(ExecutionContext.parasitic)
+  }
+
+  private def queryForEvent(
+      persistenceId: String,
+      seqNr: Long,
+      includePayload: Boolean): Future[Option[SerializedJournalItem]] = {
     import JournalAttributes._
     val attributeValues =
       Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString))
@@ -378,39 +392,26 @@ import akka.serialization.SerializationExtension
         val items = response.items()
         if (items.isEmpty)
           Future.successful(None)
-        else
-          followBreadcrumb(createSerializedJournalItem(items.get(0), includePayload))
-            .map(Some.apply)(ExecutionContext.parasitic)
+        else {
+          Future.successful(Some(createSerializedJournalItem(items.get(0), includePayload)))
+        }
       }
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
       }(ExecutionContext.parasitic)
-
   }
 
   private def followBreadcrumb(evt: SerializedJournalItem): Future[SerializedJournalItem] =
-    if (s3Fallback.nonEmpty && evt.payload.nonEmpty && evt.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
-      Future {
-        val serialization = SerializationExtension(system)
-
-        serialization.deserialize(evt.payload.get, evt.serId, evt.serManifest).get match {
-          case S3Breadcrumb(bucket) => bucket
-          case o =>
-            val msg =
-              "Tried to decode apparent S3Breadcrumb (event) that wasn't " +
-              s"(persistence ID [${evt.persistenceId}], seqNr [${evt.seqNr}])"
-            logging.error(msg)
-            throw new RuntimeException(msg)
-        }
-      }.flatMap { bucket =>
+    if (s3Fallback.nonEmpty && evt.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
+      deserializeBreadcrumb(evt).flatMap { bucket =>
         s3Fallback.get
-          .loadEvent(evt.persistenceId, evt.seqNr, bucket)
+          .loadEvent(evt.persistenceId, evt.seqNr, bucket, evt.payload.isDefined)
           .flatMap { maybeFromS3 =>
             // Unlike with a snapshot, we know that we're getting the event with a specific sequence number
             maybeFromS3 match {
               case Some(fromS3) =>
                 Future.successful(
-                  evt.copy(payload = Some(fromS3.payload), serId = fromS3.serId, serManifest = fromS3.serManifest))
+                  evt.copy(payload = fromS3.payload, serId = fromS3.serId, serManifest = fromS3.serManifest))
 
               case None =>
                 val msg =
@@ -422,4 +423,36 @@ import akka.serialization.SerializationExtension
       }
     } else Future.successful(evt)
 
+  protected def deserializeBreadcrumb(breadcrumbItem: SerializedJournalItem): Future[String] =
+    breadcrumbItem.payload match {
+      case None =>
+        // We don't want the ultimate event payload, but we need to deserialize the breadcrumb in order to fill in the manifest etc.
+        queryForEvent(breadcrumbItem.persistenceId, breadcrumbItem.seqNr, true).flatMap { reloadedOpt =>
+          reloadedOpt match {
+            case None =>
+              Future.failed(new IllegalStateException(
+                s"Event for persistence ID [${breadcrumbItem.persistenceId}] at seqNr [${breadcrumbItem.seqNr}] disappeared"))
+            case Some(reloaded) =>
+              if (reloaded.serManifest != S3FallbackSerializer.BreadcrumbManifest)
+                Future.failed(new IllegalStateException(
+                  s"Event for persistence ID [${breadcrumbItem.persistenceId}] at seqNr [${breadcrumbItem.seqNr}] had unexpected manifest change"))
+              else deserializeBreadcrumb(reloaded)
+          }
+        }(ExecutionContext.parasitic)
+
+      case Some(payload) =>
+        Future {
+          val serialization = SerializationExtension(system)
+
+          serialization.deserialize(payload, breadcrumbItem.serId, breadcrumbItem.serManifest).get match {
+            case S3Breadcrumb(bucket) => bucket
+            case o =>
+              val msg =
+                "Tried to decode apparent S3Breadcrumb (event) that wasn't " +
+                s"(persistence ID [${breadcrumbItem.persistenceId}], seqNr [${breadcrumbItem.seqNr}])"
+              logging.error(msg)
+              throw new RuntimeException(msg)
+          }
+        }
+    }
 }
