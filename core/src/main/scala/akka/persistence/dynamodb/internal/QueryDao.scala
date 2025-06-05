@@ -402,7 +402,12 @@ import akka.serialization.SerializationExtension
   }
 
   private def followBreadcrumb(evt: SerializedJournalItem): Future[SerializedJournalItem] =
-    if (s3Fallback.nonEmpty && evt.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
+    if (s3Fallback.isEmpty && evt.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
+      val msg =
+        s"Failed to retrieve event from S3 for persistenceId=[${evt.persistenceId}], seqNr=[${evt.seqNr}] because fallback is disabled"
+      logging.error(msg)
+      Future.failed(new NoSuchElementException(msg))
+    } else if (s3Fallback.nonEmpty && evt.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
       deserializeBreadcrumb(evt).flatMap { bucket =>
         s3Fallback.get
           .loadEvent(evt.persistenceId, evt.seqNr, bucket, evt.payload.isDefined)

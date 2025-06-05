@@ -41,7 +41,7 @@ import scala.jdk.DurationConverters.ScalaDurationOps
 import scala.jdk.FutureConverters._
 
 import java.net.URI
-import java.nio.charset.StandardCharsets
+import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest
@@ -416,10 +416,7 @@ final class S3ClientProvider(system: ActorSystem[_]) extends Extension {
 }
 
 object S3FallbackSerializer {
-  // OK to share this, even between ActorSystems in the same JVM
-  private val cache = new ConcurrentHashMap[S3Breadcrumb, Array[Byte]]
   val BreadcrumbManifest = "akka.persistence.dynamodb.S3Breadcrumb"
-  val Utf8 = StandardCharsets.UTF_8
 }
 
 class S3FallbackSerializer(system: ExtendedActorSystem) extends SerializerWithStringManifest {
@@ -436,14 +433,7 @@ class S3FallbackSerializer(system: ExtendedActorSystem) extends SerializerWithSt
   def toBinary(o: AnyRef): Array[Byte] =
     o match {
       case bc @ S3Breadcrumb(bucket) =>
-        cache.get(bc) match {
-          case bytes: Array[Byte] => bytes
-          case null =>
-            val bytes = bucket.getBytes(Utf8)
-            // No concurrency control, just a cache (eventually this will converge)
-            cache.putIfAbsent(bc, bytes)
-            cache.get(bc)
-        }
+        bucket.intern().getBytes(UTF_8)
 
       case _ => throw new scala.MatchError(o)
     }
@@ -451,7 +441,7 @@ class S3FallbackSerializer(system: ExtendedActorSystem) extends SerializerWithSt
   def fromBinary(bytes: Array[Byte], manifest: String): AnyRef =
     manifest match {
       case BreadcrumbManifest =>
-        S3Breadcrumb(new String(bytes, Utf8))
+        S3Breadcrumb(new String(bytes, UTF_8))
 
       case _ => throw new scala.MatchError(manifest)
     }

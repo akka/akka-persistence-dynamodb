@@ -97,7 +97,13 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
           } else {
             val snapshot = createSerializedSnapshotItem(item)
 
-            if (s3Fallback.isEmpty || snapshot.serManifest != S3FallbackSerializer.BreadcrumbManifest) {
+            if (s3Fallback.nonEmpty && snapshot.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
+              val msg =
+                "Failed to follow breadcrumb to snapshot in S3 because fallback was " +
+                s"disabled: persistence ID [${snapshot.persistenceId}], seqNr [${snapshot.seqNr}]"
+              log.error(msg)
+              Future.failed(new NoSuchElementException(msg))
+            } else if (s3Fallback.isEmpty || snapshot.serManifest != S3FallbackSerializer.BreadcrumbManifest) {
               log.debug(
                 "Loaded snapshot for persistenceId [{}], consumed [{}] RCU",
                 persistenceId,
