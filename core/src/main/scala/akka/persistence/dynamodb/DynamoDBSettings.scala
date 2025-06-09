@@ -10,13 +10,13 @@ import scala.jdk.CollectionConverters._
 import scala.jdk.DurationConverters._
 
 import akka.actor.typed.ActorSystem
+import akka.annotation.ApiMayChange
 import akka.annotation.InternalStableApi
 import akka.util.Helpers
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigObject
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.retry.RetryMode
-import java.util.Objects
 
 object DynamoDBSettings {
 
@@ -62,27 +62,9 @@ object DynamoDBSettings {
 
     val clockSkewSettings = new ClockSkewSettings(config)
 
-    val s3FallbackSettings = {
-      val cfg = config.getConfig("fallback-to-s3")
-      val enabled = cfg.getBoolean("enabled")
-      val threshold = java.lang.Long.min(400 * 1000, cfg.getBytes("threshold")).toInt
-      val eventsBucket = cfg.getString("events-bucket")
-      val snapshotsBucket = cfg.getString("snapshots-bucket")
-      val eventBatchSize = cfg.getInt("event-batch-size")
+    val journalFallbackSettings = FallbackSettings(config.getConfig("journal.fallback-store"))
 
-      val minioLocalSettings = {
-        val localCfg = cfg.getConfig("minio-local")
-        val enabled = localCfg.getBoolean("enabled")
-        val host = localCfg.getString("host")
-        val port = localCfg.getInt("port")
-        val accessKey = localCfg.getString("access-key")
-        val secretKey = localCfg.getString("secret-key")
-
-        new MinioLocalSettings(enabled, host, port, accessKey, secretKey)
-      }
-
-      new S3FallbackSettings(enabled, threshold, eventsBucket, snapshotsBucket, eventBatchSize, minioLocalSettings)
-    }
+    val snapshotFallbackSettings = FallbackSettings(config.getConfig("snapshot.fallback-store"))
 
     new DynamoDBSettings(
       journalTable,
@@ -94,7 +76,8 @@ object DynamoDBSettings {
       journalBySliceGsi,
       snapshotBySliceGsi,
       clockSkewSettings,
-      s3FallbackSettings)
+      journalFallbackSettings,
+      snapshotFallbackSettings)
   }
 
   /**
@@ -118,13 +101,14 @@ final class DynamoDBSettings private (
     val journalBySliceGsi: String,
     val snapshotBySliceGsi: String,
     val clockSkewSettings: ClockSkewSettings,
-    val s3FallbackSettings: S3FallbackSettings) {
+    val journalFallbackSettings: FallbackSettings,
+    val snapshotFallbackSettings: FallbackSettings) {
   override def toString: String =
     s"DynamoDBSettings(journalTable=$journalTable, journalPublishEvents=$journalPublishEvents, " +
     s"snapshotTable=$snapshotTable, querySettings=$querySettings, cleanupSettings=$cleanupSettings, " +
     s"timeToLiveSettings=$timeToLiveSettings, journalBySliceGsi=$journalBySliceGsi, " +
     s"snapshotBySliceGsi=$snapshotBySliceGsi, clockSkewSettings=$clockSkewSettings, " +
-    s"s3FallbackSettings=$s3FallbackSettings)"
+    s"journalFallbackSettings=$journalFallbackSettings, snapshotFallbackSettings=$snapshotFallbackSettings)"
 }
 
 final class QuerySettings(config: Config) {
@@ -352,50 +336,29 @@ final class ClockSkewSettings(config: Config) {
   override def toString: String = s"ClockSkewSettings($warningTolerance)"
 }
 
-final class S3FallbackSettings(
-    val enabled: Boolean,
-    val threshold: Int,
-    val eventsBucket: String,
-    val snapshotsBucket: String,
-    val eventBatchSize: Int,
-    val minioLocal: MinioLocalSettings) {
+@ApiMayChange
+final class FallbackSettings(val plugin: String, val threshold: Int, val batchSize: Int) {
   require(threshold > 0, "threshold must be positive")
-  require(threshold <= (400 * 1000), "threshold must be at most 400 KB") // close enough...
-  require(!enabled || eventsBucket.nonEmpty, "if enabled, eventsBucket must not be empty")
-  require(!enabled || snapshotsBucket.nonEmpty, "if enabled, snapshotBucket must not be empty")
-  require(!enabled || eventBatchSize > 0, "if enabled, eventBatchSize must be positive")
+  require(threshold <= (400 * 1000), "threshold must be at most 400 KB")
 
   override def toString: String =
-    if (enabled)
-      s"S3FallbackSettings(threshold=${threshold}B, eventsBucket=$eventsBucket, snapshotsBucket=$snapshotsBucket, minioLocal=$minioLocal)"
+    if (plugin.nonEmpty)
+      s"FallbackSettings(plugin=$plugin, threshold=${threshold}B, batchSize=$batchSize)"
     else "disabled"
+
+  def isEnabled: Boolean = plugin.nonEmpty
 }
 
-final class MinioLocalSettings(
-    val enabled: Boolean,
-    val host: String,
-    val port: Int,
-    val accessKey: String,
-    val secretKey: String) {
-  override def toString: String =
-    if (enabled) s"MinioLocalSettings(host=$host, port=$port)" else "disabled"
+object FallbackSettings {
+  def apply(config: Config): FallbackSettings = {
+    val plugin = config.getString("plugin")
+    val threshold = java.lang.Long.min(config.getBytes("threshold"), 400 * 1000).toInt
 
-  override def equals(other: Any): Boolean =
-    other match {
-      case o: MinioLocalSettings =>
-        (!enabled && !o.enabled) || // Treat any disabled as equal
-          (enabled == o.enabled) &&
-          (host == o.host) &&
-          (port == o.port) &&
-          (accessKey == o.accessKey) &&
-          (secretKey == o.secretKey)
+    // batch-size doesn't have to be defined for snapshot store
+    val batchSize = if (config.hasPath("batch-size")) config.getInt("batch-size") else 1
 
-      case _ => false
-    }
-
-  override def hashCode: Int =
-    if (!enabled) 0
-    else Objects.hash(host, port, accessKey, secretKey)
+    new FallbackSettings(plugin, threshold, batchSize)
+  }
 }
 
 private[akka] object ConfigHelpers {

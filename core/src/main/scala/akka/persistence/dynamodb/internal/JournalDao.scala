@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
+import scala.concurrent.duration.Duration
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
 import scala.util.control.NonFatal
@@ -23,9 +24,14 @@ import scala.util.control.NonFatal
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
+import akka.persistence.FallbackStoreProvider
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
+import akka.serialization.SerializationExtension
+import akka.serialization.Serializers
+import akka.stream.scaladsl.Sink
+import akka.stream.scaladsl.Source
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.SdkBytes
@@ -40,8 +46,6 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
 import software.amazon.awssdk.services.dynamodb.model.Update
-import akka.serialization.SerializationExtension
-import akka.serialization.Serializers
 
 /**
  * INTERNAL API
@@ -58,11 +62,12 @@ import akka.serialization.Serializers
 @InternalApi private[akka] class JournalDao(
     system: ActorSystem[_],
     settings: DynamoDBSettings,
-    client: DynamoDbAsyncClient,
-    s3Fallback: Option[S3Fallback]) {
+    client: DynamoDbAsyncClient) {
   import JournalDao._
 
   private val persistenceExt: Persistence = Persistence(system)
+  private val serialization = SerializationExtension(system)
+  private val fallbackStoreProvider = FallbackStoreProvider(system)
 
   private implicit val ec: ExecutionContext = system.executionContext
 
@@ -105,6 +110,163 @@ import akka.serialization.Serializers
     val slice = persistenceExt.sliceForPersistenceId(persistenceId)
 
     val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+    val ttlEnabled = timeToLiveSettings.eventTimeToLive.exists(_ > Duration.Zero)
+
+    val estimatedTotalSize = events.foldLeft(0)(_ + _.estimatedDynamoSize(entityType, ttlEnabled))
+
+    if (settings.journalFallbackSettings.isEnabled && estimatedTotalSize > settings.journalFallbackSettings.threshold) {
+      val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.journalFallbackSettings.plugin)
+
+      def putItemAttributes(item: JournalItemWithBreadcrumb) = {
+        import JournalAttributes._
+        val attributes = new JHashMap[String, AttributeValue]
+        attributes.put(Pid, AttributeValue.fromS(persistenceId))
+        attributes.put(SeqNr, AttributeValue.fromN(item.seqNr.toString))
+        attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
+        val timestampMicros = InstantFactory.toEpochMicros(item.writeTimestamp)
+        attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
+        attributes.put(Writer, AttributeValue.fromS(item.writerUuid))
+
+        if (item.tags.nonEmpty) { // note: DynamoDB does not support empty sets
+          attributes.put(Tags, AttributeValue.fromSs(item.tags.toSeq.asJava))
+        }
+
+        item.metadata.foreach { meta =>
+          attributes.put(MetaSerId, AttributeValue.fromN(meta.serId.toString))
+          attributes.put(MetaSerManifest, AttributeValue.fromS(meta.serManifest))
+          attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
+        }
+
+        timeToLiveSettings.eventTimeToLive.foreach { timeToLive =>
+          val expiryTimestamp = item.writeTimestamp.plusSeconds(timeToLive.toSeconds)
+          attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
+        }
+
+        attributes.put(BreadcrumbSerId, AttributeValue.fromN(item.breadcrumbSerId.toString))
+        attributes.put(BreadcrumbSerManifest, AttributeValue.fromS(item.breadcrumbSerManifest))
+        attributes.put(BreadcrumbPayload, AttributeValue.fromB(SdkBytes.fromByteArray(item.breadcrumbPayload.get)))
+
+        attributes
+      }
+
+      implicit val mat: ActorSystem[_] = system
+
+      Source(events)
+        .mapAsync(settings.journalFallbackSettings.batchSize) { event =>
+          fallbackStore
+            .saveEvent(persistenceId, event.seqNr, event.serId, event.serManifest, event.payload.get)
+            .map(_ -> event)(ExecutionContext.parasitic)
+        }
+        .runWith(Sink.seq)
+        .flatMap { writtenEvents =>
+          // All have been saved to S3, so we can save the breadcrumbs
+          val withBreadcrumbs = writtenEvents.map { case (breadcrumb, evt) =>
+            val bytes = serialization.serialize(breadcrumb).get
+            val serializer = serialization.findSerializerFor(breadcrumb)
+            val manifest = Serializers.manifestFor(serializer, breadcrumb)
+
+            JournalItemWithBreadcrumb(
+              persistenceId = persistenceId,
+              seqNr = evt.seqNr,
+              writeTimestamp = evt.writeTimestamp,
+              readTimestamp = evt.readTimestamp,
+              writerUuid = evt.writerUuid,
+              tags = evt.tags,
+              metadata = evt.metadata,
+              breadcrumbSerId = serializer.identifier,
+              breadcrumbSerManifest = manifest,
+              breadcrumbPayload = Some(bytes))
+          }
+
+          val totalEvents = withBreadcrumbs.size
+
+          if (totalEvents == 1) {
+            val result = client
+              .putItem(
+                PutItemRequest
+                  .builder()
+                  .tableName(settings.journalTable)
+                  .item(putItemAttributes(withBreadcrumbs.head))
+                  .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+                  .build)
+              .asScala
+
+            if (log.isDebugEnabled) {
+              result.foreach { response =>
+                log.debug(
+                  "Wrote [{}] events with breadcrumbs for persistenceId [{}], consumed [{}] WCU",
+                  1,
+                  persistenceId,
+                  response.consumedCapacity.capacityUnits)
+              }
+            }
+
+            result.map { response =>
+              checkClockSkew(response)
+              Done
+            }(ExecutionContext.parasitic)
+          } else {
+            val writeItems = withBreadcrumbs.map { item =>
+              TransactWriteItem
+                .builder()
+                .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build)
+                .build
+            }.asJava
+
+            val token = {
+              val firstEvent = withBreadcrumbs.head
+              val uuid = UUID.fromString(firstEvent.writerUuid)
+              val seqNr = firstEvent.seqNr
+              val bb = ByteBuffer.allocate(24)
+              bb.asLongBuffer().put(uuid.getMostSignificantBits).put(uuid.getLeastSignificantBits).put(seqNr)
+
+              new String(base64Encoder.encode(bb.array))
+            }
+
+            val result = client
+              .transactWriteItems(
+                TransactWriteItemsRequest
+                  .builder()
+                  .clientRequestToken(token)
+                  .transactItems(writeItems)
+                  .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+                  .build)
+              .asScala
+
+            if (log.isDebugEnabled) {
+              result.foreach { response =>
+                log.debug(
+                  "Wrote [{}] events with breadcrumbs for persistenceId [{}], consumed [{}] WCU",
+                  totalEvents,
+                  persistenceId,
+                  response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue).sum)
+              }
+            }
+
+            result
+              .map { response =>
+                checkClockSkew(response)
+                Done
+              }(ExecutionContext.parasitic)
+              .recoverWith { case c: CompletionException =>
+                Future.failed(c.getCause)
+              }(ExecutionContext.parasitic)
+
+          }
+        }
+
+    } else doWriteEvents(events)
+  }
+
+  private def doWriteEvents(events: Seq[SerializedJournalItem]): Future[Done] = {
+    require(events.nonEmpty)
+
+    // it's always the same persistenceId for all events
+    val persistenceId = events.head.persistenceId
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val slice = persistenceExt.sliceForPersistenceId(persistenceId)
+
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
 
     def putItemAttributes(item: SerializedJournalItem) = {
       import JournalAttributes._
@@ -137,111 +299,82 @@ import akka.serialization.Serializers
       attributes
     }
 
-    val totalSize = events.iterator.map(_.payload.fold(0)(_.size)).sum
+    val totalEvents = events.size
+    if (totalEvents == 1) {
+      val req = PutItemRequest
+        .builder()
+        .tableName(settings.journalTable)
+        .item(putItemAttributes(events.head))
+        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+        .build()
+      val result = client.putItem(req).asScala
 
-    if (s3Fallback.nonEmpty &&
-      totalSize > settings.s3FallbackSettings.threshold &&
-      events.forall(_.serManifest != S3FallbackSerializer.BreadcrumbManifest)) {
-
-      val FutureDone = Future.successful[Done](Done)
-      val batchedWrites = events.grouped(settings.s3FallbackSettings.eventBatchSize).map { batch =>
-        Future.sequence(batch.map(s3Fallback.get.saveEvent)).map(_.head)(ExecutionContext.parasitic)
-      }
-
-      batchedWrites
-        .foldLeft(FutureDone) { (overall, fut) => overall.flatMap(_ => fut)(ExecutionContext.parasitic) }
-        .flatMap { _ =>
-          // All have been saved to S3, so we can save breadcrumbs
-          val breadcrumb = S3Breadcrumb(settings.s3FallbackSettings.eventsBucket)
-          val serialization = SerializationExtension(system)
-
-          val bytes = serialization.serialize(breadcrumb).get
-          val serializer = serialization.findSerializerFor(breadcrumb)
-          val manifest = Serializers.manifestFor(serializer, breadcrumb)
-
-          val withBreadcrumbs = events.map { evt =>
-            evt.copy(serId = serializer.identifier, serManifest = manifest, payload = Some(bytes))
-          }
-
-          writeEvents(withBreadcrumbs)
+      if (log.isDebugEnabled()) {
+        result.foreach { response =>
+          log.debug(
+            "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
+            1,
+            persistenceId,
+            response.consumedCapacity.capacityUnits)
         }
+      }
+      result
+        .map { response =>
+          checkClockSkew(response)
+          Done
+        }(ExecutionContext.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContext.parasitic)
     } else {
-      val totalEvents = events.size
-      if (totalEvents == 1) {
-        val req = PutItemRequest
-          .builder()
-          .tableName(settings.journalTable)
-          .item(putItemAttributes(events.head))
-          .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-          .build()
-        val result = client.putItem(req).asScala
+      val writeItems =
+        events.map { item =>
+          TransactWriteItem
+            .builder()
+            .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build())
+            .build()
+        }.asJava
 
-        if (log.isDebugEnabled()) {
-          result.foreach { response =>
-            log.debug(
-              "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
-              1,
-              persistenceId,
-              response.consumedCapacity.capacityUnits)
-          }
-        }
-        result
-          .map { response =>
-            checkClockSkew(response)
-            Done
-          }(ExecutionContext.parasitic)
-          .recoverWith { case c: CompletionException =>
-            Future.failed(c.getCause)
-          }(ExecutionContext.parasitic)
-      } else {
-        val writeItems =
-          events.map { item =>
-            TransactWriteItem
-              .builder()
-              .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build())
-              .build()
-          }.asJava
+      val token = {
+        val firstEvent = events.head
+        val uuid = UUID.fromString(firstEvent.writerUuid)
+        val seqNr = firstEvent.seqNr
+        val bb = ByteBuffer.allocate(24)
+        bb.asLongBuffer()
+          .put(uuid.getMostSignificantBits)
+          .put(uuid.getLeastSignificantBits)
+          .put(seqNr)
 
-        val token = {
-          val firstEvent = events.head
-          val uuid = UUID.fromString(firstEvent.writerUuid)
-          val seqNr = firstEvent.seqNr
-          val bb = ByteBuffer.allocate(24)
-          bb.asLongBuffer()
-            .put(uuid.getMostSignificantBits)
-            .put(uuid.getLeastSignificantBits)
-            .put(seqNr)
-
-          new String(base64Encoder.encode(bb.array))
-        }
-
-        val req = TransactWriteItemsRequest
-          .builder()
-          .clientRequestToken(token)
-          .transactItems(writeItems)
-          .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-          .build()
-
-        val result = client.transactWriteItems(req).asScala
-
-        if (log.isDebugEnabled()) {
-          result.foreach { response =>
-            log.debug(
-              "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
-              events.size,
-              persistenceId,
-              response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
-          }
-        }
-        result
-          .map { response =>
-            checkClockSkew(response)
-            Done
-          }(ExecutionContext.parasitic)
-          .recoverWith { case c: CompletionException =>
-            Future.failed(c.getCause)
-          }(ExecutionContext.parasitic)
+        new String(base64Encoder.encode(bb.array))
       }
+
+      val req = TransactWriteItemsRequest
+        .builder()
+        .clientRequestToken(token)
+        .transactItems(writeItems)
+        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+        .build()
+
+      val result = client.transactWriteItems(req).asScala
+
+      if (log.isDebugEnabled()) {
+        result.foreach { response =>
+          log.debug(
+            "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
+            events.size,
+            persistenceId,
+            response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
+        }
+      }
+      result
+        .map { response =>
+          checkClockSkew(response)
+          Done
+        }(ExecutionContext.parasitic)
+        .recoverWith { case c: CompletionException =>
+          Future.failed(c.getCause)
+        }(ExecutionContext.parasitic)
+      //}
 
     }
   }

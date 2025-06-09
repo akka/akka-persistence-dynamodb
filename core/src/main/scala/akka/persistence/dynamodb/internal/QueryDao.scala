@@ -12,20 +12,23 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
+import scala.util.Failure
+import scala.util.Success
 
 import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
 import akka.event.Logging
+import akka.persistence.FallbackStoreProvider
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
+import akka.serialization.SerializationExtension
 import akka.stream.Attributes
 import akka.stream.scaladsl.Source
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse
-import akka.serialization.SerializationExtension
 
 /**
  * INTERNAL API
@@ -33,14 +36,16 @@ import akka.serialization.SerializationExtension
 @InternalApi private[akka] class QueryDao(
     system: ActorSystem[_],
     settings: DynamoDBSettings,
-    client: DynamoDbAsyncClient,
-    s3Fallback: Option[S3Fallback])
+    client: DynamoDbAsyncClient)
     extends BySliceQuery.Dao[SerializedJournalItem] {
   import system.executionContext
 
+  private val serialization = SerializationExtension(system)
+  private val fallbackStoreProvider = FallbackStoreProvider(system)
+
   private val bySliceProjectionExpression = {
     import JournalAttributes._
-    s"$Pid, $SeqNr, $Timestamp, $EventSerId, $EventSerManifest, $Tags"
+    s"$Pid, $SeqNr, $Timestamp, $EventSerId, $EventSerManifest, $Tags, $BreadcrumbSerId, $BreadcrumbSerManifest"
   }
 
   private val bySliceWithMetaProjectionExpression = {
@@ -50,7 +55,7 @@ import akka.serialization.SerializationExtension
 
   private val bySliceWithPayloadProjectionExpression = {
     import JournalAttributes._
-    s"$bySliceWithMetaProjectionExpression, $EventPayload"
+    s"$bySliceWithMetaProjectionExpression, $EventPayload, $BreadcrumbPayload"
   }
 
   private val logging = Logging(system.classicSystem, this.getClass.getName)
@@ -130,21 +135,47 @@ import akka.serialization.SerializationExtension
                   payload = metaPayload.b().asByteArray())
               }
 
-              SerializedJournalItem(
-                persistenceId = persistenceId,
-                seqNr = item.get(SeqNr).n().toLong,
-                writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-                readTimestamp = InstantFactory.EmptyTimestamp,
-                payload = Some(item.get(EventPayload).b().asByteArray()),
-                serId = item.get(EventSerId).n().toInt,
-                serManifest = item.get(EventSerManifest).s(),
-                writerUuid = item.get(Writer).s(),
-                tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-                metadata = metadata)
+              val seqNr = item.get(SeqNr).n().toLong
+              val writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong)
+              val writerUuid = item.get(Writer).s()
+              val tags: Set[String] = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty
+
+              // events are saved with regular payload or a breadcrumb, but not both
+              if (item.containsKey(EventPayload)) {
+                SerializedJournalItem(
+                  persistenceId = persistenceId,
+                  seqNr = seqNr,
+                  writeTimestamp = writeTimestamp,
+                  readTimestamp = InstantFactory.EmptyTimestamp,
+                  payload = Some(item.get(EventPayload).b().asByteArray()),
+                  serId = item.get(EventSerId).n().toInt,
+                  serManifest = item.get(EventSerManifest).s(),
+                  writerUuid = item.get(Writer).s(),
+                  tags = tags,
+                  metadata = metadata)
+              } else if (item.containsKey(BreadcrumbPayload)) {
+                JournalItemWithBreadcrumb(
+                  persistenceId = persistenceId,
+                  seqNr = seqNr,
+                  writeTimestamp = writeTimestamp,
+                  readTimestamp = InstantFactory.EmptyTimestamp,
+                  writerUuid = writerUuid,
+                  tags = tags,
+                  metadata = metadata,
+                  breadcrumbSerId = item.get(BreadcrumbSerId).n().toInt,
+                  breadcrumbSerManifest = item.get(BreadcrumbSerManifest).s(),
+                  breadcrumbPayload = Some(item.get(BreadcrumbPayload).b().asByteArray()))
+              } else {
+                // neither?
+                val msg =
+                  s"Event in journal for persistenceId [$persistenceId] seqNr [$seqNr] is missing both event payload and breadcrumb"
+                logging.error(msg)
+                throw new IllegalStateException(msg)
+              }
             }
           }
         }
-        .mapAsync(settings.s3FallbackSettings.eventBatchSize)(followBreadcrumb)
+        .mapAsync(settings.journalFallbackSettings.batchSize)(followBreadcrumb)
         .mapError { case c: CompletionException =>
           c.getCause
         }
@@ -253,19 +284,17 @@ import akka.serialization.SerializationExtension
               tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
               metadata = None)
           } else {
-            createSerializedJournalItem(item, includePayload = true)
+            createItemFromJournal(item, includePayload = true)
           }
         }
-        .mapAsync(settings.s3FallbackSettings.eventBatchSize)(followBreadcrumb)
+        .mapAsync(settings.journalFallbackSettings.batchSize)(followBreadcrumb)
         .mapError { case c: CompletionException =>
           c.getCause
         }
     }
   }
 
-  private def createSerializedJournalItem(
-      item: JMap[String, AttributeValue],
-      includePayload: Boolean): SerializedJournalItem = {
+  private def createItemFromJournal(item: JMap[String, AttributeValue], includePayload: Boolean): ItemInJournal = {
     import JournalAttributes._
 
     val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
@@ -275,17 +304,38 @@ import akka.serialization.SerializationExtension
         payload = metaPayload.b().asByteArray())
     }
 
-    SerializedJournalItem(
-      persistenceId = item.get(Pid).s(),
-      seqNr = item.get(SeqNr).n().toLong,
-      writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong),
-      readTimestamp = InstantFactory.now(),
-      payload = if (includePayload) Some(item.get(EventPayload).b().asByteArray()) else None,
-      serId = item.get(EventSerId).n().toInt,
-      serManifest = item.get(EventSerManifest).s(),
-      writerUuid = "", // not need in this query
-      tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-      metadata = metadata)
+    val pid = item.get(Pid).s
+    val seqNr = item.get(SeqNr).n.toLong
+    val writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n.toLong)
+    val tags: Set[String] = if (item.containsKey(Tags)) item.get(Tags).ss.asScala.toSet else Set.empty
+
+    if (item.containsKey(EventSerId)) {
+      SerializedJournalItem(
+        persistenceId = pid,
+        seqNr = seqNr,
+        writeTimestamp = writeTimestamp,
+        readTimestamp = InstantFactory.now(),
+        payload = if (includePayload) Some(item.get(EventPayload).b().asByteArray()) else None,
+        serId = item.get(EventSerId).n().toInt,
+        serManifest = item.get(EventSerManifest).s(),
+        writerUuid = "", // not need in this query
+        tags = tags,
+        metadata = metadata)
+    } else if (item.containsKey(BreadcrumbSerId)) {
+      JournalItemWithBreadcrumb(
+        persistenceId = pid,
+        seqNr = seqNr,
+        writeTimestamp = writeTimestamp,
+        readTimestamp = InstantFactory.now(),
+        writerUuid = "", // Not needed in this query
+        tags = tags,
+        metadata = metadata,
+        breadcrumbSerId = item.get(BreadcrumbSerId).n.toInt,
+        breadcrumbSerManifest = item.get(BreadcrumbSerManifest).s,
+        breadcrumbPayload = if (includePayload) Some(item.get(BreadcrumbPayload).b.asByteArray) else None)
+    } else {
+      throw new IllegalStateException("Encountered event in journal which had neither payload nor breadcrumb")
+    }
   }
 
   def timestampOfEvent(persistenceId: String, seqNr: Long): Future[Option[Instant]] = {
@@ -341,7 +391,9 @@ import akka.serialization.SerializationExtension
 
     queryResult.flatMap { maybeItem =>
       maybeItem match {
-        case None       => queryResult
+        case None =>
+          // safe cast as this is equivalent to Future.successful(None)
+          queryResult.asInstanceOf[Future[Option[SerializedJournalItem]]]
         case Some(item) => followBreadcrumb(item).map(Some.apply)(ExecutionContext.parasitic)
       }
     }(ExecutionContext.parasitic)
@@ -350,7 +402,7 @@ import akka.serialization.SerializationExtension
   private def queryForEvent(
       persistenceId: String,
       seqNr: Long,
-      includePayload: Boolean): Future[Option[SerializedJournalItem]] = {
+      includePayload: Boolean): Future[Option[ItemInJournal]] = {
     import JournalAttributes._
     val attributeValues =
       Map(":pid" -> AttributeValue.fromS(persistenceId), ":seqNr" -> AttributeValue.fromN(seqNr.toString))
@@ -393,7 +445,7 @@ import akka.serialization.SerializationExtension
         if (items.isEmpty)
           Future.successful(None)
         else {
-          Future.successful(Some(createSerializedJournalItem(items.get(0), includePayload)))
+          Future.successful(Some(createItemFromJournal(items.get(0), includePayload)))
         }
       }
       .recoverWith { case c: CompletionException =>
@@ -401,63 +453,88 @@ import akka.serialization.SerializationExtension
       }(ExecutionContext.parasitic)
   }
 
-  private def followBreadcrumb(evt: SerializedJournalItem): Future[SerializedJournalItem] =
-    if (s3Fallback.isEmpty && evt.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
-      val msg =
-        s"Failed to retrieve event from S3 for persistenceId=[${evt.persistenceId}], seqNr=[${evt.seqNr}] because fallback is disabled"
-      logging.error(msg)
-      Future.failed(new NoSuchElementException(msg))
-    } else if (s3Fallback.nonEmpty && evt.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
-      deserializeBreadcrumb(evt).flatMap { bucket =>
-        s3Fallback.get
-          .loadEvent(evt.persistenceId, evt.seqNr, bucket, evt.payload.isDefined)
-          .flatMap { maybeFromS3 =>
-            // Unlike with a snapshot, we know that we're getting the event with a specific sequence number
-            maybeFromS3 match {
-              case Some(fromS3) =>
-                Future.successful(
-                  evt.copy(payload = fromS3.payload, serId = fromS3.serId, serManifest = fromS3.serManifest))
+  private def followBreadcrumb(item: ItemInJournal): Future[SerializedJournalItem] =
+    item match {
+      case sji: SerializedJournalItem => Future.successful(sji)
+
+      case jiwb: JournalItemWithBreadcrumb =>
+        deserializeBreadcrumb(jiwb).flatMap { crumb =>
+          val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.journalFallbackSettings.plugin)
+
+          val includePayload = jiwb.breadcrumbPayload.isDefined
+
+          fallbackStore
+            .loadEvent(crumb, jiwb.persistenceId, jiwb.seqNr, includePayload)
+            .flatMap { maybeFromFallback =>
+              maybeFromFallback match {
+                case Some(fromFallback) =>
+                  Future.successful(SerializedJournalItem(
+                    persistenceId = jiwb.persistenceId,
+                    seqNr = jiwb.seqNr,
+                    writeTimestamp = jiwb.writeTimestamp,
+                    readTimestamp = InstantFactory.now(),
+                    payload = fromFallback.payload,
+                    serId = fromFallback.serId,
+                    serManifest = fromFallback.serManifest,
+                    writerUuid = jiwb.writerUuid,
+                    tags = jiwb.tags,
+                    metadata = jiwb.metadata))
+                case None =>
+                  val msg =
+                    s"Failed to retrieve event from fallback store for persistenceId [${jiwb.persistenceId}] seqNr [${jiwb.seqNr}]"
+                  logging.error(msg)
+                  Future.failed(new NoSuchElementException(msg))
+              }
+            }(ExecutionContext.parasitic)
+        }
+    }
+
+  private def deserializeBreadcrumb(item: JournalItemWithBreadcrumb): Future[AnyRef] =
+    if (settings.journalFallbackSettings.isEnabled) {
+      val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.journalFallbackSettings.plugin)
+
+      item.breadcrumbPayload match {
+        case Some(payload) =>
+          serialization.deserialize(payload, item.breadcrumbSerId, item.breadcrumbSerManifest) match {
+            case Success(candidate) =>
+              fallbackStore.toBreadcrumb(candidate) match {
+                case Some(breadcrumb) => Future.successful(breadcrumb)
+                case None =>
+                  val msg =
+                    s"Breadcrumb rejected by fallback store at persistenceId [${item.persistenceId}] seqNr [${item.seqNr}]"
+                  logging.error(msg)
+                  Future.failed(new IllegalStateException(msg))
+              }
+
+            case Failure(ex) =>
+              val msg =
+                s"Failed to deserialize breadcrumb at persistenceId [${item.persistenceId}] seqNr [${item.seqNr}]"
+              logging.error(ex, msg)
+              Future.failed(ex)
+          }
+
+        case None =>
+          // We don't want the ultimate event payload, but we need to deserialize the breadcrumb in order to fill in the manifest etc.
+          queryForEvent(item.persistenceId, item.seqNr, true).flatMap { reloadedOpt =>
+            reloadedOpt match {
+              case Some(reloaded: JournalItemWithBreadcrumb) =>
+                deserializeBreadcrumb(reloaded)
 
               case None =>
-                val msg =
-                  s"Failed to retrieve event from S3 for persistenceId=[${evt.persistenceId}], seqNr=[${evt.seqNr}]"
-                logging.error(msg)
-                Future.failed(new NoSuchElementException(msg))
-            }
-          }(ExecutionContext.parasitic)
-      }
-    } else Future.successful(evt)
+                Future.failed(
+                  new IllegalStateException(
+                    s"Event for persistenceId [${item.persistenceId}] at seqNr [${item.seqNr}] disappeared"))
 
-  protected def deserializeBreadcrumb(breadcrumbItem: SerializedJournalItem): Future[String] =
-    breadcrumbItem.payload match {
-      case None =>
-        // We don't want the ultimate event payload, but we need to deserialize the breadcrumb in order to fill in the manifest etc.
-        queryForEvent(breadcrumbItem.persistenceId, breadcrumbItem.seqNr, true).flatMap { reloadedOpt =>
-          reloadedOpt match {
-            case None =>
-              Future.failed(new IllegalStateException(
-                s"Event for persistence ID [${breadcrumbItem.persistenceId}] at seqNr [${breadcrumbItem.seqNr}] disappeared"))
-            case Some(reloaded) =>
-              if (reloaded.serManifest != S3FallbackSerializer.BreadcrumbManifest)
+              case Some(reloaded: SerializedJournalItem) =>
                 Future.failed(new IllegalStateException(
-                  s"Event for persistence ID [${breadcrumbItem.persistenceId}] at seqNr [${breadcrumbItem.seqNr}] had unexpected manifest change"))
-              else deserializeBreadcrumb(reloaded)
+                  s"Event for persistenceId [${item.persistenceId}] at seqNr [${item.seqNr}] changed from breadcrumb to payload"))
+            }
           }
-        }(ExecutionContext.parasitic)
-
-      case Some(payload) =>
-        Future {
-          val serialization = SerializationExtension(system)
-
-          serialization.deserialize(payload, breadcrumbItem.serId, breadcrumbItem.serManifest).get match {
-            case S3Breadcrumb(bucket) => bucket
-            case o =>
-              val msg =
-                "Tried to decode apparent S3Breadcrumb (event) that wasn't " +
-                s"(persistence ID [${breadcrumbItem.persistenceId}], seqNr [${breadcrumbItem.seqNr}])"
-              logging.error(msg)
-              throw new RuntimeException(msg)
-          }
-        }
+      }
+    } else {
+      val log =
+        s"Journal fallback not enabled but encountered event with breadcrumb (persistenceId ${item.persistenceId} seqNr ${item.seqNr}"
+      logging.error(log)
+      Future.failed(new IllegalStateException(log))
     }
 }

@@ -55,7 +55,6 @@ object Dependencies {
 
   val core = Seq(
     dynamodbSdk.exclude("software.amazon.awssdk", "apache-client"),
-    s3Sdk % Provided,
     akkaPersistence,
     akkaPersistenceQuery,
     TestDeps.akkaPersistenceTck,

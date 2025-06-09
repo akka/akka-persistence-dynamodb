@@ -4,27 +4,49 @@
 
 package akka.persistence.dynamodb.snapshot
 
+import java.time.Instant
+
+import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.jdk.FutureConverters.CompletionStageOps
+import scala.util.Random
 
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.adapter._
+import akka.actor.testkit.typed.scaladsl.LogCapturing
+import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
+import akka.actor.testkit.typed.scaladsl.{ TestProbe => TypedTestProbe }
 import akka.persistence.CapabilityFlag
 import akka.persistence.DeleteSnapshotSuccess
+import akka.persistence.FallbackStoreProvider
+import akka.persistence.InMemFallbackStore
+import akka.persistence.SaveSnapshotSuccess
 import akka.persistence.SnapshotMetadata
 import akka.persistence.SnapshotProtocol.DeleteSnapshot
 import akka.persistence.SnapshotProtocol.LoadSnapshot
 import akka.persistence.SnapshotProtocol.LoadSnapshotResult
+import akka.persistence.SnapshotProtocol.SaveSnapshot
 import akka.persistence.SnapshotSelectionCriteria
 import akka.persistence.dynamodb.TestConfig
+import akka.persistence.dynamodb.TestData
 import akka.persistence.dynamodb.TestDbLifecycle
 import akka.persistence.dynamodb.internal.SnapshotAttributes
+import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.snapshot.SnapshotStoreSpec
+import akka.serialization.SerializationExtension
+import akka.serialization.Serializers
+import akka.stream.testkit.scaladsl.TestSink
+import akka.stream.testkit.TestSubscriber
 import akka.testkit.TestProbe
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import org.scalatest.OptionValues
 import org.scalatest.Outcome
 import org.scalatest.Pending
+import org.scalatest.wordspec.AnyWordSpecLike
+import software.amazon.awssdk.core.SdkBytes
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 
 object DynamoDBSnapshotStoreSpec {
   val config: Config = TestConfig.config
@@ -53,6 +75,20 @@ object DynamoDBSnapshotStoreSpec {
             }
           }
         }
+      """)
+      .withFallback(config)
+
+  def configWithSmallFallback: Config =
+    ConfigFactory
+      .parseString("""
+      fallback-plugin {
+        class = "akka.persistence.InMemFallbackStore"
+      }
+
+      akka.persistence.dynamodb.snapshot.fallback-store {
+        plugin = "fallback-plugin"
+        threshold = 4 KiB
+      }
       """)
       .withFallback(config)
 }
@@ -156,4 +192,146 @@ class DynamoDBSnapshotStoreWithTTLForDeletesSpec
 class DynamoDBSnapshotStoreWithSnapshotTTLSpec
     extends DynamoDBSnapshotStoreBaseSpec(DynamoDBSnapshotStoreSpec.configWithSnapshotTTL) {
   override protected def usingSnapshotTTL: Boolean = true
+}
+
+class DynamoDBSnapshotFallbackSpec
+    extends ScalaTestWithActorTestKit(DynamoDBSnapshotStoreSpec.configWithSmallFallback)
+    with AnyWordSpecLike
+    with TestData
+    with TestDbLifecycle
+    with LogCapturing {
+  import InMemFallbackStore.Invocation
+  import SnapshotAttributes._
+
+  def typedSystem: ActorSystem[_] = testKit.system
+
+  class Setup {
+    val entityType = nextEntityType()
+    val persistenceId = nextPersistenceId(entityType)
+    val snapshotStore = persistenceExt.snapshotStoreFor("akka.persistence.dynamodb.snapshot")
+  }
+
+  "A DynamoDB snapshot store with fallback enabled" should {
+    "not interact with the fallback store for small snapshots" in withFallbackStoreProbe {
+      (fallbackStore, invocations) =>
+        new Setup {
+          val probe = TypedTestProbe[Any]()
+          val classicProbeRef = probe.ref.toClassic
+
+          snapshotStore.tell(SaveSnapshot(SnapshotMetadata(persistenceId.id, 1, 0, None), "small"), classicProbeRef)
+
+          probe.expectMessageType[SaveSnapshotSuccess]
+          invocations.expectNoMessage(10.millis)
+        }
+    }
+
+    "save a large snapshot to the fallback store and save the breadcrumb" in withFallbackStoreProbe {
+      (fallbackStore, invocations) =>
+        new Setup {
+          val probe = TypedTestProbe[Any]()
+          val classicProbeRef = probe.ref.toClassic
+
+          val bigArr = Random.nextBytes(3072) // less than 4k, but the base64 encoding adds overhead
+
+          snapshotStore.tell(SaveSnapshot(SnapshotMetadata(persistenceId.id, 2, 0, None), bigArr), classicProbeRef)
+
+          val invocation = invocations.expectNext()
+          val now = Instant.now()
+          invocation.method shouldBe "saveSnapshot"
+          invocation.args(0) shouldBe persistenceId.id
+          invocation.args(1) shouldBe 2 // seqNr
+          assert(now.compareTo(invocation.args(2).asInstanceOf[Instant]) >= 0, "writeTimestamp should be before now")
+          assert(now.compareTo(invocation.args(3).asInstanceOf[Instant]) >= 0, "eventTimestamp should be before now")
+          invocation.args(4) shouldBe 4 // serId: ByteArraySerializer
+          invocation.args(5) shouldBe "" // serManifest (ByteArraySerializer.includeManifest = false)
+          (invocation.args(6).asInstanceOf[Array[Byte]] should contain).theSameElementsInOrderAs(bigArr)
+          invocation.args(7).asInstanceOf[Set[String]] shouldBe empty
+          invocation.args(8) shouldBe None
+
+          probe.expectMessageType[SaveSnapshotSuccess]
+
+          val maybeSnapshot = getSnapshotItemFor(persistenceId.id)
+          maybeSnapshot shouldNot be(empty)
+          maybeSnapshot.flatMap(_.get(SnapshotPayload)) should be(empty)
+          maybeSnapshot.foreach { snap =>
+            new String(snap.get(BreadcrumbPayload).get.b.asByteArray) shouldBe "breadcrumb"
+          }
+        }
+    }
+
+    "follow the breadcrumb to a snapshot" in withFallbackStoreProbe { (fallbackStore, invocations) =>
+      new Setup {
+        val slice = persistenceExt.sliceForPersistenceId(persistenceId.id)
+        val probe = TypedTestProbe[Any]()
+        val classicProbeRef = probe.ref.toClassic
+
+        val arr = Random.nextBytes(8)
+        val now = Instant.now()
+
+        Await.result(
+          fallbackStore
+            .saveSnapshot(persistenceId.id, 3, now, now, 4, "", arr, Set.empty, None)
+            .flatMap { breadcrumb =>
+              breadcrumb shouldBe "breadcrumb"
+
+              val ddbClient = ClientProvider(system).clientFor("akka.persistence.dynamodb.client")
+              val serialization = SerializationExtension(system)
+
+              val serializer = serialization.findSerializerFor(breadcrumb)
+              val bytes = serializer.toBinary(breadcrumb)
+              val manifest = Serializers.manifestFor(serializer, breadcrumb)
+
+              val attributes = new java.util.HashMap[String, AttributeValue]
+              attributes.put(Pid, AttributeValue.fromS(persistenceId.id))
+              attributes.put(SeqNr, AttributeValue.fromN("3"))
+              attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
+              attributes.put(BreadcrumbSerId, AttributeValue.fromN(serializer.identifier.toString))
+              attributes.put(BreadcrumbSerManifest, AttributeValue.fromS(manifest))
+              attributes.put(BreadcrumbPayload, AttributeValue.fromB(SdkBytes.fromByteArray(bytes)))
+
+              ddbClient
+                .putItem(PutItemRequest.builder.tableName(settings.snapshotTable).item(attributes).build)
+                .asScala
+                .map { _ =>
+                  invocations.expectNext(10.millis).method
+                }(system.executionContext)
+            }(system.executionContext),
+          1.second) shouldBe "saveSnapshot"
+
+        snapshotStore.tell(
+          LoadSnapshot(persistenceId.id, SnapshotSelectionCriteria.Latest, Long.MaxValue),
+          classicProbeRef)
+
+        invocations.requestNext() shouldBe Invocation("toBreadcrumb", Seq("breadcrumb"))
+        val loadInvocation = invocations.requestNext(10.millis)
+        loadInvocation.method shouldBe "loadSnapshot"
+        loadInvocation.args(0) shouldBe "breadcrumb"
+        loadInvocation.args(1) shouldBe persistenceId.id
+        loadInvocation.args(2) shouldBe 3
+
+        val result = probe.expectMessageType[LoadSnapshotResult]
+        result.toSequenceNr shouldBe Long.MaxValue
+        result.snapshot shouldNot be(empty)
+        (result.snapshot.get.snapshot.asInstanceOf[Array[Byte]] should contain).theSameElementsInOrderAs(arr)
+        result.snapshot.get.metadata.persistenceId shouldBe persistenceId.id
+        result.snapshot.get.metadata.sequenceNr shouldBe 3
+        result.snapshot.get.metadata.timestamp shouldBe now.toEpochMilli
+        result.snapshot.get.metadata.metadata shouldBe empty
+      }
+    }
+  }
+
+  private def withFallbackStoreProbe(
+      test: (InMemFallbackStore, TestSubscriber.Probe[InMemFallbackStore.Invocation]) => Unit): Unit = {
+
+    val fallbackStore =
+      FallbackStoreProvider(testKit.system).fallbackStoreFor("fallback-plugin").asInstanceOf[InMemFallbackStore]
+
+    val invocationsProbe = fallbackStore.invocationStream.runWith(TestSink()(testKit.system))
+
+    invocationsProbe.ensureSubscription()
+    invocationsProbe.request(1)
+    test(fallbackStore, invocationsProbe)
+    invocationsProbe.cancel()
+  }
 }

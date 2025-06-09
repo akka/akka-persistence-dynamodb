@@ -25,7 +25,6 @@ import akka.persistence.dynamodb.internal.BySliceQuery
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.dynamodb.internal.PubSub
 import akka.persistence.dynamodb.internal.QueryDao
-import akka.persistence.dynamodb.internal.S3Fallback
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.internal.SerializedSnapshotItem
 import akka.persistence.dynamodb.internal.SnapshotDao
@@ -81,11 +80,9 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
   private val serialization = SerializationExtension(system)
   private val persistenceExt = Persistence(system)
 
-  private val clientSettings = ClientProvider(typedSystem).clientSettingsFor(sharedConfigPath + ".client")
   private val client = ClientProvider(typedSystem).clientFor(sharedConfigPath + ".client")
-  private val s3Fallback = S3Fallback(settings, clientSettings, typedSystem)
-  private val queryDao = new QueryDao(typedSystem, settings, client, s3Fallback)
-  private val snapshotDao = new SnapshotDao(typedSystem, settings, client, s3Fallback)
+  private val queryDao = new QueryDao(typedSystem, settings, client)
+  private val snapshotDao = new SnapshotDao(typedSystem, settings, client)
 
   private val filteredPayloadSerId = SerializationExtension(system).findSerializerFor(FilteredPayload).identifier
 

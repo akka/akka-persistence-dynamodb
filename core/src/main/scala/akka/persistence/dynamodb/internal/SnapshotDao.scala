@@ -13,13 +13,17 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
+import scala.util.Failure
+import scala.util.Success
 
 import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
+import akka.persistence.FallbackStoreProvider
 import akka.persistence.Persistence
 import akka.persistence.SnapshotSelectionCriteria
 import akka.persistence.dynamodb.DynamoDBSettings
+import akka.persistence.dynamodb.EventSourcedEntityTimeToLiveSettings
 import akka.persistence.typed.PersistenceId
 import akka.serialization.SerializationExtension
 import akka.serialization.Serializers
@@ -49,12 +53,13 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
 @InternalApi private[akka] class SnapshotDao(
     system: ActorSystem[_],
     settings: DynamoDBSettings,
-    client: DynamoDbAsyncClient,
-    s3Fallback: Option[S3Fallback])
+    client: DynamoDbAsyncClient)
     extends BySliceQuery.Dao[SerializedSnapshotItem] {
   import SnapshotDao._
 
   private val persistenceExt: Persistence = Persistence(system)
+  private val serialization = SerializationExtension(system)
+  private val fallbackStoreProvider = FallbackStoreProvider(system)
 
   private implicit val ec: ExecutionContext = system.executionContext
 
@@ -95,57 +100,75 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
           if (timeToLiveSettings.checkExpiry && itemHasExpired(item)) {
             Future.successful(None)
           } else {
-            val snapshot = createSerializedSnapshotItem(item)
+            createSnapshotItem(item) match {
+              case snapshot: SerializedSnapshotItem =>
+                log.debug(
+                  "Loaded snapshot for persistenceId [{}], consumed [{}] RCU",
+                  persistenceId,
+                  response.consumedCapacity.capacityUnits)
 
-            if (s3Fallback.nonEmpty && snapshot.serManifest == S3FallbackSerializer.BreadcrumbManifest) {
-              val msg =
-                "Failed to follow breadcrumb to snapshot in S3 because fallback was " +
-                s"disabled: persistence ID [${snapshot.persistenceId}], seqNr [${snapshot.seqNr}]"
-              log.error(msg)
-              Future.failed(new NoSuchElementException(msg))
-            } else if (s3Fallback.isEmpty || snapshot.serManifest != S3FallbackSerializer.BreadcrumbManifest) {
-              log.debug(
-                "Loaded snapshot for persistenceId [{}], consumed [{}] RCU",
-                persistenceId,
-                response.consumedCapacity.capacityUnits)
+                Future.successful(Some(snapshot))
 
-              Future.successful(Some(snapshot))
-            } else {
-              val serialization = SerializationExtension(system)
+              case SnapshotItemWithBreadcrumb(persistenceId, seqNr, breadcrumb) =>
+                if (!settings.snapshotFallbackSettings.isEnabled) {
+                  val msg =
+                    "Failed to follow breadcrumb to snapshot in fallback store because fallback was " +
+                    s"disabled: persistenceId [$persistenceId] seqNr [$seqNr]"
+                  log.error(msg)
+                  Future.failed(new NoSuchElementException(msg))
+                } else {
+                  val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.snapshotFallbackSettings.plugin)
+                  serialization.deserialize(breadcrumb._3, breadcrumb._1, breadcrumb._2) match {
+                    case Success(candidate) =>
+                      fallbackStore.toBreadcrumb(candidate) match {
+                        case Some(breadcrumb) =>
+                          fallbackStore
+                            .loadSnapshot(breadcrumb, persistenceId, seqNr)
+                            .map { maybeFromFallback =>
+                              // The breadcrumb met the snapshot selection criteria, but it's possible that a
+                              // snapshot has been saved after the breadcrumb, so we need to recheck
+                              maybeFromFallback.flatMap { fromFallback =>
+                                if ((fromFallback.seqNr <= criteria.maxSequenceNr) &&
+                                  (fromFallback.seqNr >= criteria.minSequenceNr) &&
+                                  (fromFallback.writeTimestamp.compareTo(
+                                    InstantFactory.fromEpochMicros(criteria.maxTimestamp)) <= 0) &&
+                                  (fromFallback.writeTimestamp.compareTo(
+                                    InstantFactory.fromEpochMicros(criteria.minTimestamp)) >= 0)) {
 
-              val bucket = serialization.deserialize(snapshot.payload, snapshot.serId, snapshot.serManifest).get match {
-                case S3Breadcrumb(bucket) => bucket
-                case o =>
-                  log.error(
-                    "Tried to decode apparent S3Breadcrumb (snapshot) that wasn't (persistence ID [{}], seqNr [{}])",
-                    snapshot.persistenceId,
-                    snapshot.seqNr)
-                  throw new scala.MatchError(o)
-              }
+                                  // snapshot from fallback meets criteria
 
-              s3Fallback.get
-                .loadSnapshot(snapshot.persistenceId, bucket)
-                .map { maybeFromS3 =>
-                  // It's possible that a new snapshot has been written since the breadcrumb, so we need to
-                  // check against the criteria
-                  maybeFromS3.flatMap { fromS3 =>
-                    if ((fromS3.seqNr <= criteria.maxSequenceNr) &&
-                      (fromS3.seqNr >= criteria.minSequenceNr) &&
-                      (fromS3.writeTimestamp.compareTo(InstantFactory.fromEpochMicros(criteria.maxTimestamp)) <= 0) &&
-                      (fromS3.writeTimestamp.compareTo(InstantFactory.fromEpochMicros(criteria.minTimestamp)) >= 0)) {
-                      Some(SerializedSnapshotItem(
-                        persistenceId = snapshot.persistenceId,
-                        seqNr = fromS3.seqNr,
-                        writeTimestamp = fromS3.writeTimestamp,
-                        eventTimestamp = fromS3.eventTimestamp,
-                        payload = fromS3.payload,
-                        serId = fromS3.serId,
-                        serManifest = fromS3.serManifest,
-                        tags = fromS3.tags,
-                        metadata = fromS3.metadata))
-                    } else None
+                                  val metadata = fromFallback.meta.map { case ((serId, manifest), payload) =>
+                                    SerializedSnapshotMetadata(serId, manifest, payload)
+                                  }
+
+                                  Some(SerializedSnapshotItem(
+                                    persistenceId = persistenceId,
+                                    seqNr = fromFallback.seqNr,
+                                    writeTimestamp = fromFallback.writeTimestamp,
+                                    eventTimestamp = fromFallback.eventTimestamp,
+                                    payload = fromFallback.payload,
+                                    serId = fromFallback.serId,
+                                    serManifest = fromFallback.serManifest,
+                                    tags = fromFallback.tags,
+                                    metadata = metadata))
+                                } else None
+                              }
+                            }
+
+                        case None =>
+                          val msg =
+                            s"Breadcrumb rejected by fallback store for snapshot at persistenceId [$persistenceId] seqNr [$seqNr]"
+                          log.error(msg)
+                          Future.failed(new IllegalStateException(msg))
+                      }
+
+                    case Failure(ex) =>
+                      val msg =
+                        s"Failed to deserialize breadcrumb for snapshot at persistenceId [$persistenceId] seqNr [$seqNr]"
+                      log.error(msg, ex)
+                      Future.failed(ex)
                   }
-                }(ExecutionContext.parasitic)
+                }
             }
           }
         }
@@ -164,90 +187,162 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
   }
 
   def store(snapshot: SerializedSnapshotItem): Future[Unit] = {
-    import SnapshotAttributes._
+    val persistenceId = snapshot.persistenceId
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val eventTimestampMicros = InstantFactory.toEpochMicros(snapshot.readTimestamp)
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+    val slice = persistenceExt.sliceForPersistenceId(persistenceId)
 
-    log.info("Persisting snapshot of {} bytes", snapshot.payload.length)
+    if (settings.snapshotFallbackSettings.isEnabled) {
+      if (log.isDebugEnabled) {
+        log.debug("Fallback store will be used")
+      }
 
-    if (s3Fallback.nonEmpty &&
-      snapshot.payload.length > settings.s3FallbackSettings.threshold &&
-      snapshot.serManifest != S3FallbackSerializer.BreadcrumbManifest) {
-      s3Fallback.get.saveSnapshot(snapshot).flatMap { _ =>
-        val breadcrumb = S3Breadcrumb(settings.s3FallbackSettings.snapshotsBucket)
-        val serialization = SerializationExtension(system)
+      val size = snapshot.estimatedDynamoSize(entityType, timeToLiveSettings.snapshotTimeToLive.isDefined)
 
-        val bytes = serialization.serialize(breadcrumb).get
-        val serializer = serialization.findSerializerFor(breadcrumb)
-        val manifest = Serializers.manifestFor(serializer, breadcrumb)
+      if (size >= settings.snapshotFallbackSettings.threshold) {
 
-        store(
-          SerializedSnapshotItem(
-            persistenceId = snapshot.persistenceId,
-            seqNr = snapshot.seqNr,
-            writeTimestamp = snapshot.writeTimestamp,
-            eventTimestamp = snapshot.eventTimestamp,
-            payload = bytes,
-            serId = serializer.identifier,
-            serManifest = manifest,
-            tags = snapshot.tags,
-            metadata = snapshot.metadata))
+        val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.snapshotFallbackSettings.plugin)
+
+        val meta = snapshot.metadata.map { m => (m.serId -> m.serManifest) -> m.payload }
+
+        fallbackStore
+          .saveSnapshot(
+            persistenceId,
+            snapshot.seqNr,
+            snapshot.writeTimestamp,
+            snapshot.eventTimestamp,
+            snapshot.serId,
+            snapshot.serManifest,
+            snapshot.payload,
+            snapshot.tags,
+            meta)
+          .flatMap { breadcrumb =>
+            if (log.isDebugEnabled) {
+              log.debug("Saved snapshot for persistenceId [{}] to fallback store", persistenceId)
+            }
+
+            val bytes = serialization.serialize(breadcrumb).get
+            val serializer = serialization.findSerializerFor(breadcrumb)
+            val manifest = Serializers.manifestFor(serializer, breadcrumb)
+
+            saveItemWithBreadcrumb(
+              SnapshotItemWithBreadcrumb(persistenceId, snapshot.seqNr, (serializer.identifier, manifest, bytes)),
+              snapshot.writeTimestamp,
+              entityType,
+              slice,
+              timeToLiveSettings)
+          }
+      } else {
+        saveSnapshotItem(snapshot, entityType, slice, eventTimestampMicros, timeToLiveSettings)
       }
     } else {
-      val persistenceId = snapshot.persistenceId
-      val entityType = PersistenceId.extractEntityType(persistenceId)
-      val slice = persistenceExt.sliceForPersistenceId(persistenceId)
-      val eventTimestampMicros = InstantFactory.toEpochMicros(snapshot.readTimestamp)
-
-      val attributes = new JHashMap[String, AttributeValue]
-      attributes.put(Pid, AttributeValue.fromS(persistenceId))
-      attributes.put(SeqNr, AttributeValue.fromN(snapshot.seqNr.toString))
-      attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
-      attributes.put(WriteTimestamp, AttributeValue.fromN(snapshot.writeTimestamp.toEpochMilli.toString))
-      attributes.put(EventTimestamp, AttributeValue.fromN(eventTimestampMicros.toString))
-      attributes.put(SnapshotSerId, AttributeValue.fromN(snapshot.serId.toString))
-      attributes.put(SnapshotSerManifest, AttributeValue.fromS(snapshot.serManifest))
-      attributes.put(SnapshotPayload, AttributeValue.fromB(SdkBytes.fromByteArray(snapshot.payload)))
-
-      if (snapshot.tags.nonEmpty) { // note: DynamoDB does not support empty sets
-        attributes.put(Tags, AttributeValue.fromSs(snapshot.tags.toSeq.asJava))
-      }
-
-      snapshot.metadata.foreach { meta =>
-        attributes.put(MetaSerId, AttributeValue.fromN(meta.serId.toString))
-        attributes.put(MetaSerManifest, AttributeValue.fromS(meta.serManifest))
-        attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
-      }
-
-      val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
-
-      timeToLiveSettings.snapshotTimeToLive.foreach { timeToLive =>
-        val expiryTimestamp = snapshot.writeTimestamp.plusSeconds(timeToLive.toSeconds)
-        attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
-      }
-
-      val request = PutItemRequest
-        .builder()
-        .tableName(settings.snapshotTable)
-        .item(attributes)
-        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-        .build()
-
-      val result = client.putItem(request).asScala
-
-      if (log.isDebugEnabled()) {
-        result.foreach { response =>
-          log.debug(
-            "Stored snapshot for persistenceId [{}], consumed [{}] WCU",
-            persistenceId,
-            response.consumedCapacity.capacityUnits)
-        }
-      }
-
-      result
-        .map(_ => ())(ExecutionContext.parasitic)
-        .recoverWith { case c: CompletionException =>
-          Future.failed(c.getCause)
-        }(ExecutionContext.parasitic)
+      saveSnapshotItem(snapshot, entityType, slice, eventTimestampMicros, timeToLiveSettings)
     }
+  }
+
+  private def saveSnapshotItem(
+      snapshot: SerializedSnapshotItem,
+      entityType: String,
+      slice: Int,
+      eventTimestampMicros: Long,
+      timeToLiveSettings: EventSourcedEntityTimeToLiveSettings): Future[Unit] = {
+    import SnapshotAttributes._
+
+    val attributes = new JHashMap[String, AttributeValue]
+    attributes.put(Pid, AttributeValue.fromS(snapshot.persistenceId))
+    attributes.put(SeqNr, AttributeValue.fromN(snapshot.seqNr.toString))
+    attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
+    attributes.put(WriteTimestamp, AttributeValue.fromN(snapshot.writeTimestamp.toEpochMilli.toString))
+    attributes.put(EventTimestamp, AttributeValue.fromN(eventTimestampMicros.toString))
+    attributes.put(SnapshotSerId, AttributeValue.fromN(snapshot.serId.toString))
+    attributes.put(SnapshotSerManifest, AttributeValue.fromS(snapshot.serManifest))
+    attributes.put(SnapshotPayload, AttributeValue.fromB(SdkBytes.fromByteArray(snapshot.payload)))
+
+    if (snapshot.tags.nonEmpty) { // note: DynamoDB does not support empty sets
+      attributes.put(Tags, AttributeValue.fromSs(snapshot.tags.toSeq.asJava))
+    }
+
+    snapshot.metadata.foreach { meta =>
+      attributes.put(MetaSerId, AttributeValue.fromN(meta.serId.toString))
+      attributes.put(MetaSerManifest, AttributeValue.fromS(meta.serManifest))
+      attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
+    }
+
+    timeToLiveSettings.snapshotTimeToLive.foreach { timeToLive =>
+      val expiryTimestamp = snapshot.writeTimestamp.plusSeconds(timeToLive.toSeconds)
+      attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
+    }
+
+    val request = PutItemRequest
+      .builder()
+      .tableName(settings.snapshotTable)
+      .item(attributes)
+      .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+      .build()
+
+    val result = client.putItem(request).asScala
+
+    if (log.isDebugEnabled()) {
+      result.foreach { response =>
+        log.debug(
+          "Stored snapshot for persistenceId [{}], consumed [{}] WCU",
+          snapshot.persistenceId,
+          response.consumedCapacity.capacityUnits)
+      }
+    }
+
+    result
+      .map(_ => ())(ExecutionContext.parasitic)
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContext.parasitic)
+  }
+
+  private def saveItemWithBreadcrumb(
+      withBreadcrumb: SnapshotItemWithBreadcrumb,
+      timestamp: Instant,
+      entityType: String,
+      slice: Int,
+      timeToLiveSettings: EventSourcedEntityTimeToLiveSettings): Future[Unit] = {
+    import SnapshotAttributes._
+
+    val attributes = new JHashMap[String, AttributeValue]
+    attributes.put(Pid, AttributeValue.fromS(withBreadcrumb.persistenceId))
+    attributes.put(SeqNr, AttributeValue.fromN(withBreadcrumb.seqNr.toString))
+    attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
+    attributes.put(BreadcrumbSerId, AttributeValue.fromN(withBreadcrumb.breadcrumb._1.toString))
+    attributes.put(BreadcrumbSerManifest, AttributeValue.fromS(withBreadcrumb.breadcrumb._2))
+    attributes.put(BreadcrumbPayload, AttributeValue.fromB(SdkBytes.fromByteArray(withBreadcrumb.breadcrumbPayload)))
+
+    timeToLiveSettings.snapshotTimeToLive.foreach { timeToLive =>
+      val expiryTimestamp = timestamp.plusSeconds(timeToLive.toSeconds)
+      attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
+    }
+
+    val result = client
+      .putItem(
+        PutItemRequest.builder
+          .tableName(settings.snapshotTable)
+          .item(attributes)
+          .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+          .build)
+      .asScala
+
+    if (log.isDebugEnabled) {
+      result.foreach { response =>
+        log.debug(
+          "Stored snapshot for persistenceId [{}], consumed [{}] WCU",
+          withBreadcrumb.persistenceId,
+          response.consumedCapacity)
+      }
+    }
+
+    result
+      .map(_ => ())(ExecutionContext.parasitic)
+      .recoverWith { case c: CompletionException =>
+        Future.failed(c.getCause)
+      }(ExecutionContext.parasitic)
   }
 
   def delete(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Unit] = {
@@ -402,27 +497,41 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
       }
   }
 
-  private def createSerializedSnapshotItem(item: JMap[String, AttributeValue]): SerializedSnapshotItem = {
+  private def createSnapshotItem(item: JMap[String, AttributeValue]): ItemInSnapshotStore = {
     import SnapshotAttributes._
 
-    val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
-      SerializedSnapshotMetadata(
-        serId = item.get(MetaSerId).n().toInt,
-        serManifest = item.get(MetaSerManifest).s(),
-        payload = metaPayload.b().asByteArray())
-    }
+    val persistenceId = item.get(Pid).s
+    val seqNr = item.get(SeqNr).n.toLong
 
-    SerializedSnapshotItem(
-      persistenceId = item.get(Pid).s(),
-      seqNr = item.get(SeqNr).n().toLong,
-      writeTimestamp = Instant.ofEpochMilli(item.get(WriteTimestamp).n().toLong),
-      eventTimestamp = InstantFactory.fromEpochMicros(item.get(EventTimestamp).n().toLong),
-      payload = item.get(SnapshotPayload).b().asByteArray(),
-      serId = item.get(SnapshotSerId).n().toInt,
-      serManifest = item.get(SnapshotSerManifest).s(),
-      tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
-      metadata = metadata)
+    if (item.containsKey(BreadcrumbSerId)) {
+      val breadcrumb = (
+        item.get(BreadcrumbSerId).n.toInt,
+        item.get(BreadcrumbSerManifest).s,
+        item.get(BreadcrumbPayload).b.asByteArray)
+      SnapshotItemWithBreadcrumb(persistenceId = persistenceId, seqNr = seqNr, breadcrumb = breadcrumb)
+    } else {
+      val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
+        SerializedSnapshotMetadata(
+          serId = item.get(MetaSerId).n().toInt,
+          serManifest = item.get(MetaSerManifest).s(),
+          payload = metaPayload.b().asByteArray())
+      }
+
+      SerializedSnapshotItem(
+        persistenceId = persistenceId,
+        seqNr = seqNr,
+        writeTimestamp = Instant.ofEpochMilli(item.get(WriteTimestamp).n().toLong),
+        eventTimestamp = InstantFactory.fromEpochMicros(item.get(EventTimestamp).n().toLong),
+        payload = item.get(SnapshotPayload).b().asByteArray(),
+        serId = item.get(SnapshotSerId).n().toInt,
+        serManifest = item.get(SnapshotSerManifest).s(),
+        tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
+        metadata = metadata)
+    }
   }
+
+  private def createSerializedSnapshotItem(item: JMap[String, AttributeValue]): SerializedSnapshotItem =
+    createSnapshotItem(item).asInstanceOf[SerializedSnapshotItem]
 
   // optional condition expression and attribute values, based on selection criteria
   private def criteriaCondition(criteria: SnapshotSelectionCriteria): (String, JHashMap[String, AttributeValue]) = {

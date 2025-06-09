@@ -2,14 +2,16 @@
  * Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>
  */
 
-package akka.persistence.dynamodb
+package akka.persistence.s3fallback
 
-import akka.persistence.dynamodb.internal.MinioInteraction
+import akka.persistence.dynamodb.TestDbLifecycle
 import io.minio.MinioAsyncClient
 import org.scalatest.Suite
 
 trait TestDbAndS3Lifecycle extends TestDbLifecycle { this: Suite =>
-  lazy val localS3 = settings.s3FallbackSettings.minioLocal.enabled
+  lazy val s3FallbackSettings = S3FallbackSettings(
+    typedSystem.settings.config.getConfig("akka.persistence.s3-fallback-store"))
+  lazy val localS3 = s3FallbackSettings.minioLocal.enabled
 
   lazy val minioClient: MinioAsyncClient =
     MinioAsyncClient
@@ -22,7 +24,7 @@ trait TestDbAndS3Lifecycle extends TestDbLifecycle { this: Suite =>
     super.beforeAll()
 
     if (localS3) {
-      MinioInteraction.createBuckets(typedSystem.settings.config)(minioClient)
+      MinioInteraction.createBuckets(typedSystem.settings.config)(minioClient, typedSystem.executionContext)
     }
   }
 
@@ -30,7 +32,7 @@ trait TestDbAndS3Lifecycle extends TestDbLifecycle { this: Suite =>
     super.afterAll()
 
     if (localS3) {
-      MinioInteraction.deleteBuckets(typedSystem.settings.config)(minioClient)
+      MinioInteraction.deleteBuckets(typedSystem.settings.config)(minioClient, typedSystem.executionContext)
     }
   }
 }

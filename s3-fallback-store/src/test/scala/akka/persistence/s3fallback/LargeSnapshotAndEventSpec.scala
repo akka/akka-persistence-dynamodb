@@ -2,31 +2,38 @@
  * Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>
  */
 
-package akka.persistence.dynamodb
+package akka.persistence.s3fallback
 
 import akka.Done
 import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorSystem
-import akka.persistence.SnapshotSelectionCriteria
-import akka.persistence.dynamodb.internal.S3Fallback
-import akka.persistence.dynamodb.internal.SnapshotDao
+import akka.persistence.dynamodb.TestActors
+import akka.persistence.dynamodb.TestData
+import akka.persistence.dynamodb.internal.JournalAttributes
+import akka.persistence.dynamodb.internal.SnapshotAttributes
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.query.PersistenceQuery
+import akka.persistence.query.TimestampOffset
 import akka.persistence.query.typed.EventEnvelope
 import akka.stream.testkit.scaladsl.TestSink
 import com.typesafe.config.ConfigFactory
 import org.scalatest.wordspec.AnyWordSpecLike
-import io.minio.GetObjectArgs
-
-import scala.io.Source
-import scala.jdk.FutureConverters.CompletionStageOps
-import scala.util.Random
 import io.minio.CopyObjectArgs
 import io.minio.CopySource
-import akka.persistence.dynamodb.internal.QueryDao
-import akka.persistence.query.TimestampOffset
+import io.minio.GetObjectArgs
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
+
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+import scala.io.Source
+import scala.jdk.CollectionConverters.MapHasAsJava
+import scala.jdk.CollectionConverters.MapHasAsScala
+import scala.jdk.FutureConverters.CompletionStageOps
+import scala.util.Random
 
 object LargeSnapshotAndEventSpec {
   val config =
@@ -47,31 +54,12 @@ class LargeSnapshotAndEventSpec
 
   val query = PersistenceQuery(testKit.system).readJournalFor[DynamoDBReadJournal](DynamoDBReadJournal.Identifier)
 
-  val s3Threshold = system.settings.config.getBytes("akka.persistence.dynamodb.fallback-to-s3.threshold")
-  val snapshotBucket = system.settings.config.getString("akka.persistence.dynamodb.fallback-to-s3.snapshots-bucket")
-  val eventBucket = system.settings.config.getString("akka.persistence.dynamodb.fallback-to-s3.events-bucket")
-
-  val disabledFallbackConfig =
-    ConfigFactory
-      .parseString("akka.persistence.dynamodb.fallback-to-s3.enabled = off")
-      .withFallback(system.settings.config)
-      .resolve
-
-  val ddbSettingsWithDisabledFallback = DynamoDBSettings(disabledFallbackConfig.getConfig("akka.persistence.dynamodb"))
+  val s3Threshold = system.settings.config.getBytes("akka.persistence.dynamodb.journal.fallback-store.threshold")
+  val snapshotBucket = system.settings.config.getString("akka.persistence.s3-fallback-store.snapshots-bucket")
+  val eventBucket = system.settings.config.getString("akka.persistence.s3-fallback-store.events-bucket")
 
   val ddbClient = ClientProvider(system).clientFor("akka.persistence.dynamodb.client")
   val ddbClientSettings = ClientProvider(system).clientSettingsFor("akka.persistence.dynamodb.client")
-  val noFallbackSnapshotDao = new SnapshotDao(
-    system,
-    ddbSettingsWithDisabledFallback,
-    ddbClient,
-    S3Fallback(ddbSettingsWithDisabledFallback, ddbClientSettings, system))
-
-  val noFallbackQueryDao = new QueryDao(
-    system,
-    ddbSettingsWithDisabledFallback,
-    ddbClient,
-    S3Fallback(ddbSettingsWithDisabledFallback, ddbClientSettings, system))
 
   class Setup {
     val entityType = nextEntityType()
@@ -84,7 +72,6 @@ class LargeSnapshotAndEventSpec
 
   "DynamoDB S3 fallback" should {
     s"write snapshots larger than the threshold ($s3Threshold) to S3" in new Setup {
-
       // prime the pump
       for (i <- 1 to 140) {
         val padding = Iterator.continually(Random.nextPrintableChar()).take(30).mkString("").replaceAll("snap", "")
@@ -110,12 +97,11 @@ class LargeSnapshotAndEventSpec
         val size = Source.fromInputStream(response).size
         assert(size > s3Threshold, "size should exceed S3 threshold")
 
-        whenReady(noFallbackSnapshotDao.load(persistenceId.id, SnapshotSelectionCriteria.Latest)) { snapResult =>
-          snapResult shouldNot be(empty)
-          snapResult.get.serManifest shouldBe "akka.persistence.dynamodb.S3Breadcrumb"
-          assert(
-            snapResult.get.payload.length < size,
-            "Snapshot breadcrumb in dynamo should be smaller than snapshot in S3")
+        whenReady(getSnapshotItemFromDynamo(persistenceId.id)) { item =>
+          import SnapshotAttributes._
+
+          item.keySet.intersect(Set(SnapshotSerId, SnapshotSerManifest, SnapshotPayload)) shouldBe empty
+          item.keySet.intersect(Set(BreadcrumbSerId, BreadcrumbSerManifest, BreadcrumbPayload)).size shouldBe 3
 
           // Now test recovery by copying the snapshot with no events
           whenReady(
@@ -130,7 +116,7 @@ class LargeSnapshotAndEventSpec
                     .build)
                   .build)
               .asScala) { _ =>
-            noFallbackSnapshotDao.store(snapResult.get.copy(persistenceId = nextPid.id))
+            whenReady(saveSnapshotItemToDynamo(nextPid.id, item))(_ => ())
           }
         }
       }
@@ -149,8 +135,17 @@ class LargeSnapshotAndEventSpec
     }
 
     s"write events larger than the threshold ($s3Threshold) to S3" in new Setup {
-      val padding =
-        Iterator.continually(Random.nextPrintableChar()).take(2 * s3Threshold.toInt).mkString("").replaceAll("snap", "")
+      val padding = {
+        var base = Iterator
+          .continually(Random.nextPrintableChar())
+          .take(2 * s3Threshold.toInt)
+          .mkString("")
+          .replaceAll("snap", "")
+
+        while (base.length < s3Threshold.toInt) { base = base + base }
+
+        base
+      }
 
       persister ! PersistWithAck(padding, probe.ref)
       probe.expectMessage(Done)
@@ -166,12 +161,11 @@ class LargeSnapshotAndEventSpec
         val size = Source.fromInputStream(response).size
         size shouldBe padding.length
 
-        whenReady(noFallbackQueryDao.loadEvent(persistenceId.id, 1, true)) { evtResult =>
-          evtResult shouldNot be(empty)
-          evtResult.get.serManifest shouldBe "akka.persistence.dynamodb.S3Breadcrumb"
-          assert(
-            evtResult.get.payload.get.length < size,
-            "Event breadcrumb in Dynamo should be smaller than event in S3")
+        whenReady(getEventItemFromDynamo(persistenceId.id, 1)) { item =>
+          import JournalAttributes._
+
+          item.keySet.intersect(Set(EventSerId, EventSerManifest, EventPayload)) shouldBe empty
+          item.keySet.intersect(Set(BreadcrumbSerId, BreadcrumbSerManifest, BreadcrumbPayload)).size shouldBe 3
         }
       }
 
@@ -206,5 +200,47 @@ class LargeSnapshotAndEventSpec
 
       cebsProbe.cancel()
     }
+  }
+
+  def getSnapshotItemFromDynamo(pid: String): Future[Map[String, AttributeValue]] = {
+    ddbClient
+      .getItem(
+        GetItemRequest.builder
+          .tableName(settings.snapshotTable)
+          .consistentRead(true)
+          .key(Map(SnapshotAttributes.Pid -> AttributeValue.fromS(pid)).asJava)
+          .build)
+      .asScala
+      .map { response =>
+        val item = response.item.asScala.toMap
+        item shouldNot be(empty)
+        item
+      }(typedSystem.executionContext)
+  }
+
+  def saveSnapshotItemToDynamo(pid: String, item: Map[String, AttributeValue]): Future[Done] = {
+    val itemToSave = item.updated(SnapshotAttributes.Pid, AttributeValue.fromS(pid))
+    ddbClient
+      .putItem(PutItemRequest.builder.tableName(settings.snapshotTable).item(itemToSave.asJava).build)
+      .asScala
+      .map(_ => Done)(ExecutionContext.parasitic)
+  }
+
+  def getEventItemFromDynamo(pid: String, seqNr: Long): Future[Map[String, AttributeValue]] = {
+    ddbClient
+      .getItem(
+        GetItemRequest.builder
+          .tableName(settings.journalTable)
+          .consistentRead(true)
+          .key(Map(
+            JournalAttributes.Pid -> AttributeValue.fromS(pid),
+            JournalAttributes.SeqNr -> AttributeValue.fromN(seqNr.toString)).asJava)
+          .build)
+      .asScala
+      .map { response =>
+        val item = response.item.asScala.toMap
+        item shouldNot be(empty)
+        item
+      }(typedSystem.executionContext)
   }
 }

@@ -122,23 +122,13 @@ def suffixFileFilter(suffix: String): FileFilter = new SimpleFileFilter(f => f.g
 lazy val core = (project in file("core"))
   .settings(common)
   .settings(name := "akka-persistence-dynamodb", libraryDependencies ++= Dependencies.core)
-  .settings(Test / fullClasspath := {
-    // Run these tests as if S3 is not present (tests of S3 fallback are in s3Test)
-    val originalFullClasspath = (Test / fullClasspath).value
-    val s3Jar = s"s3-${Dependencies.AwsSdkVersion}.jar"
-
-    originalFullClasspath.filterNot { dependency =>
-      val path = dependency.data.toPath
-      path.getFileName.toString == s3Jar
-    }
-  })
   .enablePlugins(AutomateHeaderPlugin)
   .disablePlugins(CiReleasePlugin)
 
-lazy val s3Test = (project in file("s3-test"))
+lazy val s3Fallback = (project in file("s3-fallback-store"))
   .settings(common)
-  .settings(libraryDependencies ++= Dependencies.core :+ Dependencies.TestDeps.minioSdk)
-  .settings(dontPublish)
+  .settings(name := "akka-persistence-s3-fallback-store")
+  .settings(libraryDependencies ++= Dependencies.core ++ Seq(Dependencies.TestDeps.minioSdk, Dependencies.Compile.s3Sdk))
   .dependsOn(core % "compile->compile;test->test")
   .enablePlugins(AutomateHeaderPlugin)
   .disablePlugins(CiReleasePlugin)
