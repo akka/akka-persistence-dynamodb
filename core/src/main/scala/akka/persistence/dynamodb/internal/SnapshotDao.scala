@@ -19,7 +19,6 @@ import scala.util.Success
 import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
-import akka.persistence.FallbackStoreProvider
 import akka.persistence.Persistence
 import akka.persistence.SnapshotSelectionCriteria
 import akka.persistence.dynamodb.DynamoDBSettings

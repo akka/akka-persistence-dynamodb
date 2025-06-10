@@ -21,17 +21,18 @@ import akka.actor.typed.scaladsl.adapter._
 import akka.persistence.AtomicWrite
 import akka.persistence.CapabilityFlag
 import akka.persistence.DeleteMessagesSuccess
-import akka.persistence.FallbackStoreProvider
-import akka.persistence.InMemFallbackStore
 import akka.persistence.JournalProtocol.DeleteMessagesTo
 import akka.persistence.JournalProtocol.RecoverySuccess
 import akka.persistence.JournalProtocol.ReplayMessages
+import akka.persistence.JournalProtocol.ReplayedMessage
 import akka.persistence.JournalProtocol.WriteMessages
 import akka.persistence.JournalProtocol.WriteMessagesSuccessful
 import akka.persistence.PersistentRepr
 import akka.persistence.dynamodb.TestConfig
 import akka.persistence.dynamodb.TestData
 import akka.persistence.dynamodb.TestDbLifecycle
+import akka.persistence.dynamodb.internal.FallbackStoreProvider
+import akka.persistence.dynamodb.internal.InMemFallbackStore
 import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.journal.JournalSpec
@@ -49,7 +50,6 @@ import org.scalatest.wordspec.AnyWordSpecLike
 import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
-import akka.persistence.JournalProtocol.ReplayedMessage
 
 object DynamoDBJournalSpec {
   val config = DynamoDBJournalSpec.testConfig()
@@ -100,7 +100,7 @@ object DynamoDBJournalSpec {
     ConfigFactory
       .parseString("""
       fallback-plugin {
-        class = "akka.persistence.InMemFallbackStore"
+        class = "akka.persistence.dynamodb.internal.InMemFallbackStore"
       }
 
       akka.persistence.dynamodb.journal.fallback-store {

@@ -3,25 +3,24 @@
  */
 
 // Possible candidate for inclusion in Akka Persistence
-package akka.persistence
+package akka.persistence.dynamodb.internal
 
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.Extension
 import akka.actor.typed.ExtensionId
 import akka.annotation.ApiMayChange
-import akka.util.Reflect
+import akka.annotation.InternalApi
+import com.typesafe.config.Config
 
-import scala.annotation.nowarn
 import scala.concurrent.Future
 import scala.util.Failure
 import scala.util.Success
-import scala.util.control.NonFatal
 
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * API MAY CHANGE
+ * INTERNAL API API MAY CHANGE
  *
  * Plugin API for a fallback store for events and snapshots. The journal and snapshot store implementations may, if
  * configured to use an implementation of this API, use this fallback store to store events (resp. snapshots) while only
@@ -35,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap
  *   may not be generic
  */
 @ApiMayChange
+@InternalApi
 trait FallbackStore[Breadcrumb <: AnyRef] {
   def toBreadcrumb(maybeBreadcrumb: AnyRef): Option[Breadcrumb]
 
@@ -70,6 +70,8 @@ trait FallbackStore[Breadcrumb <: AnyRef] {
       meta: Option[((Int, String), Array[Byte])]): Future[Breadcrumb]
 }
 
+/** INTERNAL API */
+@InternalApi
 object FallbackStore {
 
   /** API MAY CHANGE */
@@ -90,6 +92,8 @@ object FallbackStore {
 
 }
 
+/** INTERNAL API */
+@InternalApi
 object FallbackStoreProvider extends ExtensionId[FallbackStoreProvider] {
   def createExtension(system: ActorSystem[_]): FallbackStoreProvider = new FallbackStoreProvider(system)
 
@@ -97,10 +101,11 @@ object FallbackStoreProvider extends ExtensionId[FallbackStoreProvider] {
   def get(system: ActorSystem[_]): FallbackStoreProvider = apply(system)
 }
 
+/** INTERNAL API */
+@InternalApi
 class FallbackStoreProvider(system: ActorSystem[_]) extends Extension {
   private val fallbackStores = new ConcurrentHashMap[String, FallbackStore[AnyRef]]
 
-  @nowarn("msg=inferred to be `Object`")
   def fallbackStoreFor(configLocation: String): FallbackStore[AnyRef] = {
     val config = system.settings.config.getConfig(configLocation)
     val className = config.getString("class")
@@ -116,19 +121,19 @@ class FallbackStoreProvider(system: ActorSystem[_]) extends Extension {
         fallbackStores.computeIfAbsent(
           configLocation,
           configLocation => {
-            val argList = List(system, config, configLocation)
-            val constructor =
-              try {
-                Reflect.findConstructor(clazz, argList)
-              } catch {
-                case NonFatal(ex) =>
-                  throw new RuntimeException(
-                    s"Could not find constructor for FallbackStore plugin [$className] taking actor system, " +
-                    "config, and config location",
-                    ex)
-              }
-
-            constructor.newInstance(argList: _*)
+            val argList: List[(Class[_], AnyRef)] =
+              List(classOf[ActorSystem[_]] -> system, classOf[Config] -> config, classOf[String] -> configLocation)
+            val plugin =
+              system.dynamicAccess
+                .createInstanceFor[FallbackStore[AnyRef]](clazz, argList)
+                .recoverWith { case ex =>
+                  Failure(
+                    new RuntimeException(
+                      s"Could not find constructor for FallbackStore plugin [$className] taking actor system, " +
+                      "config, and config location",
+                      ex))
+                }
+            plugin.get
           })
 
       case Failure(ex) =>

@@ -5,7 +5,7 @@
 package akka.persistence.s3fallback
 
 import akka.actor.typed.ActorSystem
-import akka.persistence.FallbackStore
+import akka.persistence.dynamodb.internal.FallbackStore
 import akka.persistence.typed.PersistenceId
 import akka.util.Base62
 import com.typesafe.config.Config

@@ -19,7 +19,6 @@ import akka.NotUsed
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
 import akka.event.Logging
-import akka.persistence.FallbackStoreProvider
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
 import akka.serialization.SerializationExtension

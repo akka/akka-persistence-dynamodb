@@ -18,8 +18,6 @@ import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.testkit.typed.scaladsl.{ TestProbe => TypedTestProbe }
 import akka.persistence.CapabilityFlag
 import akka.persistence.DeleteSnapshotSuccess
-import akka.persistence.FallbackStoreProvider
-import akka.persistence.InMemFallbackStore
 import akka.persistence.SaveSnapshotSuccess
 import akka.persistence.SnapshotMetadata
 import akka.persistence.SnapshotProtocol.DeleteSnapshot
@@ -30,6 +28,8 @@ import akka.persistence.SnapshotSelectionCriteria
 import akka.persistence.dynamodb.TestConfig
 import akka.persistence.dynamodb.TestData
 import akka.persistence.dynamodb.TestDbLifecycle
+import akka.persistence.dynamodb.internal.FallbackStoreProvider
+import akka.persistence.dynamodb.internal.InMemFallbackStore
 import akka.persistence.dynamodb.internal.SnapshotAttributes
 import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.snapshot.SnapshotStoreSpec
@@ -82,7 +82,7 @@ object DynamoDBSnapshotStoreSpec {
     ConfigFactory
       .parseString("""
       fallback-plugin {
-        class = "akka.persistence.InMemFallbackStore"
+        class = "akka.persistence.dynamodb.internal.InMemFallbackStore"
       }
 
       akka.persistence.dynamodb.snapshot.fallback-store {

@@ -24,7 +24,6 @@ import scala.util.control.NonFatal
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
-import akka.persistence.FallbackStoreProvider
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId

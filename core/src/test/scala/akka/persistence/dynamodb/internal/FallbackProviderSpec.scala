@@ -2,7 +2,7 @@
  * Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>
  */
 
-package akka.persistence
+package akka.persistence.dynamodb.internal
 
 import akka.NotUsed
 import akka.actor.typed.ActorSystem
@@ -168,7 +168,7 @@ class FallbackStoreProviderSpec extends AnyWordSpec with Matchers {
   "FallbackProvider" should {
     "create fallback client with specified plugin class" in withActorTestKit("""
       fallback-plugin {
-        class = "akka.persistence.InMemFallbackStore"
+        class = "akka.persistence.dynamodb.internal.InMemFallbackStore"
       }
       """) { testkit =>
       val fallbackStore = FallbackStoreProvider(testkit.system).fallbackStoreFor("fallback-plugin")
@@ -178,7 +178,7 @@ class FallbackStoreProviderSpec extends AnyWordSpec with Matchers {
 
     "memoize constructed instances" in withActorTestKit("""
       fallback-plugin {
-        class = "akka.persistence.InMemFallbackStore"
+        class = "akka.persistence.dynamodb.internal.InMemFallbackStore"
       }
       """) { testkit =>
       val firstFallbackStore = FallbackStoreProvider(testkit.system).fallbackStoreFor("fallback-plugin")
@@ -199,7 +199,7 @@ class FallbackStoreProviderSpec extends AnyWordSpec with Matchers {
 
     "not allow fallback store implementations without a proper constructor" in withActorTestKit("""
       fallback-plugin {
-        class = "akka.persistence.ImproperFallbackStore"
+        class = "akka.persistence.dynamodb.internal.ImproperFallbackStore"
       }
       """) { testkit =>
       val re = the[RuntimeException] thrownBy {
