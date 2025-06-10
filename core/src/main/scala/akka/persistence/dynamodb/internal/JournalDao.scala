@@ -373,8 +373,6 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         .recoverWith { case c: CompletionException =>
           Future.failed(c.getCause)
         }(ExecutionContext.parasitic)
-      //}
-
     }
   }
 
