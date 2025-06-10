@@ -65,6 +65,16 @@ object Dependencies {
     TestDeps.logback,
     TestDeps.scalaTest)
 
+  val s3Fallback = Seq(
+    akkaPersistence,
+    akkaPersistenceQuery,
+    s3Sdk,
+    TestDeps.akkaStreamTestkit,
+    TestDeps.akkaTestkit,
+    TestDeps.logback,
+    TestDeps.minioSdk,
+    TestDeps.scalaTest)
+
   val docs = Seq(
     TestDeps.akkaPersistenceTyped,
     TestDeps.akkaShardingTyped,
