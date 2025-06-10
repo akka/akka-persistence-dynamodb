@@ -10,6 +10,7 @@ import scala.jdk.CollectionConverters._
 import scala.jdk.DurationConverters._
 
 import akka.actor.typed.ActorSystem
+import akka.annotation.ApiMayChange
 import akka.annotation.InternalStableApi
 import akka.util.Helpers
 import com.typesafe.config.Config
@@ -61,6 +62,10 @@ object DynamoDBSettings {
 
     val clockSkewSettings = new ClockSkewSettings(config)
 
+    val journalFallbackSettings = FallbackSettings(config.getConfig("journal.fallback-store"))
+
+    val snapshotFallbackSettings = FallbackSettings(config.getConfig("snapshot.fallback-store"))
+
     new DynamoDBSettings(
       journalTable,
       journalPublishEvents,
@@ -70,7 +75,9 @@ object DynamoDBSettings {
       timeToLiveSettings,
       journalBySliceGsi,
       snapshotBySliceGsi,
-      clockSkewSettings)
+      clockSkewSettings,
+      journalFallbackSettings,
+      snapshotFallbackSettings)
   }
 
   /**
@@ -93,7 +100,16 @@ final class DynamoDBSettings private (
     val timeToLiveSettings: TimeToLiveSettings,
     val journalBySliceGsi: String,
     val snapshotBySliceGsi: String,
-    val clockSkewSettings: ClockSkewSettings)
+    val clockSkewSettings: ClockSkewSettings,
+    val journalFallbackSettings: FallbackSettings,
+    val snapshotFallbackSettings: FallbackSettings) {
+  override def toString: String =
+    s"DynamoDBSettings(journalTable=$journalTable, journalPublishEvents=$journalPublishEvents, " +
+    s"snapshotTable=$snapshotTable, querySettings=$querySettings, cleanupSettings=$cleanupSettings, " +
+    s"timeToLiveSettings=$timeToLiveSettings, journalBySliceGsi=$journalBySliceGsi, " +
+    s"snapshotBySliceGsi=$snapshotBySliceGsi, clockSkewSettings=$clockSkewSettings, " +
+    s"journalFallbackSettings=$journalFallbackSettings, snapshotFallbackSettings=$snapshotFallbackSettings)"
+}
 
 final class QuerySettings(config: Config) {
   val refreshInterval: FiniteDuration = config.getDuration("refresh-interval").toScala
@@ -318,6 +334,31 @@ final class ClockSkewSettings(config: Config) {
   }
 
   override def toString: String = s"ClockSkewSettings($warningTolerance)"
+}
+
+@ApiMayChange
+final class FallbackSettings(val plugin: String, val threshold: Int, val batchSize: Int) {
+  require(threshold > 0, "threshold must be positive")
+  require(threshold <= (400 * 1000), "threshold must be at most 400 KB")
+
+  override def toString: String =
+    if (plugin.nonEmpty)
+      s"FallbackSettings(plugin=$plugin, threshold=${threshold}B, batchSize=$batchSize)"
+    else "disabled"
+
+  def isEnabled: Boolean = plugin.nonEmpty
+}
+
+object FallbackSettings {
+  def apply(config: Config): FallbackSettings = {
+    val plugin = config.getString("plugin")
+    val threshold = java.lang.Long.min(config.getBytes("threshold"), 400 * 1000).toInt
+
+    // batch-size doesn't have to be defined for snapshot store
+    val batchSize = if (config.hasPath("batch-size")) config.getInt("batch-size") else 1
+
+    new FallbackSettings(plugin, threshold, batchSize)
+  }
 }
 
 private[akka] object ConfigHelpers {
