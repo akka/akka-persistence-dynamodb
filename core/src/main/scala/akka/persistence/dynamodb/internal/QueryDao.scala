@@ -395,7 +395,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
           queryResult.asInstanceOf[Future[Option[SerializedJournalItem]]]
         case Some(item) => followBreadcrumb(item).map(Some.apply)(ExecutionContext.parasitic)
       }
-    }(ExecutionContext.parasitic)
+    }
   }
 
   private def queryForEvent(
