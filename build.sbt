@@ -115,7 +115,7 @@ lazy val root = (project in file("."))
     publishTo := Some(Resolver.file("Unused transient repository", file("target/unusedrepo"))))
   .enablePlugins(ScalaUnidocPlugin)
   .disablePlugins(SitePlugin, MimaPlugin, CiReleasePlugin)
-  .aggregate(core, docs)
+  .aggregate(core, s3Fallback, docs)
 
 def suffixFileFilter(suffix: String): FileFilter = new SimpleFileFilter(f => f.getAbsolutePath.endsWith(suffix))
 
@@ -127,7 +127,7 @@ lazy val core = (project in file("core"))
 
 lazy val s3Fallback = (project in file("s3-fallback-store"))
   .settings(common)
-  .settings(name := "akka-persistence-s3-fallback-store")
+  .settings(name := "akka-persistence-dynamodb-s3-fallback-store")
   .settings(libraryDependencies ++= Dependencies.s3Fallback)
   .dependsOn(core % "compile->compile;test->test")
   .enablePlugins(AutomateHeaderPlugin)
