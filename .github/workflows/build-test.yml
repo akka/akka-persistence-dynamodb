@@ -79,7 +79,7 @@ jobs:
 
       - name: Start DB
         run: |-
-          docker compose -f docker/docker-compose.yml up --wait
+          docker compose -f docker/docker-compose-with-s3.yml up --wait
 
       - name: sbt test
         run: |-

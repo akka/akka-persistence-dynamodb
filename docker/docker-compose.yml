@@ -7,15 +7,3 @@ services:
     ports:
       - "8000:8000"
     working_dir: /home/dynamodblocal
-  minio:
-    command: "server /data --console-address ':9001'"
-    image: "quay.io/minio/minio:latest"
-    container_name: s3
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      # Aka the ACCESS_KEY
-      MINIO_ROOT_USER: "akka"
-      # Aka the SECRET_KEY
-      MINIO_ROOT_PASSWORD: "2b7b1446"
