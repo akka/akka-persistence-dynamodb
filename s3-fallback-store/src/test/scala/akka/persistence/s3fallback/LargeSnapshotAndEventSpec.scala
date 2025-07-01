@@ -30,7 +30,6 @@ import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.io.Source
-import scala.jdk.CollectionConverters.ListHasAsScala
 import scala.jdk.CollectionConverters.MapHasAsJava
 import scala.jdk.CollectionConverters.MapHasAsScala
 import scala.jdk.FutureConverters.CompletionStageOps
