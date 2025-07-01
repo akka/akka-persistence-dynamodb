@@ -37,7 +37,7 @@ inThisBuild(
     resolvers += "Akka library repository".at("https://repo.akka.io/maven/github_actions"),
     resolvers ++=
       (if (Dependencies.AkkaVersion.endsWith("-SNAPSHOT"))
-         Seq("Akka library snapshot repository".at("https://repo.akka.io/snapshots"))
+         Seq("Akka library snapshot repository".at("https://repo.akka.io/snapshots/github_actions"))
        else Seq.empty)))
 
 val defaultScalacOptions = Seq("-release", "11")
