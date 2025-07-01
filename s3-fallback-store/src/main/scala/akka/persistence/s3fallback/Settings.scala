@@ -10,6 +10,8 @@ import scala.concurrent.duration.FiniteDuration
 import scala.jdk.DurationConverters.JavaDurationOps
 
 import java.util.Objects
+import com.typesafe.config.ConfigValue
+import com.typesafe.config.ConfigValueType
 
 object S3FallbackSettings {
   def apply(config: Config): S3FallbackSettings = {
@@ -18,8 +20,9 @@ object S3FallbackSettings {
     val snapshotsBucket = config.getString("snapshots-bucket")
     val minioLocal = MinioLocalSettings(config.getConfig("minio-local"))
     val region = if (config.hasPath("region")) Some(config.getString("region")).filter(_.nonEmpty) else None
+    val multipart = MultipartSettings(config.getValue("multipart"))
 
-    new S3FallbackSettings(clientPath, eventsBucket, snapshotsBucket, minioLocal, region)
+    new S3FallbackSettings(clientPath, eventsBucket, snapshotsBucket, minioLocal, region, multipart)
   }
 }
 
@@ -28,13 +31,56 @@ final class S3FallbackSettings(
     val eventsBucket: String,
     val snapshotsBucket: String,
     val minioLocal: MinioLocalSettings,
-    val region: Option[String]) {
+    val region: Option[String],
+    val multipart: MultipartSettings) {
   require(httpClientPath.nonEmpty, "must include an HTTP client config path")
-  require(eventsBucket.nonEmpty, "if enabled, eventsBucket must not be empty")
-  require(snapshotsBucket.nonEmpty, "if enabled, snapshotBucket must not be empty")
+  require(
+    eventsBucket.nonEmpty || snapshotsBucket.nonEmpty,
+    "mut include at least one of events bucket or snapshots bucket")
 
   override def toString: String =
     s"S3FallbackSettings(httpClientPath=$httpClientPath, eventsBucket=$eventsBucket, snapshotsBucket=$snapshotsBucket, minioLocal=$minioLocal)"
+}
+
+object MultipartSettings {
+  def apply(configValue: ConfigValue): MultipartSettings =
+    configValue.valueType match {
+      case ConfigValueType.OBJECT =>
+        val config = configValue.atKey("multipart").getConfig("multipart")
+        if (config.hasPath("threshold") && config.hasPath("partition")) {
+          val threshold = config.getBytes("threshold")
+          val partition = config.getBytes("partition")
+
+          new MultipartSettings(threshold, partition)
+        } else Empty
+
+      case _ => Empty
+    }
+
+  val Empty = new MultipartSettings(Long.MaxValue, 0)
+}
+
+final class MultipartSettings(val threshold: Long, val partition: Long) {
+  require(threshold > 0, "threshold must be positive")
+  require(threshold == Long.MaxValue || partition > 0, "partition must be positive if multipart is enabled")
+
+  def enabled: Boolean = threshold < Long.MaxValue
+
+  override def toString: String = s"MultipartSettings(threshold=${threshold}B, partition=${partition}B)"
+  override def equals(other: Any): Boolean =
+    other match {
+      case o: MultipartSettings =>
+        (this eq o) ||
+          (!enabled && !o.enabled) || // Treat any disabled as equal
+          (threshold == o.threshold) &&
+          (partition == o.partition)
+
+      case _ => false
+    }
+
+  override def hashCode: Int =
+    if (!enabled) 0
+    else Objects.hash(threshold, partition)
 }
 
 object MinioLocalSettings {
@@ -61,7 +107,8 @@ final class MinioLocalSettings(
   override def equals(other: Any): Boolean =
     other match {
       case o: MinioLocalSettings =>
-        (!enabled && !o.enabled) || // Treat any disabled as equal
+        (this eq o) ||
+          (!enabled && !o.enabled) || // Treat any disabled as equal
           (enabled == o.enabled) &&
           (host == o.host) &&
           (port == o.port) &&

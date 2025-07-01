@@ -38,8 +38,6 @@ import software.amazon.awssdk.core.SdkResponse
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.Delete
-import software.amazon.awssdk.services.dynamodb.model.Put
-import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
@@ -106,7 +104,6 @@ import software.amazon.awssdk.services.dynamodb.model.Update
     // it's always the same persistenceId for all events
     val persistenceId = events.head.persistenceId
     val entityType = PersistenceId.extractEntityType(persistenceId)
-    val slice = persistenceExt.sliceForPersistenceId(persistenceId)
 
     val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
     val ttlEnabled = timeToLiveSettings.eventTimeToLive.exists(_ > Duration.Zero)
@@ -114,40 +111,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
     val estimatedTotalSize = events.foldLeft(0)(_ + _.estimatedDynamoSize(entityType, ttlEnabled))
 
     if (settings.journalFallbackSettings.isEnabled && estimatedTotalSize > settings.journalFallbackSettings.threshold) {
-      val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.journalFallbackSettings.plugin)
-
-      def putItemAttributes(item: JournalItemWithBreadcrumb) = {
-        import JournalAttributes._
-        val attributes = new JHashMap[String, AttributeValue]
-        attributes.put(Pid, AttributeValue.fromS(persistenceId))
-        attributes.put(SeqNr, AttributeValue.fromN(item.seqNr.toString))
-        attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
-        val timestampMicros = InstantFactory.toEpochMicros(item.writeTimestamp)
-        attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
-        attributes.put(Writer, AttributeValue.fromS(item.writerUuid))
-
-        if (item.tags.nonEmpty) { // note: DynamoDB does not support empty sets
-          attributes.put(Tags, AttributeValue.fromSs(item.tags.toSeq.asJava))
-        }
-
-        item.metadata.foreach { meta =>
-          attributes.put(MetaSerId, AttributeValue.fromN(meta.serId.toString))
-          attributes.put(MetaSerManifest, AttributeValue.fromS(meta.serManifest))
-          attributes.put(MetaPayload, AttributeValue.fromB(SdkBytes.fromByteArray(meta.payload)))
-        }
-
-        timeToLiveSettings.eventTimeToLive.foreach { timeToLive =>
-          val expiryTimestamp = item.writeTimestamp.plusSeconds(timeToLive.toSeconds)
-          attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
-        }
-
-        attributes.put(BreadcrumbSerId, AttributeValue.fromN(item.breadcrumbSerId.toString))
-        attributes.put(BreadcrumbSerManifest, AttributeValue.fromS(item.breadcrumbSerManifest))
-        attributes.put(BreadcrumbPayload, AttributeValue.fromB(SdkBytes.fromByteArray(item.breadcrumbPayload.get)))
-
-        attributes
-      }
-
+      val fallbackStore = fallbackStoreProvider.eventFallbackStoreFor(settings.journalFallbackSettings.plugin)
       implicit val mat: ActorSystem[_] = system
 
       Source(events)
@@ -177,110 +141,35 @@ import software.amazon.awssdk.services.dynamodb.model.Update
               breadcrumbPayload = Some(bytes))
           }
 
-          val totalEvents = withBreadcrumbs.size
-
-          if (totalEvents == 1) {
-            val result = client
-              .putItem(
-                PutItemRequest
-                  .builder()
-                  .tableName(settings.journalTable)
-                  .item(putItemAttributes(withBreadcrumbs.head))
-                  .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-                  .build)
-              .asScala
-
-            if (log.isDebugEnabled) {
-              result.foreach { response =>
-                log.debug(
-                  "Wrote [{}] events with breadcrumbs for persistenceId [{}], consumed [{}] WCU",
-                  1,
-                  persistenceId,
-                  response.consumedCapacity.capacityUnits)
-              }
-            }
-
-            result.map { response =>
-              checkClockSkew(response)
-              Done
-            }(ExecutionContext.parasitic)
-          } else {
-            val writeItems = withBreadcrumbs.map { item =>
-              TransactWriteItem
-                .builder()
-                .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build)
-                .build
-            }.asJava
-
-            val token = {
-              val firstEvent = withBreadcrumbs.head
-              val uuid = UUID.fromString(firstEvent.writerUuid)
-              val seqNr = firstEvent.seqNr
-              val bb = ByteBuffer.allocate(24)
-              bb.asLongBuffer().put(uuid.getMostSignificantBits).put(uuid.getLeastSignificantBits).put(seqNr)
-
-              new String(base64Encoder.encode(bb.array))
-            }
-
-            val result = client
-              .transactWriteItems(
-                TransactWriteItemsRequest
-                  .builder()
-                  .clientRequestToken(token)
-                  .transactItems(writeItems)
-                  .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-                  .build)
-              .asScala
-
-            if (log.isDebugEnabled) {
-              result.foreach { response =>
-                log.debug(
-                  "Wrote [{}] events with breadcrumbs for persistenceId [{}], consumed [{}] WCU",
-                  totalEvents,
-                  persistenceId,
-                  response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue).sum)
-              }
-            }
-
-            result
-              .map { response =>
-                checkClockSkew(response)
-                Done
-              }(ExecutionContext.parasitic)
-              .recoverWith { case c: CompletionException =>
-                Future.failed(c.getCause)
-              }(ExecutionContext.parasitic)
-
-          }
+          writeItems(withBreadcrumbs)
         }
 
-    } else doWriteEvents(events)
+    } else writeItems(events)
   }
 
-  private def doWriteEvents(events: Seq[SerializedJournalItem]): Future[Done] = {
-    require(events.nonEmpty)
+  private def writeItems(items: Seq[ItemInJournal]): Future[Done] = {
+    require(items.nonEmpty)
 
-    // it's always the same persistenceId for all events
-    val persistenceId = events.head.persistenceId
+    // always the same persistenceId
+    val persistenceId = items.head.persistenceId
     val entityType = PersistenceId.extractEntityType(persistenceId)
     val slice = persistenceExt.sliceForPersistenceId(persistenceId)
 
     val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
 
-    def putItemAttributes(item: SerializedJournalItem) = {
+    def putItemAttributes(item: ItemInJournal) = {
       import JournalAttributes._
+
       val attributes = new JHashMap[String, AttributeValue]
       attributes.put(Pid, AttributeValue.fromS(persistenceId))
       attributes.put(SeqNr, AttributeValue.fromN(item.seqNr.toString))
       attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
+
       val timestampMicros = InstantFactory.toEpochMicros(item.writeTimestamp)
       attributes.put(Timestamp, AttributeValue.fromN(timestampMicros.toString))
-      attributes.put(EventSerId, AttributeValue.fromN(item.serId.toString))
-      attributes.put(EventSerManifest, AttributeValue.fromS(item.serManifest))
-      attributes.put(EventPayload, AttributeValue.fromB(SdkBytes.fromByteArray(item.payload.get)))
       attributes.put(Writer, AttributeValue.fromS(item.writerUuid))
 
-      if (item.tags.nonEmpty) { // note: DynamoDB does not support empty sets
+      if (item.tags.nonEmpty) { // empty sets not supported by DynamoDB
         attributes.put(Tags, AttributeValue.fromSs(item.tags.toSeq.asJava))
       }
 
@@ -295,28 +184,44 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         attributes.put(Expiry, AttributeValue.fromN(expiryTimestamp.getEpochSecond.toString))
       }
 
+      item match {
+        case sji: SerializedJournalItem =>
+          attributes.put(EventSerId, AttributeValue.fromN(sji.serId.toString))
+          attributes.put(EventSerManifest, AttributeValue.fromS(sji.serManifest))
+          attributes.put(EventPayload, AttributeValue.fromB(SdkBytes.fromByteArray(sji.payload.get)))
+
+        case jiwb: JournalItemWithBreadcrumb =>
+          attributes.put(BreadcrumbSerId, AttributeValue.fromN(jiwb.breadcrumbSerId.toString))
+          attributes.put(BreadcrumbSerManifest, AttributeValue.fromS(jiwb.breadcrumbSerManifest))
+          attributes.put(BreadcrumbPayload, AttributeValue.fromB(SdkBytes.fromByteArray(jiwb.breadcrumbPayload.get)))
+      }
+
       attributes
     }
 
-    val totalEvents = events.size
-    if (totalEvents == 1) {
-      val req = PutItemRequest
-        .builder()
-        .tableName(settings.journalTable)
-        .item(putItemAttributes(events.head))
-        .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-        .build()
-      val result = client.putItem(req).asScala
+    val totalItems = items.size
 
-      if (log.isDebugEnabled()) {
+    if (totalItems == 1) {
+      val item = items.head
+      val result = client.putItem { putItemBuilder =>
+        putItemBuilder
+          .tableName(settings.journalTable)
+          .item(putItemAttributes(item))
+          .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+      }.asScala
+
+      if (log.isDebugEnabled) {
         result.foreach { response =>
+          val logBase =
+            item match {
+              case sji: SerializedJournalItem      => "Wrote [1] events "
+              case jiwb: JournalItemWithBreadcrumb => "Wrote [1] events with breadcrumbs "
+            }
           log.debug(
-            "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
-            1,
-            persistenceId,
-            response.consumedCapacity.capacityUnits)
+            logBase + s"for persistenceId [$persistenceId] consumed [${response.consumedCapacity.capacityUnits}] WCU")
         }
       }
+
       result
         .map { response =>
           checkClockSkew(response)
@@ -326,23 +231,21 @@ import software.amazon.awssdk.services.dynamodb.model.Update
           Future.failed(c.getCause)
         }(ExecutionContext.parasitic)
     } else {
-      val writeItems =
-        events.map { item =>
-          TransactWriteItem
-            .builder()
-            .put(Put.builder().tableName(settings.journalTable).item(putItemAttributes(item)).build())
-            .build()
-        }.asJava
+      val writeItems = items.map { item =>
+        TransactWriteItem
+          .builder()
+          .put { putBuilder =>
+            putBuilder.tableName(settings.journalTable).item(putItemAttributes(item)).build
+          }
+          .build
+      }.asJava
 
       val token = {
-        val firstEvent = events.head
-        val uuid = UUID.fromString(firstEvent.writerUuid)
-        val seqNr = firstEvent.seqNr
+        val firstItem = items.head
+        val uuid = UUID.fromString(firstItem.writerUuid)
+        val seqNr = firstItem.seqNr
         val bb = ByteBuffer.allocate(24)
-        bb.asLongBuffer()
-          .put(uuid.getMostSignificantBits)
-          .put(uuid.getLeastSignificantBits)
-          .put(seqNr)
+        bb.asLongBuffer().put(uuid.getMostSignificantBits).put(uuid.getLeastSignificantBits).put(seqNr)
 
         new String(base64Encoder.encode(bb.array))
       }
@@ -352,19 +255,24 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         .clientRequestToken(token)
         .transactItems(writeItems)
         .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
-        .build()
+        .build
 
       val result = client.transactWriteItems(req).asScala
 
-      if (log.isDebugEnabled()) {
+      if (log.isDebugEnabled) {
         result.foreach { response =>
-          log.debug(
-            "Wrote [{}] events for persistenceId [{}], consumed [{}] WCU",
-            events.size,
-            persistenceId,
-            response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue()).sum)
+          val logBase =
+            items.head match {
+              case sji: SerializedJournalItem      => s"Wrote [$totalItems] events "
+              case jiwb: JournalItemWithBreadcrumb => s"Wrote [$totalItems] events with breadcrumbs "
+            }
+
+          val capacityConsumed = response.consumedCapacity.iterator.asScala.map(_.capacityUnits.doubleValue).sum
+
+          log.debug(logBase + s"for persistenceId [$persistenceId] consumed [$capacityConsumed] WCU")
         }
       }
+
       result
         .map { response =>
           checkClockSkew(response)
@@ -642,5 +550,4 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         Future.failed(c.getCause)
       }(ExecutionContext.parasitic)
   }
-
 }

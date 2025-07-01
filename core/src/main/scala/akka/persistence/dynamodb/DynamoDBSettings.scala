@@ -11,6 +11,7 @@ import scala.jdk.DurationConverters._
 
 import akka.actor.typed.ActorSystem
 import akka.annotation.ApiMayChange
+import akka.annotation.DoNotInherit
 import akka.annotation.InternalStableApi
 import akka.util.Helpers
 import com.typesafe.config.Config
@@ -62,9 +63,9 @@ object DynamoDBSettings {
 
     val clockSkewSettings = new ClockSkewSettings(config)
 
-    val journalFallbackSettings = FallbackSettings(config.getConfig("journal.fallback-store"))
+    val journalFallbackSettings = JournalFallbackSettings(config.getConfig("journal.fallback-store"))
 
-    val snapshotFallbackSettings = FallbackSettings(config.getConfig("snapshot.fallback-store"))
+    val snapshotFallbackSettings = SnapshotFallbackSettings(config.getConfig("snapshot.fallback-store"))
 
     new DynamoDBSettings(
       journalTable,
@@ -101,8 +102,8 @@ final class DynamoDBSettings private (
     val journalBySliceGsi: String,
     val snapshotBySliceGsi: String,
     val clockSkewSettings: ClockSkewSettings,
-    val journalFallbackSettings: FallbackSettings,
-    val snapshotFallbackSettings: FallbackSettings) {
+    val journalFallbackSettings: JournalFallbackSettings,
+    val snapshotFallbackSettings: SnapshotFallbackSettings) {
   override def toString: String =
     s"DynamoDBSettings(journalTable=$journalTable, journalPublishEvents=$journalPublishEvents, " +
     s"snapshotTable=$snapshotTable, querySettings=$querySettings, cleanupSettings=$cleanupSettings, " +
@@ -336,28 +337,52 @@ final class ClockSkewSettings(config: Config) {
   override def toString: String = s"ClockSkewSettings($warningTolerance)"
 }
 
-@ApiMayChange
-final class FallbackSettings(val plugin: String, val threshold: Int, val batchSize: Int) {
+/** Not for user extension */
+@DoNotInherit
+sealed abstract class FallbackSettings(val plugin: String, val threshold: Int) {
   require(threshold > 0, "threshold must be positive")
   require(threshold <= (400 * 1000), "threshold must be at most 400 KB")
 
-  override def toString: String =
-    if (plugin.nonEmpty)
-      s"FallbackSettings(plugin=$plugin, threshold=${threshold}B, batchSize=$batchSize)"
-    else "disabled"
+  // Must be overridden in subclasses
+  override def toString: String = throw new scala.NotImplementedError
 
   def isEnabled: Boolean = plugin.nonEmpty
 }
 
-object FallbackSettings {
-  def apply(config: Config): FallbackSettings = {
+@ApiMayChange
+final class SnapshotFallbackSettings(plugin: String, threshold: Int) extends FallbackSettings(plugin, threshold) {
+  override def toString: String =
+    if (isEnabled)
+      s"SnapshotFallbackSettings(plugin=$plugin, threshold=${threshold}B)"
+    else "disabled"
+}
+
+object SnapshotFallbackSettings {
+  def apply(config: Config): SnapshotFallbackSettings = {
     val plugin = config.getString("plugin")
     val threshold = java.lang.Long.min(config.getBytes("threshold"), 400 * 1000).toInt
 
-    // batch-size doesn't have to be defined for snapshot store
-    val batchSize = if (config.hasPath("batch-size")) config.getInt("batch-size") else 1
+    new SnapshotFallbackSettings(plugin, threshold)
+  }
+}
 
-    new FallbackSettings(plugin, threshold, batchSize)
+@ApiMayChange
+final class JournalFallbackSettings(commonSettings: SnapshotFallbackSettings, val batchSize: Int)
+    extends FallbackSettings(commonSettings.plugin, commonSettings.threshold) {
+  require(!commonSettings.isEnabled || batchSize > 0, "batch size must be positive")
+
+  override def toString: String =
+    if (isEnabled)
+      s"JournalFallbackSettings(plugin=$plugin, threshold=${threshold}B, batchSize=$batchSize)"
+    else "disabled"
+}
+
+object JournalFallbackSettings {
+  def apply(config: Config): JournalFallbackSettings = {
+    val commonSettings = SnapshotFallbackSettings(config)
+    val batchSize = config.getInt("batch-size")
+
+    new JournalFallbackSettings(commonSettings, batchSize)
   }
 }
 

@@ -116,7 +116,8 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
                   log.error(msg)
                   Future.failed(new NoSuchElementException(msg))
                 } else {
-                  val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.snapshotFallbackSettings.plugin)
+                  val fallbackStore =
+                    fallbackStoreProvider.snapshotFallbackStoreFor(settings.snapshotFallbackSettings.plugin)
                   serialization.deserialize(breadcrumb._3, breadcrumb._1, breadcrumb._2) match {
                     case Success(candidate) =>
                       fallbackStore.toBreadcrumb(candidate) match {
@@ -201,7 +202,7 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
 
       if (size >= settings.snapshotFallbackSettings.threshold) {
 
-        val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.snapshotFallbackSettings.plugin)
+        val fallbackStore = fallbackStoreProvider.snapshotFallbackStoreFor(settings.snapshotFallbackSettings.plugin)
 
         val meta = snapshot.metadata.map { m => (m.serId -> m.serManifest) -> m.payload }
 

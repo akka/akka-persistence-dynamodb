@@ -5,7 +5,8 @@
 package akka.persistence.s3fallback
 
 import akka.actor.typed.ActorSystem
-import akka.persistence.dynamodb.internal.FallbackStore
+import akka.persistence.dynamodb.internal.EventFallbackStore
+import akka.persistence.dynamodb.internal.SnapshotFallbackStore
 import akka.persistence.typed.PersistenceId
 import akka.util.Base62
 import com.typesafe.config.Config
@@ -26,8 +27,11 @@ import scala.jdk.FutureConverters._
 
 import java.time.Instant
 
-final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: String) extends FallbackStore[String] {
-  import FallbackStore._
+final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: String)
+    extends EventFallbackStore[String]
+    with SnapshotFallbackStore[String] {
+  import EventFallbackStore._
+  import SnapshotFallbackStore._
 
   override def toBreadcrumb(maybeBreadcrumb: AnyRef): Option[String] =
     maybeBreadcrumb match {
@@ -35,9 +39,21 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       case _         => None
     }
 
-  override def breadcumbClass: Class[String] = classOf[String]
+  override def breadcrumbClass: Class[String] = classOf[String]
+
+  override def close(): Unit = {
+    client.close()
+  }
 
   override def loadEvent(
+      breadcrumb: String,
+      persistenceId: String,
+      seqNr: Long,
+      includePayload: Boolean): Future[Option[EventFromFallback]] =
+    eventFallbackInitialFuture.flatMap { _ => _loadEvent(breadcrumb, persistenceId, seqNr, includePayload) }(
+      system.executionContext)
+
+  private def _loadEvent(
       bucket: String, // the breadcrumb
       persistenceId: String,
       seqNr: Long,
@@ -85,6 +101,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       Future.failed(new IllegalStateException("No Akka event metadata found"))
     }
   }
+
   def saveEvent(
       persistenceId: String,
       seqNr: Long,
@@ -106,10 +123,17 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
     client.putObject(req, AsyncRequestBody.fromBytes(payload)).asScala.map(_ => bucket)(ExecutionContext.parasitic)
   }
 
-  def loadSnapshot(
+  override def loadSnapshot(
+      breadcrumb: String,
+      persistenceId: String,
+      seqNr: Long): Future[Option[SnapshotFromFallback]] =
+    snapshotFallbackInitialFuture.flatMap { _ => _loadSnapshot(breadcrumb, persistenceId, seqNr) }(
+      system.executionContext)
+
+  private def _loadSnapshot(
       bucket: String, // aka breadcrumb
       pid: String,
-      seqNr: Long): Future[Option[FallbackStore.SnapshotFromFallback]] = {
+      seqNr: Long): Future[Option[SnapshotFromFallback]] = {
     val req = GetObjectRequest.builder
       .bucket(bucket)
       .key(keyForPid(pid))
@@ -224,8 +248,18 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
     }
 
   private val settings = S3FallbackSettings(config)
+  private val eventFallbackInitialFuture =
+    if (settings.eventsBucket.nonEmpty) Future.unit
+    else
+      Future.failed(new UnsupportedOperationException("Event fallback not enabled, must set events bucket to enable"))
 
-  private val client = S3ClientProvider(system).clientFor(settings)
+  private val snapshotFallbackInitialFuture =
+    if (settings.snapshotsBucket.nonEmpty) Future.unit
+    else
+      Future.failed(
+        new UnsupportedOperationException("Snapshot fallback not enabled, must set snapshots bucket to enable"))
+
+  private val client = S3ClientProvider(system).clientFor(settings, configLocation)
 
   final def eventsPerFolder: Int = 1000
 }

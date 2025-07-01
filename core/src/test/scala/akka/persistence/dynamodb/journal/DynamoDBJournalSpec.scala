@@ -283,7 +283,7 @@ class DynamoDBJournalWithFallbackSpec
     with TestData
     with TestDbLifecycle
     with LogCapturing {
-  import InMemFallbackStore.Invocation
+  import InMemFallbackStore._
   import akka.persistence.dynamodb.internal.JournalAttributes._
 
   def typedSystem: ActorSystem[_] = testKit.system
@@ -297,6 +297,7 @@ class DynamoDBJournalWithFallbackSpec
   }
 
   "A DynamoDB journal with fallback enabled" should {
+
     "not interact with the fallback store for small events" in withFallbackStoreProbe { (fallbackStore, invocations) =>
       new Setup {
         val probe = TypedTestProbe[Any]()
@@ -323,13 +324,12 @@ class DynamoDBJournalWithFallbackSpec
             WriteMessages(Seq(AtomicWrite(Seq(PersistentRepr(bigArr, 1, persistenceId.id)))), classicProbeRef, 1),
             classicProbeRef)
 
-          val invocation = invocations.expectNext()
-          invocation.method shouldBe "saveEvent"
-          invocation.args(0) shouldBe persistenceId.id
-          invocation.args(1) shouldBe 1 // seqNr
-          invocation.args(2) shouldBe 4 // serId: ByteArraySerializer
-          invocation.args(3) shouldBe "" // serManifest: (ByteArraySerializer.includeManifest = false)
-          (invocation.args(4).asInstanceOf[Array[Byte]] should contain).theSameElementsInOrderAs(bigArr)
+          val saveEvent = invocations.expectNext().asInstanceOf[SaveEvent]
+          saveEvent.persistenceId shouldBe persistenceId.id
+          saveEvent.seqNr shouldBe 1
+          saveEvent.serId shouldBe 4 // ByteArraySerializer
+          saveEvent.serManifest shouldBe "" // (ByteArraySerializer.includeManifest = false)
+          (saveEvent.payload should contain).theSameElementsInOrderAs(bigArr)
 
           probe.expectMessageType[WriteMessagesSuccessful.type]
 
@@ -376,21 +376,19 @@ class DynamoDBJournalWithFallbackSpec
                 .putItem(PutItemRequest.builder.tableName(settings.journalTable).item(attributes).build)
                 .asScala
                 .map { _ =>
-                  invocations.expectNext(10.millis).method
+                  invocations.expectNext(10.millis)
                 }(system.executionContext)
             }(system.executionContext),
-          1.second) shouldBe "saveEvent"
+          1.second) shouldBe a[SaveEvent]
 
         journal.tell(ReplayMessages(1, 10, 10, persistenceId.id, classicProbeRef), classicProbeRef)
 
-        //invocations.requestNext()
-        invocations.requestNext() shouldBe Invocation("toBreadcrumb", Seq("breadcrumb"))
-        val loadInvocation = invocations.requestNext(10.millis)
-        loadInvocation.method shouldBe "loadEvent"
-        loadInvocation.args(0) shouldBe "breadcrumb"
-        loadInvocation.args(1) shouldBe persistenceId.id
-        loadInvocation.args(2) shouldBe 1
-        loadInvocation.args(3) shouldBe true
+        invocations.requestNext() shouldBe ToBreadcrumb("breadcrumb")
+        val loadInvocation = invocations.requestNext(10.millis).asInstanceOf[LoadEvent]
+        loadInvocation.breadcrumb shouldBe "breadcrumb"
+        loadInvocation.persistenceId shouldBe persistenceId.id
+        loadInvocation.seqNr shouldBe 1
+        loadInvocation.includePayload shouldBe true
 
         val result = probe.expectMessageType[ReplayedMessage]
         (result.persistent.payload.asInstanceOf[Array[Byte]] should contain).theSameElementsInOrderAs(arr)
@@ -404,7 +402,7 @@ class DynamoDBJournalWithFallbackSpec
       test: (InMemFallbackStore, TestSubscriber.Probe[InMemFallbackStore.Invocation]) => Unit): Unit = {
 
     val fallbackStore =
-      FallbackStoreProvider(testKit.system).fallbackStoreFor("fallback-plugin").asInstanceOf[InMemFallbackStore]
+      FallbackStoreProvider(testKit.system).eventFallbackStoreFor("fallback-plugin").asInstanceOf[InMemFallbackStore]
 
     val invocationsProbe = fallbackStore.invocationStream.runWith(TestSink()(testKit.system))
 

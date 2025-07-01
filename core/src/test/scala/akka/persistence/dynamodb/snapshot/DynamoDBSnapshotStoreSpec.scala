@@ -200,7 +200,7 @@ class DynamoDBSnapshotFallbackSpec
     with TestData
     with TestDbLifecycle
     with LogCapturing {
-  import InMemFallbackStore.Invocation
+  import InMemFallbackStore.{ LoadSnapshot => LoadSnapshotInvocation, SaveSnapshot => SaveSnapshotInvocation, _ }
   import SnapshotAttributes._
 
   def typedSystem: ActorSystem[_] = testKit.system
@@ -235,18 +235,17 @@ class DynamoDBSnapshotFallbackSpec
 
           snapshotStore.tell(SaveSnapshot(SnapshotMetadata(persistenceId.id, 2, 0, None), bigArr), classicProbeRef)
 
-          val invocation = invocations.expectNext()
+          val saveSnapshot = invocations.expectNext().asInstanceOf[SaveSnapshotInvocation]
           val now = Instant.now()
-          invocation.method shouldBe "saveSnapshot"
-          invocation.args(0) shouldBe persistenceId.id
-          invocation.args(1) shouldBe 2 // seqNr
-          assert(now.compareTo(invocation.args(2).asInstanceOf[Instant]) >= 0, "writeTimestamp should be before now")
-          assert(now.compareTo(invocation.args(3).asInstanceOf[Instant]) >= 0, "eventTimestamp should be before now")
-          invocation.args(4) shouldBe 4 // serId: ByteArraySerializer
-          invocation.args(5) shouldBe "" // serManifest (ByteArraySerializer.includeManifest = false)
-          (invocation.args(6).asInstanceOf[Array[Byte]] should contain).theSameElementsInOrderAs(bigArr)
-          invocation.args(7).asInstanceOf[Set[String]] shouldBe empty
-          invocation.args(8) shouldBe None
+          saveSnapshot.persistenceId shouldBe persistenceId.id
+          saveSnapshot.seqNr shouldBe 2
+          assert(now.compareTo(saveSnapshot.writeTimestamp) >= 0, "writeTimestamp should be before now")
+          assert(now.compareTo(saveSnapshot.eventTimestamp) >= 0, "eventTimestamp should be before now")
+          saveSnapshot.serId shouldBe 4 // ByteArraySerializer
+          saveSnapshot.serManifest shouldBe "" // ByteArraySerializer.includeManifest = false
+          (saveSnapshot.payload should contain).theSameElementsInOrderAs(bigArr)
+          saveSnapshot.tags shouldBe empty
+          saveSnapshot.meta shouldBe empty
 
           probe.expectMessageType[SaveSnapshotSuccess]
 
@@ -293,21 +292,20 @@ class DynamoDBSnapshotFallbackSpec
                 .putItem(PutItemRequest.builder.tableName(settings.snapshotTable).item(attributes).build)
                 .asScala
                 .map { _ =>
-                  invocations.expectNext(10.millis).method
+                  invocations.expectNext(10.millis)
                 }(system.executionContext)
             }(system.executionContext),
-          1.second) shouldBe "saveSnapshot"
+          1.second) shouldBe a[SaveSnapshotInvocation]
 
         snapshotStore.tell(
           LoadSnapshot(persistenceId.id, SnapshotSelectionCriteria.Latest, Long.MaxValue),
           classicProbeRef)
 
-        invocations.requestNext() shouldBe Invocation("toBreadcrumb", Seq("breadcrumb"))
-        val loadInvocation = invocations.requestNext(10.millis)
-        loadInvocation.method shouldBe "loadSnapshot"
-        loadInvocation.args(0) shouldBe "breadcrumb"
-        loadInvocation.args(1) shouldBe persistenceId.id
-        loadInvocation.args(2) shouldBe 3
+        invocations.requestNext() shouldBe ToBreadcrumb("breadcrumb")
+        val loadInvocation = invocations.requestNext(10.millis).asInstanceOf[LoadSnapshotInvocation]
+        loadInvocation.breadcrumb shouldBe "breadcrumb"
+        loadInvocation.persistenceId shouldBe persistenceId.id
+        loadInvocation.seqNr shouldBe 3
 
         val result = probe.expectMessageType[LoadSnapshotResult]
         result.toSequenceNr shouldBe Long.MaxValue
@@ -325,7 +323,7 @@ class DynamoDBSnapshotFallbackSpec
       test: (InMemFallbackStore, TestSubscriber.Probe[InMemFallbackStore.Invocation]) => Unit): Unit = {
 
     val fallbackStore =
-      FallbackStoreProvider(testKit.system).fallbackStoreFor("fallback-plugin").asInstanceOf[InMemFallbackStore]
+      FallbackStoreProvider(testKit.system).snapshotFallbackStoreFor("fallback-plugin").asInstanceOf[InMemFallbackStore]
 
     val invocationsProbe = fallbackStore.invocationStream.runWith(TestSink()(testKit.system))
 

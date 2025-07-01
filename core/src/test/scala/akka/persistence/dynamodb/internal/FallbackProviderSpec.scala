@@ -22,9 +22,11 @@ import akka.actor.testkit.typed.scaladsl.ActorTestKit
 import akka.actor.testkit.typed.scaladsl.ActorTestKitBase
 
 final class InMemFallbackStore(system: ActorSystem[_], config: Config, configLocation: String)
-    extends FallbackStore[String] {
-  import FallbackStore._
-  import InMemFallbackStore.Invocation
+    extends EventFallbackStore[String]
+    with SnapshotFallbackStore[String] {
+  import EventFallbackStore._
+  import SnapshotFallbackStore._
+  import InMemFallbackStore._
 
   implicit val systemForMat: ActorSystem[_] = system
   private val (queue, source) = Source.queue[Invocation](16).toMat(BroadcastHub.sink(1, 16))(Keep.both).run()
@@ -34,18 +36,20 @@ final class InMemFallbackStore(system: ActorSystem[_], config: Config, configLoc
   private val journal = mutable.HashMap.empty[String, mutable.HashMap[Long, EventFromFallback]]
   private val snapshotStore = mutable.HashMap.empty[String, SnapshotFromFallback]
 
-  override def breadcumbClass: Class[String] = {
-    queue.offer(Invocation("breadcrumbClass", Nil))
+  override def breadcrumbClass: Class[String] = {
+    queue.offer(BreadcrumbClass)
     classOf[String]
   }
 
   override def toBreadcrumb(maybeBreadcrumb: AnyRef): Option[String] = {
-    queue.offer(Invocation("toBreadcrumb", Seq(maybeBreadcrumb)))
+    queue.offer(ToBreadcrumb(maybeBreadcrumb))
     maybeBreadcrumb match {
       case s: String => Some(s)
       case _         => None
     }
   }
+
+  override def close(): Unit = {}
 
   override def saveEvent(
       persistenceId: String,
@@ -53,7 +57,7 @@ final class InMemFallbackStore(system: ActorSystem[_], config: Config, configLoc
       serId: Int,
       serManifest: String,
       payload: Array[Byte]): Future[String] = {
-    queue.offer(Invocation("saveEvent", Seq(persistenceId, seqNr, serId, serManifest, payload)))
+    queue.offer(SaveEvent(persistenceId, seqNr, serId, serManifest, payload))
 
     val evt = new EventFromFallback(serId, serManifest, Some(payload))
 
@@ -73,8 +77,8 @@ final class InMemFallbackStore(system: ActorSystem[_], config: Config, configLoc
       breadcrumb: String,
       persistenceId: String,
       seqNr: Long,
-      includePayload: Boolean): Future[Option[FallbackStore.EventFromFallback]] = {
-    queue.offer(Invocation("loadEvent", Seq(breadcrumb, persistenceId, seqNr, includePayload)))
+      includePayload: Boolean): Future[Option[EventFallbackStore.EventFromFallback]] = {
+    queue.offer(LoadEvent(breadcrumb, persistenceId, seqNr, includePayload))
 
     if (breadcrumb == "breadcrumb") {
       val foundEvt = journal.get(persistenceId).flatMap { log => log.get(seqNr) }
@@ -97,9 +101,7 @@ final class InMemFallbackStore(system: ActorSystem[_], config: Config, configLoc
       tags: Set[String],
       meta: Option[((Int, String), Array[Byte])]): Future[String] = {
     queue.offer(
-      Invocation(
-        "saveSnapshot",
-        Seq(persistenceId, seqNr, writeTimestamp, eventTimestamp, serId, serManifest, payload, tags, meta)))
+      SaveSnapshot(persistenceId, seqNr, writeTimestamp, eventTimestamp, serId, serManifest, payload, tags, meta))
 
     val snapshot =
       new SnapshotFromFallback(seqNr, writeTimestamp, eventTimestamp, serId, serManifest, payload, tags, meta)
@@ -112,8 +114,8 @@ final class InMemFallbackStore(system: ActorSystem[_], config: Config, configLoc
   override def loadSnapshot(
       breadcrumb: String,
       persistenceId: String,
-      seqNr: Long): Future[Option[SnapshotFromFallback]] = {
-    queue.offer(Invocation("loadSnapshot", Seq(breadcrumb, persistenceId, seqNr)))
+      seqNr: Long): Future[Option[SnapshotFallbackStore.SnapshotFromFallback]] = {
+    queue.offer(LoadSnapshot(breadcrumb, persistenceId, seqNr))
 
     if (breadcrumb == "breadcrumb") {
       Future.successful(snapshotStore.get(persistenceId))
@@ -124,19 +126,44 @@ final class InMemFallbackStore(system: ActorSystem[_], config: Config, configLoc
 }
 
 object InMemFallbackStore {
-  case class Invocation(method: String, args: Seq[Any])
+  sealed trait Invocation
+
+  case object BreadcrumbClass extends Invocation
+
+  case class ToBreadcrumb(maybeBreadcrumb: AnyRef) extends Invocation
+
+  case class SaveEvent(persistenceId: String, seqNr: Long, serId: Int, serManifest: String, payload: Array[Byte])
+      extends Invocation
+
+  case class LoadEvent(breadcrumb: String, persistenceId: String, seqNr: Long, includePayload: Boolean)
+      extends Invocation
+
+  case class SaveSnapshot(
+      persistenceId: String,
+      seqNr: Long,
+      writeTimestamp: Instant,
+      eventTimestamp: Instant,
+      serId: Int,
+      serManifest: String,
+      payload: Array[Byte],
+      tags: Set[String],
+      meta: Option[((Int, String), Array[Byte])])
+      extends Invocation
+  case class LoadSnapshot(breadcrumb: String, persistenceId: String, seqNr: Long) extends Invocation
 }
 
-class ImproperFallbackStore extends FallbackStore[AnyRef] {
+class ImproperFallbackStore extends EventFallbackStore[AnyRef] with SnapshotFallbackStore[AnyRef] {
   def toBreadcrumb(maybeBreadcrumb: AnyRef): Option[AnyRef] = None
 
-  def breadcumbClass: Class[AnyRef] = classOf[AnyRef]
+  def breadcrumbClass: Class[AnyRef] = classOf[AnyRef]
+
+  def close(): Unit = {}
 
   def loadEvent(
       breadcrumb: AnyRef,
       persistenceId: String,
       seqNr: Long,
-      includePayload: Boolean): Future[Option[FallbackStore.EventFromFallback]] = fail
+      includePayload: Boolean): Future[Option[EventFallbackStore.EventFromFallback]] = fail
 
   def saveEvent(
       persistenceId: String,
@@ -148,7 +175,7 @@ class ImproperFallbackStore extends FallbackStore[AnyRef] {
   def loadSnapshot(
       breadcrumb: AnyRef,
       persistenceId: String,
-      seqNr: Long): Future[Option[FallbackStore.SnapshotFromFallback]] = fail
+      seqNr: Long): Future[Option[SnapshotFallbackStore.SnapshotFromFallback]] = fail
 
   def saveSnapshot(
       persistenceId: String,
@@ -171,9 +198,11 @@ class FallbackStoreProviderSpec extends AnyWordSpec with Matchers {
         class = "akka.persistence.dynamodb.internal.InMemFallbackStore"
       }
       """) { testkit =>
-      val fallbackStore = FallbackStoreProvider(testkit.system).fallbackStoreFor("fallback-plugin")
+      val eventFallbackStore = FallbackStoreProvider(testkit.system).eventFallbackStoreFor("fallback-plugin")
+      val snapshotFallbackStore = FallbackStoreProvider(testkit.system).snapshotFallbackStoreFor("fallback-plugin")
 
-      fallbackStore shouldBe an[InMemFallbackStore]
+      eventFallbackStore shouldBe an[InMemFallbackStore]
+      snapshotFallbackStore shouldBe an[InMemFallbackStore]
     }
 
     "memoize constructed instances" in withActorTestKit("""
@@ -181,8 +210,8 @@ class FallbackStoreProviderSpec extends AnyWordSpec with Matchers {
         class = "akka.persistence.dynamodb.internal.InMemFallbackStore"
       }
       """) { testkit =>
-      val firstFallbackStore = FallbackStoreProvider(testkit.system).fallbackStoreFor("fallback-plugin")
-      val secondFallbackStore = FallbackStoreProvider(testkit.system).fallbackStoreFor("fallback-plugin")
+      val firstFallbackStore = FallbackStoreProvider(testkit.system).eventFallbackStoreFor("fallback-plugin")
+      val secondFallbackStore = FallbackStoreProvider(testkit.system).eventFallbackStoreFor("fallback-plugin")
 
       firstFallbackStore shouldBe secondFallbackStore
     }
@@ -193,7 +222,7 @@ class FallbackStoreProviderSpec extends AnyWordSpec with Matchers {
       }
       """) { testkit =>
       an[IllegalArgumentException] shouldBe thrownBy {
-        FallbackStoreProvider(testkit.system).fallbackStoreFor("fallback-plugin")
+        FallbackStoreProvider(testkit.system).snapshotFallbackStoreFor("fallback-plugin")
       }
     }
 
@@ -203,11 +232,10 @@ class FallbackStoreProviderSpec extends AnyWordSpec with Matchers {
       }
       """) { testkit =>
       val re = the[RuntimeException] thrownBy {
-        FallbackStoreProvider(testkit.system).fallbackStoreFor("fallback-plugin")
+        FallbackStoreProvider(testkit.system).eventFallbackStoreFor("fallback-plugin")
       }
 
-      re.getMessage should include("Could not find constructor for FallbackStore plugin [")
-      re.getMessage should include("] taking actor system, config, and config location")
+      re.getMessage should include("Could not create instance of fallback store plugin [")
     }
   }
 

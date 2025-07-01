@@ -10,6 +10,7 @@ import akka.actor.typed.ActorSystem
 import akka.actor.typed.Extension
 import akka.actor.typed.ExtensionId
 import akka.annotation.InternalApi
+import akka.persistence.dynamodb.util.AWSClientMetricsResolver
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient
@@ -44,7 +45,8 @@ object S3ClientProvider extends ExtensionId[S3ClientProvider] {
       useIdleConnectionReaper: Boolean,
       connectionMaxIdleTime: FiniteDuration,
       tlsNegotiationTimeout: FiniteDuration,
-      tcpKeepAlive: Boolean)
+      tcpKeepAlive: Boolean,
+      multipart: MultipartSettings)
 }
 
 /** INTERNAL API */
@@ -62,7 +64,7 @@ final class S3ClientProvider(system: ActorSystem[_]) extends Extension {
       Future.successful(Done)
     }
 
-  def clientFor(settings: S3FallbackSettings): S3AsyncClient = {
+  def clientFor(settings: S3FallbackSettings, configLocation: String): S3AsyncClient = {
     val clientSettingsConfig = system.settings.config.getConfig(settings.httpClientPath)
     val http = HttpSettings(clientSettingsConfig)
 
@@ -79,15 +81,16 @@ final class S3ClientProvider(system: ActorSystem[_]) extends Extension {
       http.useIdleConnectionReaper,
       http.connectionMaxIdleTime,
       http.tlsNegotiationTimeout,
-      http.tcpKeepAlive)
+      http.tcpKeepAlive,
+      settings.multipart)
 
-    clientFor(spec)
+    clientFor(spec, configLocation)
   }
 
-  def clientFor(spec: S3ClientSpec): S3AsyncClient =
-    clients.computeIfAbsent(spec, settings => createClient(settings))
+  def clientFor(spec: S3ClientSpec, configLocation: String): S3AsyncClient =
+    clients.computeIfAbsent(spec, settings => createClient(settings, configLocation))
 
-  private def createClient(spec: S3ClientSpec): S3AsyncClient = {
+  private def createClient(spec: S3ClientSpec, configLocation: String): S3AsyncClient = {
     // At least for now, use the same http client settings as DDB
     val httpClientBuilder = NettyNioAsyncHttpClient.builder
       .maxConcurrency(spec.maxConcurrency)
@@ -107,6 +110,14 @@ final class S3ClientProvider(system: ActorSystem[_]) extends Extension {
     builder = builder
       .httpClientBuilder(httpClientBuilder)
 
+    if (spec.multipart.enabled) {
+      builder.multipartConfiguration { mpBuilder =>
+        mpBuilder
+          .thresholdInBytes(spec.multipart.threshold)
+          .minimumPartSizeInBytes(spec.multipart.partition)
+      }
+    }
+
     // otherwise default region lookup
     spec.region.foreach { region =>
       builder = builder.region(Region.of(region))
@@ -123,6 +134,14 @@ final class S3ClientProvider(system: ActorSystem[_]) extends Extension {
           AwsBasicCredentials.create(localSettings.accessKey, localSettings.secretKey)))
         .forcePathStyle(true)
     }
+
+    AWSClientMetricsResolver
+      .resolve(system, configLocation + ".metrics-providers")
+      .foreach { mp =>
+        builder.overrideConfiguration { ocBuilder =>
+          ocBuilder.addMetricPublisher(mp.metricPublisherFor(configLocation))
+        }
+      }
 
     builder.build()
   }

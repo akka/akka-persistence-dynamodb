@@ -458,7 +458,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
 
       case jiwb: JournalItemWithBreadcrumb =>
         deserializeBreadcrumb(jiwb).flatMap { crumb =>
-          val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.journalFallbackSettings.plugin)
+          val fallbackStore = fallbackStoreProvider.eventFallbackStoreFor(settings.journalFallbackSettings.plugin)
 
           val includePayload = jiwb.breadcrumbPayload.isDefined
 
@@ -490,7 +490,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
 
   private def deserializeBreadcrumb(item: JournalItemWithBreadcrumb): Future[AnyRef] =
     if (settings.journalFallbackSettings.isEnabled) {
-      val fallbackStore = fallbackStoreProvider.fallbackStoreFor(settings.journalFallbackSettings.plugin)
+      val fallbackStore = fallbackStoreProvider.eventFallbackStoreFor(settings.journalFallbackSettings.plugin)
 
       item.breadcrumbPayload match {
         case Some(payload) =>
