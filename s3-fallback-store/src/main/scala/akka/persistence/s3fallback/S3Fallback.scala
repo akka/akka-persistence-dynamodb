@@ -10,6 +10,7 @@ import akka.persistence.dynamodb.internal.SnapshotFallbackStore
 import akka.persistence.typed.PersistenceId
 import akka.util.Base62
 import com.typesafe.config.Config
+import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.async.AsyncRequestBody
 import software.amazon.awssdk.core.async.AsyncResponseTransformer
 import software.amazon.awssdk.services.s3.model.GetObjectResponse
@@ -24,6 +25,8 @@ import scala.concurrent.Future
 import scala.jdk.CollectionConverters.MapHasAsJava
 import scala.jdk.CollectionConverters.MapHasAsScala
 import scala.jdk.FutureConverters._
+import scala.util.Failure
+import scala.util.Success
 
 import java.time.Instant
 
@@ -32,6 +35,9 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
     with SnapshotFallbackStore[String] {
   import EventFallbackStore._
   import SnapshotFallbackStore._
+  import system.executionContext
+
+  val log = LoggerFactory.getLogger(getClass)
 
   override def toBreadcrumb(maybeBreadcrumb: AnyRef): Option[String] =
     maybeBreadcrumb match {
@@ -42,6 +48,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
   override def breadcrumbClass: Class[String] = classOf[String]
 
   override def close(): Unit = {
+    log.info("Closing S3 fallback")
     client.close()
   }
 
@@ -50,14 +57,17 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       persistenceId: String,
       seqNr: Long,
       includePayload: Boolean): Future[Option[EventFromFallback]] =
-    eventFallbackInitialFuture.flatMap { _ => _loadEvent(breadcrumb, persistenceId, seqNr, includePayload) }(
-      system.executionContext)
+    eventFallbackInitialFuture.flatMap { _ => _loadEvent(breadcrumb, persistenceId, seqNr, includePayload) }
 
   private def _loadEvent(
       bucket: String, // the breadcrumb
       persistenceId: String,
       seqNr: Long,
       includePayload: Boolean): Future[Option[EventFromFallback]] = {
+    if (log.isDebugEnabled) {
+      log.debug(s"Retrieving event from bucket [$bucket] for persistenceId [$persistenceId] at seqNr [$seqNr]")
+    }
+
     val eventFolder = seqNr / eventsPerFolder
     val key = s"${keyForPid(persistenceId)}/$eventFolder/$seqNr"
 
@@ -75,7 +85,21 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
           val metadata = response.metadata.asScala.toMap
 
           event(Some(bytes), metadata)
-        }(system.executionContext)
+        }
+        .andThen {
+          case Success(_) =>
+            if (log.isDebugEnabled) {
+              log.debug(s"Retrieved event from bucket [$bucket] for persistenceId [$persistenceId] at seqNr [$seqNr]")
+            }
+
+          case Failure(ex) =>
+            log.error(
+              "Failed to load event from bucket [{}] for persistenceId [{}] at seqNr [{}]",
+              bucket,
+              persistenceId,
+              seqNr,
+              ex)
+        }
         .recover { case _: NoSuchKeyException | _: NoSuchBucketException =>
           None
         }(ExecutionContext.parasitic)
@@ -85,7 +109,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
         .asScala
         .flatMap { response =>
           event(None, response.metadata.asScala.toMap)
-        }(system.executionContext)
+        }
     }
   }
 
@@ -107,11 +131,24 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       seqNr: Long,
       serId: Int,
       serManifest: String,
+      payload: Array[Byte]): Future[String] =
+    eventFallbackInitialFuture.flatMap { _ => _saveEvent(persistenceId, seqNr, serId, serManifest, payload) }
+
+  private def _saveEvent(
+      persistenceId: String,
+      seqNr: Long,
+      serId: Int,
+      serManifest: String,
       payload: Array[Byte]): Future[String] = {
+    val bucket = settings.eventsBucket
+
+    if (log.isDebugEnabled) {
+      log.debug(
+        s"Saving event to bucket [$bucket] for persistenceId [$persistenceId] at seqNr [$seqNr] with size [${payload.length}] bytes")
+    }
+
     val eventFolder = seqNr / eventsPerFolder
     val key = s"${keyForPid(persistenceId)}/$eventFolder/$seqNr"
-
-    val bucket = settings.eventsBucket
 
     val req = PutObjectRequest.builder
       .bucket(bucket)
@@ -120,20 +157,40 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       .contentType("application/octet-stream")
       .build()
 
-    client.putObject(req, AsyncRequestBody.fromBytes(payload)).asScala.map(_ => bucket)(ExecutionContext.parasitic)
+    client
+      .putObject(req, AsyncRequestBody.fromBytes(payload))
+      .asScala
+      .andThen {
+        case Success(_) =>
+          if (log.isDebugEnabled) {
+            log.debug(s"Saved event to bucket [$bucket] for persistenceId [$persistenceId] at seqNr [$seqNr]")
+          }
+
+        case Failure(ex) =>
+          log.error(
+            "Failed to save event to bucket [{}] for persistenceId [{}] at seqNr [{}]",
+            bucket,
+            persistenceId,
+            seqNr,
+            ex)
+      }
+      .map(_ => bucket)(ExecutionContext.parasitic)
   }
 
   override def loadSnapshot(
       breadcrumb: String,
       persistenceId: String,
       seqNr: Long): Future[Option[SnapshotFromFallback]] =
-    snapshotFallbackInitialFuture.flatMap { _ => _loadSnapshot(breadcrumb, persistenceId, seqNr) }(
-      system.executionContext)
+    snapshotFallbackInitialFuture.flatMap { _ => _loadSnapshot(breadcrumb, persistenceId, seqNr) }
 
   private def _loadSnapshot(
       bucket: String, // aka breadcrumb
       pid: String,
       seqNr: Long): Future[Option[SnapshotFromFallback]] = {
+    if (log.isDebugEnabled) {
+      log.debug(s"Loading snapshot from bucket [$bucket] for persistenceId [$pid] seqNr [$seqNr]")
+    }
+
     val req = GetObjectRequest.builder
       .bucket(bucket)
       .key(keyForPid(pid))
@@ -187,7 +244,21 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
         } else {
           Future.failed(new IllegalStateException("No Akka snapshot metadata found"))
         }
-      }(system.executionContext)
+      }
+      .andThen {
+        case Success(_) =>
+          if (log.isDebugEnabled) {
+            log.debug(s"Loaded snapshot from bucket [$bucket] for persistenceId [$pid] seqNr [$seqNr]")
+          }
+
+        case Failure(ex) =>
+          log.error(
+            "Failed to load snapshot from bucket [{}] for persistenceId [{}] seqNr [{}]",
+            bucket,
+            pid,
+            seqNr,
+            ex)
+      }
       .recover { case _: NoSuchKeyException | _: NoSuchBucketException =>
         None
       }(ExecutionContext.parasitic)
@@ -202,8 +273,27 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       serManifest: String,
       payload: Array[Byte],
       tags: Set[String],
+      meta: Option[((Int, String), Array[Byte])]): Future[String] =
+    snapshotFallbackInitialFuture.flatMap { _ =>
+      _saveSnapshot(persistenceId, seqNr, writeTimestamp, eventTimestamp, serId, serManifest, payload, tags, meta)
+    }
+
+  private def _saveSnapshot(
+      persistenceId: String,
+      seqNr: Long,
+      writeTimestamp: Instant,
+      eventTimestamp: Instant,
+      serId: Int,
+      serManifest: String,
+      payload: Array[Byte],
+      tags: Set[String],
       meta: Option[((Int, String), Array[Byte])]): Future[String] = {
     val bucket = settings.snapshotsBucket
+
+    if (log.isDebugEnabled) {
+      log.debug(
+        s"Saving snapshot to bucket [$bucket] for persistenceId [$persistenceId] (seqNr [$seqNr]) of size [${payload.length}] bytes")
+    }
 
     val baseMeta = Map(
       "akka-entity-seq-nr" -> seqNr.toString,
@@ -233,6 +323,24 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
     client
       .putObject(req, AsyncRequestBody.fromBytes(payload))
       .asScala
+      .andThen {
+        case Success(_) =>
+          if (log.isDebugEnabled) {
+            log.debug(
+              s"Saved snapshot to bucket [$bucket] for persistenceId [$persistenceId] (seqNr [$seqNr])",
+              bucket,
+              persistenceId,
+              seqNr)
+          }
+
+        case Failure(ex) =>
+          log.error(
+            "Failed to save snapshot to bucket [{}] for persistenceId [{}] (seqNr [{}])",
+            bucket,
+            persistenceId,
+            seqNr,
+            ex)
+      }
       .map(_ => bucket)(ExecutionContext.parasitic)
   }
 
@@ -260,6 +368,8 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
         new UnsupportedOperationException("Snapshot fallback not enabled, must set snapshots bucket to enable"))
 
   private val client = S3ClientProvider(system).clientFor(settings, configLocation)
+
+  log.info("Started S3 fallback store with settings: {}", settings)
 
   final def eventsPerFolder: Int = 1000
 }
