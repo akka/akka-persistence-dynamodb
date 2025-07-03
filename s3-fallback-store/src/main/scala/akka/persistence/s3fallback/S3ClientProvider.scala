@@ -111,11 +111,13 @@ final class S3ClientProvider(system: ActorSystem[_]) extends Extension {
       .httpClientBuilder(httpClientBuilder)
 
     if (spec.multipart.enabled) {
-      builder.multipartConfiguration { mpBuilder =>
-        mpBuilder
-          .thresholdInBytes(spec.multipart.threshold)
-          .minimumPartSizeInBytes(spec.multipart.partition)
-      }
+      builder
+        .multipartConfiguration { mpBuilder =>
+          mpBuilder
+            .thresholdInBytes(spec.multipart.threshold)
+            .minimumPartSizeInBytes(spec.multipart.partition)
+        }
+        .multipartEnabled(true)
     }
 
     // otherwise default region lookup

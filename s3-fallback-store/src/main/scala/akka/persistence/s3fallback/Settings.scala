@@ -39,7 +39,7 @@ final class S3FallbackSettings(
     "mut include at least one of events bucket or snapshots bucket")
 
   override def toString: String =
-    s"S3FallbackSettings(httpClientPath=$httpClientPath, eventsBucket=$eventsBucket, snapshotsBucket=$snapshotsBucket, minioLocal=$minioLocal)"
+    s"S3FallbackSettings(httpClientPath=$httpClientPath, eventsBucket=$eventsBucket, snapshotsBucket=$snapshotsBucket, minioLocal=$minioLocal,${if (multipart != MultipartSettings.Empty) "multipart=" + multipart else ""})"
 }
 
 object MultipartSettings {
@@ -47,6 +47,7 @@ object MultipartSettings {
     configValue.valueType match {
       case ConfigValueType.OBJECT =>
         val config = configValue.atKey("multipart").getConfig("multipart")
+
         if (config.hasPath("threshold") && config.hasPath("partition")) {
           val threshold = config.getBytes("threshold")
           val partition = config.getBytes("partition")
@@ -54,7 +55,8 @@ object MultipartSettings {
           new MultipartSettings(threshold, partition)
         } else Empty
 
-      case _ => Empty
+      case _ =>
+        Empty
     }
 
   val Empty = new MultipartSettings(Long.MaxValue, 0)
@@ -72,8 +74,7 @@ final class MultipartSettings(val threshold: Long, val partition: Long) {
       case o: MultipartSettings =>
         (this eq o) ||
           (!enabled && !o.enabled) || // Treat any disabled as equal
-          (threshold == o.threshold) &&
-          (partition == o.partition)
+          ((threshold == o.threshold) && (partition == o.partition))
 
       case _ => false
     }
