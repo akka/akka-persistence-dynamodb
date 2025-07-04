@@ -6,7 +6,7 @@ package akka.persistence.s3fallback
 
 import com.typesafe.config.Config
 
-import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration._
 import scala.jdk.DurationConverters.JavaDurationOps
 
 import java.util.Objects
@@ -21,8 +21,9 @@ object S3FallbackSettings {
     val minioLocal = MinioLocalSettings(config.getConfig("minio-local"))
     val region = if (config.hasPath("region")) Some(config.getString("region")).filter(_.nonEmpty) else None
     val multipart = MultipartSettings(config.getValue("multipart"))
+    val warming = WarmingSettings(config.getValue("connection-warming"))
 
-    new S3FallbackSettings(clientPath, eventsBucket, snapshotsBucket, minioLocal, region, multipart)
+    new S3FallbackSettings(clientPath, eventsBucket, snapshotsBucket, minioLocal, region, multipart, warming)
   }
 }
 
@@ -32,14 +33,19 @@ final class S3FallbackSettings(
     val snapshotsBucket: String,
     val minioLocal: MinioLocalSettings,
     val region: Option[String],
-    val multipart: MultipartSettings) {
+    val multipart: MultipartSettings,
+    val warming: WarmingSettings) {
   require(httpClientPath.nonEmpty, "must include an HTTP client config path")
   require(
     eventsBucket.nonEmpty || snapshotsBucket.nonEmpty,
-    "mut include at least one of events bucket or snapshots bucket")
+    "must include at least one of events bucket or snapshots bucket")
 
   override def toString: String =
-    s"S3FallbackSettings(httpClientPath=$httpClientPath, eventsBucket=$eventsBucket, snapshotsBucket=$snapshotsBucket, minioLocal=$minioLocal,${if (multipart != MultipartSettings.Empty) "multipart=" + multipart else ""})"
+    s"S3FallbackSettings(httpClientPath=$httpClientPath, eventsBucket=$eventsBucket, snapshotsBucket=$snapshotsBucket, " +
+    s"minioLocal=$minioLocal" +
+    (if (multipart != MultipartSettings.Empty) s", multipart=$multipart" else "") +
+    (if (warming != WarmingSettings.Empty) s", warming=$warming" else "") +
+    ")"
 }
 
 object MultipartSettings {
@@ -63,8 +69,10 @@ object MultipartSettings {
 }
 
 final class MultipartSettings(val threshold: Long, val partition: Long) {
-  require(threshold > 0, "threshold must be positive")
-  require(threshold == Long.MaxValue || partition > 0, "partition must be positive if multipart is enabled")
+  require(threshold > 5 * 1024 * 1024, "threshold must be at least 5 MiB")
+  require(
+    threshold == Long.MaxValue || partition >= 5 * 1024 * 1024,
+    "partition must be at least 5 MiB if multipart is enabled")
 
   def enabled: Boolean = threshold < Long.MaxValue
 
@@ -82,6 +90,45 @@ final class MultipartSettings(val threshold: Long, val partition: Long) {
   override def hashCode: Int =
     if (!enabled) 0
     else Objects.hash(threshold, partition)
+}
+
+object WarmingSettings {
+  def apply(configValue: ConfigValue): WarmingSettings =
+    configValue.valueType match {
+      case ConfigValueType.OBJECT =>
+        val config = configValue.atKey("warming").getConfig("warming")
+
+        if (config.hasPath("target") && config.hasPath("period")) {
+          val target = config.getInt("target")
+          val period = config.getDuration("period").toScala
+
+          new WarmingSettings(target, period)
+        } else Empty
+      case _ => Empty
+    }
+
+  val Empty = new WarmingSettings(0, Duration.Zero)
+}
+
+final class WarmingSettings(val target: Int, val period: FiniteDuration) {
+  require(target >= 0, "target must be non-negative")
+
+  def enabled: Boolean = target > 0
+
+  override def toString: String = s"WarmingSettings(target = $target, period = $period)"
+  override def equals(other: Any): Boolean =
+    other match {
+      case o: WarmingSettings =>
+        (this eq o) ||
+          (!enabled && !o.enabled) || // treat any disabled as equal
+          ((target == o.target) && (period == o.period))
+
+      case _ => false
+    }
+
+  override def hashCode: Int =
+    if (!enabled) 0
+    else Objects.hash(target, period)
 }
 
 object MinioLocalSettings {

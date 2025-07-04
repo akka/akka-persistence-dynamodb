@@ -5,14 +5,21 @@
 package akka.persistence.s3fallback
 
 import akka.actor.typed.ActorSystem
+import akka.actor.typed.Behavior
+import akka.actor.typed.scaladsl.AbstractBehavior
+import akka.actor.typed.scaladsl.ActorContext
+import akka.actor.typed.scaladsl.Behaviors
+import akka.actor.typed.scaladsl.TimerScheduler
 import akka.persistence.dynamodb.internal.EventFallbackStore
 import akka.persistence.dynamodb.internal.SnapshotFallbackStore
 import akka.persistence.typed.PersistenceId
 import akka.util.Base62
+import akka.util.ConstantFun
 import com.typesafe.config.Config
 import org.slf4j.LoggerFactory
 import software.amazon.awssdk.core.async.AsyncRequestBody
 import software.amazon.awssdk.core.async.AsyncResponseTransformer
+import software.amazon.awssdk.services.s3.S3AsyncClient
 import software.amazon.awssdk.services.s3.model.GetObjectResponse
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest
@@ -22,6 +29,7 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
+import scala.concurrent.duration._
 import scala.jdk.CollectionConverters.MapHasAsJava
 import scala.jdk.CollectionConverters.MapHasAsScala
 import scala.jdk.FutureConverters._
@@ -29,15 +37,16 @@ import scala.util.Failure
 import scala.util.Success
 
 import java.time.Instant
+import java.time.Clock
+import akka.actor.typed.Props
 
 final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: String)
     extends EventFallbackStore[String]
     with SnapshotFallbackStore[String] {
   import EventFallbackStore._
   import SnapshotFallbackStore._
+  import S3Fallback._
   import system.executionContext
-
-  val log = LoggerFactory.getLogger(getClass)
 
   override def toBreadcrumb(maybeBreadcrumb: AnyRef): Option[String] =
     maybeBreadcrumb match {
@@ -356,20 +365,161 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
     }
 
   private val settings = S3FallbackSettings(config)
+  private val client: S3AsyncClient = S3ClientProvider(system).clientFor(settings, configLocation)
+
+  private val warmer =
+    if (settings.warming.enabled) {
+      Some(
+        system.systemActorOf[WarmerCommand](
+          Behaviors.setup { ctx =>
+            Behaviors.withTimers { timers =>
+              new WarmerBehavior(
+                ctx,
+                timers,
+                Set(settings.eventsBucket, settings.snapshotsBucket),
+                headBucket _,
+                Clock.systemUTC(),
+                settings.warming.target,
+                settings.warming.period)
+            }
+          },
+          s"S3Fallback-Warmer-$configLocation",
+          Props.empty))
+    } else None
+
+  log.info("Started S3 fallback store with settings: {}", settings)
+
+  // also warms up the connection pool
   private val eventFallbackInitialFuture =
-    if (settings.eventsBucket.nonEmpty) Future.unit
+    if (settings.eventsBucket.nonEmpty)
+      Future.unit
+        .flatMap(_ => headBucket(settings.eventsBucket))
+        .recoverWith { ex =>
+          log.error("Failed to HEAD events bucket, but continuing on", ex)
+          Future.unit
+        }
+        .andThen(_ => warmer.foreach(_ ! ExternalOp))
     else
       Future.failed(new UnsupportedOperationException("Event fallback not enabled, must set events bucket to enable"))
 
   private val snapshotFallbackInitialFuture =
-    if (settings.snapshotsBucket.nonEmpty) Future.unit
+    if (settings.snapshotsBucket.nonEmpty)
+      Future.unit
+        .flatMap(_ => headBucket(settings.snapshotsBucket))
+        .recoverWith { ex =>
+          log.error("Failed to HEAD snapshots bucket, but continuing on", ex)
+          Future.unit
+        }
+        .andThen(_ => warmer.foreach(_ ! ExternalOp))
     else
       Future.failed(
         new UnsupportedOperationException("Snapshot fallback not enabled, must set snapshots bucket to enable"))
 
-  private val client = S3ClientProvider(system).clientFor(settings, configLocation)
-
-  log.info("Started S3 fallback store with settings: {}", settings)
-
   final def eventsPerFolder: Int = 1000
+
+  private def headBucket(bucket: String): Future[Unit] =
+    client
+      .headBucket(_.bucket(bucket))
+      .asScala
+      .map(ConstantFun.scalaAnyToUnit)(ExecutionContext.parasitic)
+      .recoverWith { ex =>
+        log.error(s"Failed to HEAD bucket [$bucket]", ex)
+        Future.failed(ex)
+      }
+}
+
+object S3Fallback {
+  val log = LoggerFactory.getLogger(getClass)
+
+  sealed trait WarmerCommand
+
+  case object ExternalOp extends WarmerCommand
+  case object Check extends WarmerCommand
+  case object Decrement extends WarmerCommand
+  case class HeadDone(ex: Option[Throwable]) extends WarmerCommand
+
+  final class WarmerBehavior(
+      ctx: ActorContext[WarmerCommand],
+      timers: TimerScheduler[WarmerCommand],
+      buckets: Set[String],
+      headBucket: String => Future[Unit],
+      clock: Clock,
+      target: Int,
+      period: FiniteDuration)
+      extends AbstractBehavior[WarmerCommand](ctx) {
+    val max = 2 * target
+
+    var opCount: Int = 0
+    var lastOp: Instant = Instant.EPOCH
+    var headed: List[String] = Nil
+    var notHeaded: List[String] = buckets.iterator.filter(_.nonEmpty).toList
+
+    ctx.self ! Check
+
+    def recordOp(): Unit = {
+      timers.startSingleTimer(s"decrement-$opCount", Decrement, period)
+      opCount += 1
+      lastOp = clock.instant()
+      scheduleCheck()
+    }
+
+    def scheduleCheck(): Unit = {
+      timers.startSingleTimer(Check, Check, delay)
+    }
+
+    def delay: FiniteDuration = period / (max + 1 - opCount)
+
+    def onMessage(msg: WarmerCommand): Behavior[WarmerCommand] =
+      msg match {
+        case ExternalOp =>
+          if (opCount < max) recordOp()
+
+          this
+
+        case Check =>
+          if (opCount < target) {
+            val bucket = notHeaded.head
+            headed = bucket :: headed
+
+            if (notHeaded.tail.isEmpty) {
+              notHeaded = headed.reverse
+              headed = Nil
+            } else {
+              notHeaded = headed.tail
+            }
+
+            ctx.pipeToSelf(headBucket(bucket)) { result =>
+              HeadDone(result.failed.toOption)
+            }
+
+            recordOp()
+          } else {
+            scheduleCheck()
+          }
+
+          this
+
+        case Decrement =>
+          if (opCount > 0) {
+            opCount -= 1
+          }
+
+          val sinceLast = (clock.instant().toEpochMilli - lastOp.toEpochMilli).millis
+
+          if (delay <= sinceLast) {
+            // we're now overdue
+            timers.cancel(Check)
+            ctx.self ! Check
+          }
+
+          this
+
+        case HeadDone(failureOpt) =>
+          failureOpt.foreach { ex =>
+            log.warn("Warming HEAD request failed", ex)
+          }
+
+          this
+      }
+  }
 }
