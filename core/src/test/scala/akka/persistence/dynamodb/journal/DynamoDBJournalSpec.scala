@@ -4,25 +4,52 @@
 
 package akka.persistence.dynamodb.journal
 
+import java.time.Instant
+import java.util.UUID
+
+import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.jdk.FutureConverters.CompletionStageOps
+import scala.util.Random
 
 import akka.actor.ActorRef
+import akka.actor.testkit.typed.scaladsl.LogCapturing
+import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
+import akka.actor.testkit.typed.scaladsl.{ TestProbe => TypedTestProbe }
 import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.adapter._
+import akka.persistence.AtomicWrite
 import akka.persistence.CapabilityFlag
 import akka.persistence.DeleteMessagesSuccess
 import akka.persistence.JournalProtocol.DeleteMessagesTo
 import akka.persistence.JournalProtocol.RecoverySuccess
 import akka.persistence.JournalProtocol.ReplayMessages
+import akka.persistence.JournalProtocol.ReplayedMessage
+import akka.persistence.JournalProtocol.WriteMessages
+import akka.persistence.JournalProtocol.WriteMessagesSuccessful
+import akka.persistence.PersistentRepr
 import akka.persistence.dynamodb.TestConfig
+import akka.persistence.dynamodb.TestData
 import akka.persistence.dynamodb.TestDbLifecycle
+import akka.persistence.dynamodb.internal.FallbackStoreProvider
+import akka.persistence.dynamodb.internal.InMemFallbackStore
+import akka.persistence.dynamodb.internal.InstantFactory
+import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.journal.JournalSpec
+import akka.serialization.SerializationExtension
+import akka.serialization.Serializers
+import akka.stream.testkit.TestSubscriber
+import akka.stream.testkit.scaladsl.TestSink
 import akka.testkit.TestProbe
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import org.scalatest.Inspectors
 import org.scalatest.OptionValues
 import org.scalatest.concurrent.Eventually
+import org.scalatest.wordspec.AnyWordSpecLike
+import software.amazon.awssdk.core.SdkBytes
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
 
 object DynamoDBJournalSpec {
   val config = DynamoDBJournalSpec.testConfig()
@@ -68,6 +95,20 @@ object DynamoDBJournalSpec {
       """)
       .withFallback(TestConfig.config)
   }
+
+  def configWithSmallFallback: Config =
+    ConfigFactory
+      .parseString("""
+      fallback-plugin {
+        class = "akka.persistence.dynamodb.internal.InMemFallbackStore"
+      }
+
+      akka.persistence.dynamodb.journal.fallback-store {
+        plugin = "fallback-plugin"
+        threshold = 4 KiB
+      }
+      """)
+      .withFallback(TestConfig.config)
 }
 
 abstract class DynamoDBJournalBaseSpec(config: Config)
@@ -233,5 +274,141 @@ class DynamoDBJournalWithEventTTLSpec
       eventItem.get(Expiry).value.n.toLong should (be <= expected and be > expected - 10) // within 10s
       eventItem.get(ExpiryMarker) shouldBe None
     }
+  }
+}
+
+class DynamoDBJournalWithFallbackSpec
+    extends ScalaTestWithActorTestKit(DynamoDBJournalSpec.configWithSmallFallback)
+    with AnyWordSpecLike
+    with TestData
+    with TestDbLifecycle
+    with LogCapturing {
+  import InMemFallbackStore._
+  import akka.persistence.dynamodb.internal.JournalAttributes._
+
+  def typedSystem: ActorSystem[_] = testKit.system
+
+  class Setup {
+    val entityType = nextEntityType()
+    val persistenceId = nextPersistenceId(entityType)
+    val journal = persistenceExt.journalFor("akka.persistence.dynamodb.journal")
+    val slice = persistenceExt.sliceForPersistenceId(persistenceId.id)
+    val writerUuid = UUID.randomUUID()
+  }
+
+  "A DynamoDB journal with fallback enabled" should {
+
+    "not interact with the fallback store for small events" in withFallbackStoreProbe { (fallbackStore, invocations) =>
+      new Setup {
+        val probe = TypedTestProbe[Any]()
+        val classicProbeRef = probe.ref.toClassic
+
+        journal.tell(
+          WriteMessages(Seq(AtomicWrite(Seq(PersistentRepr("event", 1, persistenceId.id)))), classicProbeRef, 1),
+          classicProbeRef)
+
+        probe.expectMessageType[WriteMessagesSuccessful.type]
+        invocations.expectNoMessage(10.millis)
+      }
+    }
+
+    "save a large event to the fallback store and save the breadcrumb" in withFallbackStoreProbe {
+      (fallbackStore, invocations) =>
+        new Setup {
+          val probe = TypedTestProbe[Any]()
+          val classicProbeRef = probe.ref.toClassic
+
+          val bigArr = Random.nextBytes(3072)
+
+          journal.tell(
+            WriteMessages(Seq(AtomicWrite(Seq(PersistentRepr(bigArr, 1, persistenceId.id)))), classicProbeRef, 1),
+            classicProbeRef)
+
+          val saveEvent = invocations.expectNext().asInstanceOf[SaveEvent]
+          saveEvent.persistenceId shouldBe persistenceId.id
+          saveEvent.seqNr shouldBe 1
+          saveEvent.serId shouldBe 4 // ByteArraySerializer
+          saveEvent.serManifest shouldBe "" // (ByteArraySerializer.includeManifest = false)
+          (saveEvent.payload should contain).theSameElementsInOrderAs(bigArr)
+
+          probe.expectMessageType[WriteMessagesSuccessful.type]
+
+          val maybeEvents = getEventItemsFor(persistenceId.id)
+          maybeEvents shouldNot be(empty)
+          maybeEvents.flatMap(_.get(EventPayload)) should be(empty)
+          maybeEvents.foreach { evt =>
+            new String(evt.get(BreadcrumbPayload).get.b.asByteArray) shouldBe "breadcrumb"
+          }
+        }
+    }
+
+    "follow the breadcrumb to an event" in withFallbackStoreProbe { (fallbackStore, invocations) =>
+      new Setup {
+        val probe = TypedTestProbe[Any]()
+        val classicProbeRef = probe.ref.toClassic
+
+        val arr = Random.nextBytes(8)
+
+        Await.result(
+          fallbackStore
+            .saveEvent(persistenceId.id, 1, 4, "", arr)
+            .flatMap { breadcrumb =>
+              breadcrumb shouldBe "breadcrumb"
+
+              val ddbClient = ClientProvider(system).clientFor("akka.persistence.dynamodb.client")
+              val serialization = SerializationExtension(system)
+
+              val serializer = serialization.findSerializerFor(breadcrumb)
+              val bytes = serializer.toBinary(breadcrumb)
+              val manifest = Serializers.manifestFor(serializer, breadcrumb)
+
+              val attributes = new java.util.HashMap[String, AttributeValue]
+              attributes.put(Pid, AttributeValue.fromS(persistenceId.id))
+              attributes.put(SeqNr, AttributeValue.fromN("1"))
+              attributes.put(EntityTypeSlice, AttributeValue.fromS(s"$entityType-$slice"))
+              attributes.put(Timestamp, AttributeValue.fromN(InstantFactory.toEpochMicros(Instant.now()).toString))
+              attributes.put(Writer, AttributeValue.fromS(writerUuid.toString))
+              attributes.put(BreadcrumbSerId, AttributeValue.fromN(serializer.identifier.toString))
+              attributes.put(BreadcrumbSerManifest, AttributeValue.fromS(manifest))
+              attributes.put(BreadcrumbPayload, AttributeValue.fromB(SdkBytes.fromByteArray(bytes)))
+
+              ddbClient
+                .putItem(PutItemRequest.builder.tableName(settings.journalTable).item(attributes).build)
+                .asScala
+                .map { _ =>
+                  invocations.expectNext(10.millis)
+                }(system.executionContext)
+            }(system.executionContext),
+          1.second) shouldBe a[SaveEvent]
+
+        journal.tell(ReplayMessages(1, 10, 10, persistenceId.id, classicProbeRef), classicProbeRef)
+
+        invocations.requestNext() shouldBe ToBreadcrumb("breadcrumb")
+        val loadInvocation = invocations.requestNext(10.millis).asInstanceOf[LoadEvent]
+        loadInvocation.breadcrumb shouldBe "breadcrumb"
+        loadInvocation.persistenceId shouldBe persistenceId.id
+        loadInvocation.seqNr shouldBe 1
+        loadInvocation.includePayload shouldBe true
+
+        val result = probe.expectMessageType[ReplayedMessage]
+        (result.persistent.payload.asInstanceOf[Array[Byte]] should contain).theSameElementsInOrderAs(arr)
+        result.persistent.persistenceId shouldBe persistenceId.id
+        result.persistent.sequenceNr shouldBe 1
+      }
+    }
+  }
+
+  private def withFallbackStoreProbe(
+      test: (InMemFallbackStore, TestSubscriber.Probe[InMemFallbackStore.Invocation]) => Unit): Unit = {
+
+    val fallbackStore =
+      FallbackStoreProvider(testKit.system).eventFallbackStoreFor("fallback-plugin").asInstanceOf[InMemFallbackStore]
+
+    val invocationsProbe = fallbackStore.invocationStream.runWith(TestSink()(testKit.system))
+
+    invocationsProbe.ensureSubscription()
+    invocationsProbe.request(1)
+    test(fallbackStore, invocationsProbe)
+    invocationsProbe.cancel()
   }
 }
