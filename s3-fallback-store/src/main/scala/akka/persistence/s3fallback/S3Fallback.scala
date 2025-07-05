@@ -58,6 +58,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
 
   override def close(): Unit = {
     log.info("Closing S3 fallback")
+    warmer.foreach(_ ! Closing)
     client.close()
   }
 
@@ -436,6 +437,7 @@ object S3Fallback {
   case object ExternalOp extends WarmerCommand
   case object Check extends WarmerCommand
   case object Decrement extends WarmerCommand
+  case object Closing extends WarmerCommand
   case class HeadDone(ex: Option[Throwable]) extends WarmerCommand
 
   final class WarmerBehavior(
@@ -471,6 +473,8 @@ object S3Fallback {
 
     def onMessage(msg: WarmerCommand): Behavior[WarmerCommand] =
       msg match {
+        case Closing => Behaviors.stopped
+
         case ExternalOp =>
           if (opCount < max) recordOp()
 
