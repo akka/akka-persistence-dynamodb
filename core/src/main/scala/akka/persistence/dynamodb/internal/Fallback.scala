@@ -164,7 +164,7 @@ class FallbackStoreProvider(system: ActorSystem[_]) extends Extension {
       fallbackStores.computeIfAbsent(configLocation, configLocation => pair(constructFallbackStore(configLocation)))
 
     storePair match {
-      case (efs: EventFallbackStore[_], _) => efs
+      case (efs: EventFallbackStore[_], _) if efs.isInstanceOf[EventFallbackStore[_]] => efs
       case _ =>
         throw new RuntimeException(
           s"Config location $configLocation refers to a fallback store which is not an EventFallbackStore")
@@ -176,7 +176,7 @@ class FallbackStoreProvider(system: ActorSystem[_]) extends Extension {
       fallbackStores.computeIfAbsent(configLocation, configLocation => pair(constructFallbackStore(configLocation)))
 
     storePair match {
-      case (_, sfs: SnapshotFallbackStore[_]) => sfs
+      case (_, sfs: SnapshotFallbackStore[_]) if sfs.isInstanceOf[SnapshotFallbackStore[_]] => sfs
       case _ =>
         throw new RuntimeException(
           s"Config location $configLocation refers to a fallback store which is not a SnapshotFallbackStore")
