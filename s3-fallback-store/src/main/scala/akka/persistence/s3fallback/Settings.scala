@@ -5,13 +5,14 @@
 package akka.persistence.s3fallback
 
 import com.typesafe.config.Config
+import com.typesafe.config.ConfigValue
+import com.typesafe.config.ConfigValueType
 
 import scala.concurrent.duration._
 import scala.jdk.DurationConverters.JavaDurationOps
+import scala.util.Try
 
 import java.util.Objects
-import com.typesafe.config.ConfigValue
-import com.typesafe.config.ConfigValueType
 
 object S3FallbackSettings {
   def apply(config: Config): S3FallbackSettings = {
@@ -55,7 +56,7 @@ object MultipartSettings {
         val config = configValue.atKey("multipart").getConfig("multipart")
 
         if (config.hasPath("threshold") && config.hasPath("partition")) {
-          val threshold = config.getBytes("threshold")
+          val threshold = Try[Long](config.getBytes("threshold")).getOrElse(Long.MaxValue)
           val partition = config.getBytes("partition")
 
           new MultipartSettings(threshold, partition)

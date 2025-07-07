@@ -49,6 +49,22 @@ class SettingsParseSpec extends AnyWordSpec with Matchers {
       settings.multipart.partition shouldBe (5 * 1024 * 1024)
     }
 
+    "parse multipart settings when disabled by threshold" in {
+      val multipartConfig =
+        ConfigValueFactory.fromMap(Map[String, AnyVal]("threshold" -> false, "partition" -> 5 * 1024 * 1024).asJava)
+
+      val overrideConfig = ConfigValueFactory.fromMap(Map("multipart" -> multipartConfig).asJava)
+
+      val config = overrideConfig
+        .atPath("akka.persistence.s3-fallback-store")
+        .withFallback(referenceWithSnapshotsBucket)
+        .getConfig("akka.persistence.s3-fallback-store")
+
+      val settings = S3FallbackSettings(config)
+
+      settings.multipart.enabled shouldBe false
+    }
+
     "parse connection-warming settings" in {
       val warmingConfig =
         ConfigValueFactory

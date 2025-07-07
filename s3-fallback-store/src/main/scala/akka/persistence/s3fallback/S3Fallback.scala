@@ -75,7 +75,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       seqNr: Long,
       includePayload: Boolean): Future[Option[EventFromFallback]] = {
     if (log.isDebugEnabled) {
-      log.debug(s"Retrieving event from bucket [$bucket] for persistenceId [$persistenceId] at seqNr [$seqNr]")
+      log.debug("Retrieving event from bucket [{}] for persistenceId [{}] at seqNr [{}]", bucket, persistenceId, seqNr)
     }
 
     val eventFolder = seqNr / eventsPerFolder
@@ -99,7 +99,11 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
         .andThen {
           case Success(_) =>
             if (log.isDebugEnabled) {
-              log.debug(s"Retrieved event from bucket [$bucket] for persistenceId [$persistenceId] at seqNr [$seqNr]")
+              log.debug(
+                "Retrieved event from bucket [{}] for persistenceId [{}] at seqNr [{}]",
+                bucket,
+                persistenceId,
+                seqNr)
             }
 
           case Failure(ex) =>
@@ -154,7 +158,11 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
 
     if (log.isDebugEnabled) {
       log.debug(
-        s"Saving event to bucket [$bucket] for persistenceId [$persistenceId] at seqNr [$seqNr] with size [${payload.length}] bytes")
+        "Saving event to bucket [{}] for persistenceId [{}] at seqNr [{}] with size [{}] bytes",
+        bucket,
+        persistenceId,
+        seqNr,
+        payload.length)
     }
 
     val eventFolder = seqNr / eventsPerFolder
@@ -173,7 +181,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       .andThen {
         case Success(_) =>
           if (log.isDebugEnabled) {
-            log.debug(s"Saved event to bucket [$bucket] for persistenceId [$persistenceId] at seqNr [$seqNr]")
+            log.debug("Saved event to bucket [{}] for persistenceId [{}] at seqNr [{}]", bucket, persistenceId, seqNr)
           }
 
         case Failure(ex) =>
@@ -198,7 +206,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       pid: String,
       seqNr: Long): Future[Option[SnapshotFromFallback]] = {
     if (log.isDebugEnabled) {
-      log.debug(s"Loading snapshot from bucket [$bucket] for persistenceId [$pid] seqNr [$seqNr]")
+      log.debug("Loading snapshot from bucket [{}] for persistenceId [{}] seqNr [{}]", bucket, pid, seqNr)
     }
 
     val req = GetObjectRequest.builder
@@ -258,7 +266,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       .andThen {
         case Success(_) =>
           if (log.isDebugEnabled) {
-            log.debug(s"Loaded snapshot from bucket [$bucket] for persistenceId [$pid] seqNr [$seqNr]")
+            log.debug("Loaded snapshot from bucket [{}] for persistenceId [{}] seqNr [{}]", bucket, pid, seqNr)
           }
 
         case Failure(ex) =>
@@ -302,7 +310,11 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
 
     if (log.isDebugEnabled) {
       log.debug(
-        s"Saving snapshot to bucket [$bucket] for persistenceId [$persistenceId] (seqNr [$seqNr]) of size [${payload.length}] bytes")
+        "Saving snapshot to bucket [{}] for persistenceId [{}] (seqNr [{}]) of size [{}] bytes",
+        bucket,
+        persistenceId,
+        seqNr,
+        payload.length)
     }
 
     val baseMeta = Map(
@@ -336,11 +348,7 @@ final class S3Fallback(system: ActorSystem[_], config: Config, configLocation: S
       .andThen {
         case Success(_) =>
           if (log.isDebugEnabled) {
-            log.debug(
-              s"Saved snapshot to bucket [$bucket] for persistenceId [$persistenceId] (seqNr [$seqNr])",
-              bucket,
-              persistenceId,
-              seqNr)
+            log.debug("Saved snapshot to bucket [{}] for persistenceId [{}] (seqNr [{}])", bucket, persistenceId, seqNr)
           }
 
         case Failure(ex) =>

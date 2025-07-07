@@ -42,9 +42,13 @@ with transient dependencies causing an unlucky mix of versions.
 
 The S3 Fallback store may be used for storing events or snapshots where the estimated size of the write (for events, this may be a batch of events) exceeds a configurable threshold.
 
-To enable S3 Fallback for the journal, set `akka.persistence.dynamodb.journal.fallback-store.plugin = "akka.persistence.s3-fallback-store"` in your `application.conf`.  The threshold for using the fallback store can be set via `akka.persistence.dynamodb.journal.fallback-store.threshold`.  Additionally, `akka.persistence.s3-fallback-store.events-bucket` must be set to the name of the S3 bucket being used for events.
+To enable S3 Fallback for the journal, set `akka.persistence.dynamodb.journal.fallback-store.plugin = "akka.persistence.s3-fallback-store"` in your `application.conf`.
 
-To enable S3 Fallback for the snapshot store, set `akka.persistence.dynamodb.snapshot.fallback-store.plugin = "akka.persistence.s3-fallback-store"` in your `application.conf`.  The threshold for using the fallback store can be set via `akka.persistence.dynamodb.snapshot.fallback-store.threshold`.  Additionally, `akka.persistence.s3-fallback-store.snapshots-bucket` must be set to the name of the S3 bucket being used for snapshots.
+@@snip [application.conf](/s3-fallback-store/src/test/scala/docs/ConfigDocSpec.scala) { #enable-for-events }
+
+To enable S3 Fallback for the snapshot store, set `akka.persistence.dynamodb.snapshot.fallback-store.plugin = "akka.persistence.s3-fallback-store"` in your `application.conf`.
+
+@@snip [application.conf](/s3-fallback-store/src/test/scala/docs/ConfigDocSpec.scala) { #enable-for-snapshots }
 
 If using S3 Fallback for both snapshots and events, the same bucket may be used.
 
