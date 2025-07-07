@@ -17,11 +17,11 @@ import scala.jdk.CollectionConverters.ListHasAsScala
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Service Provider Interface for injecting AWS SDK MetricPublisher into the underlying DynamoDB client (see
+ * Service Provider Interface for injecting AWS SDK MetricPublisher into underlying AWS clients (see
  * https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/metrics-list.html).
  *
  * Implementations must include a single constructor with one argument: an `akka.actor.ClassicActorSystemProvider`. To
- * setup your implementation, add a setting to your 'application.conf':
+ * setup your implementation for DynamoDB, add a setting to your 'application.conf':
  *
  * {{{
  * akka.persistence.dynamodb.client.metrics-providers += com.myexample.MyAWSMetricsProvider
@@ -39,9 +39,11 @@ trait AWSClientMetricsProvider {
 
 /** INTERNAL API */
 @InternalApi
-private[dynamodb] object AWSClientMetricsResolver {
-  def resolve(system: ClassicActorSystemProvider): Option[AWSClientMetricsProvider] = {
-    val providersPath = "akka.persistence.dynamodb.client.metrics-providers"
+private[akka] object AWSClientMetricsResolver {
+  def resolve(system: ClassicActorSystemProvider): Option[AWSClientMetricsProvider] =
+    resolve(system, "akka.persistence.dynamodb.client.metrics-providers")
+
+  def resolve(system: ClassicActorSystemProvider, providersPath: String): Option[AWSClientMetricsProvider] = {
     val config = system.classicSystem.settings.config
     if (!config.hasPath(providersPath)) {
       None
