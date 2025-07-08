@@ -32,14 +32,14 @@ Key links:
 - [ ] Check the release on https://repo.akka.io/maven/com/lightbend/akka/akka-persistence-dynamodb_2.13/$VERSION$/akka-persistence-dynamodb_2.13-$VERSION$.pom
 
 ### When everything is on https://repo.akka.io/maven
-  - [ ] Log into `gustav.akka.io` as `akkarepo` 
-    - [ ] If this updates the `current` version, run `./update-akka-persistence-dynamodb-current-version.sh $VERSION$`
+  - [ ] Log into `gustav.akka.io` as `akkarepo`
+    - [ ] If this updates the `current` version, run `./update-akka-persistence-dynamodb-current-version.sh $VERSION$ 2.0`
     - [ ] otherwise check changes and commit the new version to the local git repository
          ```
          cd ~/www
          git status
-         git add docs/akka-persistence-dynamodb/current docs/akka-persistence-dynamodb/$VERSION$
-         git add api/akka-persistence-dynamodb/current api/akka-persistence-dynamodb/$VERSION$
+         git add libraries/akka-persistence-dynamodb/2.0 libraries/akka-persistence-dynamodb/$VERSION$
+         git add api/akka-persistence-dynamodb/2.0 api/akka-persistence-dynamodb/$VERSION$
          git commit -m "Akka Persistence DynamoDB $VERSION$"
          ```
 
