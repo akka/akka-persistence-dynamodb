@@ -1,4 +1,4 @@
-# Storing large events and/or snapshots
+# Storing large state
 
 DynamoDB imposes a limit on the sizes of objects being saved of 400 KiB (including metadata).  For the @ref:[journal](journal.md) and @ref:[snapshot store](snapshots.md) this imposes a limit on the serialized size of events or persistent actor states that is no greater than 300 KiB.
 
@@ -28,7 +28,7 @@ Additionally, add the dependency as below.
 
 @@dependency [Maven,sbt,Gradle] {
   group=com.lightbend.akka
-  artifact=akka-persistence-dynamodb-s3-fallback-store$scala.binary.version$
+  artifact=akka-persistence-dynamodb-s3-fallback-store_$scala.binary.version$
   version=$project.version$
 }
 
