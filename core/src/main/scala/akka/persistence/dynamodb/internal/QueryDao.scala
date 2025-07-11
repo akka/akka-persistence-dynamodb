@@ -43,38 +43,6 @@ import scala.concurrent.Promise
   private val serialization = SerializationExtension(system)
   private val fallbackStoreProvider = FallbackStoreProvider(system)
 
-  private val _backtrackingBreadcrumbSerId = Promise[Int]()
-  def backtrackingBreadcrumbSerId(): Int = {
-    _backtrackingBreadcrumbSerId.future.value match {
-      case Some(v) => v.get
-      case None =>
-        val serializerIds = serialization.bindings.iterator.map(_._2.identifier).toSet
-        // Use an unfolding iterator to find a serializer ID that's not bound.  There shouldn't ever be more
-        // than a few thousand serializer IDs bound (and the docs suggest real serializers should only have
-        // positive serializer IDs ("couple of billion")), so this shouldn't have to iterate far.
-        //
-        // Ranges that aren't indexable by an Int (viz. have more than Int.MaxValue elements) are surprisingly
-        // restrictive, thus the unfold
-        Iterator
-          .unfold(Int.MinValue) { s =>
-            if (s != Int.MaxValue) Some(s -> (s + 1))
-            else None
-          }
-          // stop fast if some other thread found this before we do
-          .find { i => !serializerIds(i) || _backtrackingBreadcrumbSerId.isCompleted } match {
-          case None =>
-            // Over 4 billion serializers... really?
-            _backtrackingBreadcrumbSerId.tryFailure(new NoSuchElementException("All serializer IDs used?"))
-
-          case Some(id) =>
-            _backtrackingBreadcrumbSerId.trySuccess(id)
-        }
-        // first get is safe, we just ensured completion
-        // second get will throw if we exhausted serializers, but that's a danger we're prepared to face...
-        _backtrackingBreadcrumbSerId.future.value.get.get
-    }
-  }
-
   private val bySliceProjectionExpression = {
     import JournalAttributes._
     s"$Pid, $SeqNr, $Timestamp, $EventSerId, $EventSerManifest, $Tags, $BreadcrumbSerId, $BreadcrumbSerManifest"
@@ -318,7 +286,7 @@ import scala.concurrent.Promise
               readTimestamp = InstantFactory.now(),
               payload = None, // lazy loaded for backtracking
               serId =
-                if (item.containsKey(EventSerId)) item.get(EventSerId).n().toInt else backtrackingBreadcrumbSerId(),
+                if (item.containsKey(EventSerId)) item.get(EventSerId).n().toInt else 0,  // absent or loaded later from S3
               serManifest = "",
               writerUuid = "", // not need in this query
               tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
