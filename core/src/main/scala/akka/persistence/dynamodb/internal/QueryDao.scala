@@ -182,6 +182,13 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
   }
 
   // implements BySliceQuery.Dao
+  // NB: if backtracking and an event that was saved to the fallback store is encountered,
+  // the payload will be None (as with any backtracking event) and the serId of the returned
+  // item will be one not used by any bound serializer.
+  //
+  // Without a payload, the serializer ID is kind of meaningless (and the events-by-slice
+  // queries in the read journal will ignore the serializer ID unless it is the filtered
+  // payload serializer).
   override def itemsBySlice(
       entityType: String,
       slice: Int,
@@ -277,7 +284,9 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
               writeTimestamp = getTimestamp(item),
               readTimestamp = InstantFactory.now(),
               payload = None, // lazy loaded for backtracking
-              serId = item.get(EventSerId).n().toInt,
+              serId =
+                if (item.containsKey(EventSerId)) item.get(EventSerId).n().toInt
+                else 0, // absent or loaded later from S3
               serManifest = "",
               writerUuid = "", // not need in this query
               tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,

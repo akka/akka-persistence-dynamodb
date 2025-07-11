@@ -10,6 +10,7 @@ import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorSystem
 import akka.persistence.dynamodb.TestActors
 import akka.persistence.dynamodb.TestData
+import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.dynamodb.internal.JournalAttributes
 import akka.persistence.dynamodb.internal.SnapshotAttributes
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
@@ -199,6 +200,27 @@ class LargeSnapshotAndEventSpec
       cebsEvent.getEvent() shouldBe padding
 
       cebsProbe.cancel()
+
+      // We want to force backtracking to see the first event, so persist another
+      //reincarnation ! PersistWithAck("ignore-me", probe.ref)
+      //probe.expectMessage(Done)
+
+      val liveEventsBySlicesSubscriber = query
+        .eventsBySlices[String](entityType, slice, slice, TimestampOffset.Zero)
+        .filter(_.persistenceId == persistenceId.id)
+        .runWith(sinkProbe)
+
+      val lebsProbe = liveEventsBySlicesSubscriber.request(2)
+      val forwardLebsEvent = lebsProbe.expectNext()
+
+      forwardLebsEvent.event shouldBe padding
+
+      val backtrackLebsEvent = lebsProbe.expectNext()
+
+      backtrackLebsEvent.eventOption shouldBe empty
+      backtrackLebsEvent.source shouldBe EnvelopeOrigin.SourceBacktracking
+
+      lebsProbe.cancel()
     }
   }
 
