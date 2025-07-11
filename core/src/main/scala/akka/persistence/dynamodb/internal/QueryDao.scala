@@ -28,7 +28,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse
-import scala.concurrent.Promise
 
 /**
  * INTERNAL API
@@ -286,7 +285,8 @@ import scala.concurrent.Promise
               readTimestamp = InstantFactory.now(),
               payload = None, // lazy loaded for backtracking
               serId =
-                if (item.containsKey(EventSerId)) item.get(EventSerId).n().toInt else 0,  // absent or loaded later from S3
+                if (item.containsKey(EventSerId)) item.get(EventSerId).n().toInt
+                else 0, // absent or loaded later from S3
               serManifest = "",
               writerUuid = "", // not need in this query
               tags = if (item.containsKey(Tags)) item.get(Tags).ss().asScala.toSet else Set.empty,
