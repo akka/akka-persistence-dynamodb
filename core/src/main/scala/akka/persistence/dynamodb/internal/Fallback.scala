@@ -159,6 +159,7 @@ class FallbackStoreProvider(system: ActorSystem[_]) extends Extension {
             .toList)
         .map { _ => Done }(ExecutionContext.parasitic)
     }
+
   def eventFallbackStoreFor(configLocation: String): EventFallbackStore[AnyRef] = {
     val storePair =
       fallbackStores.computeIfAbsent(configLocation, configLocation => pair(constructFallbackStore(configLocation)))
@@ -226,6 +227,15 @@ class FallbackStoreProvider(system: ActorSystem[_]) extends Extension {
           ex)
     }
   }
+
+  /** INTERNAL API */
+  @InternalApi
+  final private[akka] def getFallbackStore(id: String): Option[CommonFallbackStore[AnyRef]] =
+    fallbackStores.get(id) match {
+      case null | (null, null) => None
+      case (null, snap)        => Some(snap)
+      case (evt, _)            => Some(evt)
+    }
 
   private val fallbackStores =
     new ConcurrentHashMap[String, (EventFallbackStore[AnyRef], SnapshotFallbackStore[AnyRef])]

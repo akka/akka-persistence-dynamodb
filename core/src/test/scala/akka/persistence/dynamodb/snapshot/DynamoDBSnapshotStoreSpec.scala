@@ -91,6 +91,11 @@ object DynamoDBSnapshotStoreSpec {
       }
       """)
       .withFallback(config)
+
+  def configWithEagerFallback: Config =
+    ConfigFactory
+      .parseString("akka.persistence.dynamodb.snapshot.fallback-store.eager = on")
+      .withFallback(configWithSmallFallback)
 }
 
 abstract class DynamoDBSnapshotStoreBaseSpec(config: Config)
@@ -212,6 +217,11 @@ class DynamoDBSnapshotFallbackSpec
   }
 
   "A DynamoDB snapshot store with fallback enabled" should {
+    "not eagerly initialize the fallback store when eager = off" in new Setup {
+      FallbackStoreProvider(system).getFallbackStore(
+        system.settings.config.getString("akka.persistence.dynamodb.journal.fallback-store.plugin")) shouldBe empty
+    }
+
     "not interact with the fallback store for small snapshots" in withFallbackStoreProbe {
       (fallbackStore, invocations) =>
         new Setup {
@@ -315,6 +325,31 @@ class DynamoDBSnapshotFallbackSpec
         result.snapshot.get.metadata.sequenceNr shouldBe 3
         result.snapshot.get.metadata.timestamp shouldBe now.toEpochMilli
         result.snapshot.get.metadata.metadata shouldBe empty
+      }
+    }
+  }
+
+  class DynamoDBSnapshotWithEagerFallbackSpec
+      extends ScalaTestWithActorTestKit(DynamoDBSnapshotStoreSpec.configWithEagerFallback)
+      with AnyWordSpecLike
+      with TestData
+      with TestDbLifecycle
+      with LogCapturing {
+
+    def typedSystem: ActorSystem[_] = testKit.system
+
+    class Setup {
+      val snapshotStore = persistenceExt.snapshotStoreFor("akka.persistence.dynamodb.snapshot")
+    }
+
+    "A DynamoDB snapshot store with fallback enabled" should {
+      "eagerly initialize the fallback store when eager = on" in new Setup {
+        val cfg = system.settings.config.getConfig("akka.persistence.dynamodb.snapshot.fallback-store")
+        val plugin = cfg.getString("plugin")
+
+        eventually {
+          FallbackStoreProvider(system).getFallbackStore(plugin) shouldNot be(empty)
+        }
       }
     }
   }

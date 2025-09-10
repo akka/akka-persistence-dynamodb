@@ -550,4 +550,8 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         Future.failed(c.getCause)
       }(ExecutionContext.parasitic)
   }
+
+  if (settings.journalFallbackSettings.isEnabled && settings.journalFallbackSettings.eager) {
+    fallbackStoreProvider.eventFallbackStoreFor(settings.journalFallbackSettings.plugin)
+  }
 }

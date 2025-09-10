@@ -109,6 +109,11 @@ object DynamoDBJournalSpec {
       }
       """)
       .withFallback(TestConfig.config)
+
+  def configWithEagerFallback: Config =
+    ConfigFactory
+      .parseString("akka.persistence.dynamodb.journal.fallback-store.eager = on")
+      .withFallback(configWithSmallFallback)
 }
 
 abstract class DynamoDBJournalBaseSpec(config: Config)
@@ -298,6 +303,11 @@ class DynamoDBJournalWithFallbackSpec
 
   "A DynamoDB journal with fallback enabled" should {
 
+    "not eagerly initialize the fallback store when eager = off" in new Setup {
+      FallbackStoreProvider(system).getFallbackStore(
+        system.settings.config.getString("akka.persistence.dynamodb.journal.fallback-store.plugin")) shouldBe empty
+    }
+
     "not interact with the fallback store for small events" in withFallbackStoreProbe { (fallbackStore, invocations) =>
       new Setup {
         val probe = TypedTestProbe[Any]()
@@ -410,5 +420,31 @@ class DynamoDBJournalWithFallbackSpec
     invocationsProbe.request(1)
     test(fallbackStore, invocationsProbe)
     invocationsProbe.cancel()
+  }
+}
+
+class DynamoDBJournalWithEagerFallbackSpec
+    extends ScalaTestWithActorTestKit(DynamoDBJournalSpec.configWithEagerFallback)
+    with AnyWordSpecLike
+    with TestData
+    with TestDbLifecycle
+    with LogCapturing {
+
+  def typedSystem: ActorSystem[_] = testKit.system
+
+  class Setup {
+    val journal = persistenceExt.journalFor("akka.persistence.dynamodb.journal")
+  }
+
+  "A DynamoDB journal with fallback enabled" should {
+
+    "eagerly initialize the fallback store when eager = on" in new Setup {
+      val cfg = system.settings.config.getConfig("akka.persistence.dynamodb.journal.fallback-store")
+      val plugin = cfg.getString("plugin")
+
+      eventually {
+        FallbackStoreProvider(system).getFallbackStore(plugin) shouldNot be(empty)
+      }
+    }
   }
 }

@@ -339,7 +339,7 @@ final class ClockSkewSettings(config: Config) {
 
 /** Not for user extension */
 @DoNotInherit
-sealed abstract class FallbackSettings(val plugin: String, val threshold: Int) {
+sealed abstract class FallbackSettings(val plugin: String, val threshold: Int, val eager: Boolean) {
   require(threshold > 0, "threshold must be positive")
   require(threshold <= (400 * 1000), "threshold must be at most 400 KB")
 
@@ -350,7 +350,8 @@ sealed abstract class FallbackSettings(val plugin: String, val threshold: Int) {
 }
 
 @ApiMayChange
-final class SnapshotFallbackSettings(plugin: String, threshold: Int) extends FallbackSettings(plugin, threshold) {
+final class SnapshotFallbackSettings(plugin: String, threshold: Int, eager: Boolean)
+    extends FallbackSettings(plugin, threshold, eager) {
   override def toString: String =
     if (isEnabled)
       s"SnapshotFallbackSettings(plugin=$plugin, threshold=${threshold}B)"
@@ -361,14 +362,15 @@ object SnapshotFallbackSettings {
   def apply(config: Config): SnapshotFallbackSettings = {
     val plugin = config.getString("plugin")
     val threshold = java.lang.Long.min(config.getBytes("threshold"), 400 * 1000).toInt
+    val eager = config.getBoolean("eager")
 
-    new SnapshotFallbackSettings(plugin, threshold)
+    new SnapshotFallbackSettings(plugin, threshold, eager)
   }
 }
 
 @ApiMayChange
 final class JournalFallbackSettings(commonSettings: SnapshotFallbackSettings, val batchSize: Int)
-    extends FallbackSettings(commonSettings.plugin, commonSettings.threshold) {
+    extends FallbackSettings(commonSettings.plugin, commonSettings.threshold, commonSettings.eager) {
   require(!commonSettings.isEnabled || batchSize > 0, "batch size must be positive")
 
   override def toString: String =
