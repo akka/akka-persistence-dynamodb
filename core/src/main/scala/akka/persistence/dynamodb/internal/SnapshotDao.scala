@@ -563,4 +563,8 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
     (conditions.result().mkString(" AND "), attributes)
   }
 
+  if (settings.snapshotFallbackSettings.isEnabled && settings.snapshotFallbackSettings.eager) {
+    // constructs and saves in a concurrent hashmap for later use
+    fallbackStoreProvider.snapshotFallbackStoreFor(settings.snapshotFallbackSettings.plugin)
+  }
 }
