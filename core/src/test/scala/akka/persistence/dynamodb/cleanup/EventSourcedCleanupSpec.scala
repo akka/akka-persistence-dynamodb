@@ -102,7 +102,7 @@ class EventSourcedCleanupSpec
           val from = (iteration * batchSize) + 1
           iteration = iteration + 1
           val to = Math.min(maxSeqNumber, from + batchSize - 1)
-          val expectedMsg = s"Deleted events from [$from] to [$to] for persistenceId [$pid], consumed [8.0] WCU"
+          val expectedMsg = s"Deleted events from [$from] to [$to] for persistenceId [$pid], consumed [4.0] WCU"
           event.message == expectedMsg
         }
         .expect {
@@ -168,7 +168,7 @@ class EventSourcedCleanupSpec
           val from = (iteration * batchSize) + 1
           iteration = iteration + 1
           val to = Math.min(maxSeqNumber, from + batchSize - 1)
-          val expectedMsg = s"Deleted events from [$from] to [$to] for persistenceId [$pid], consumed [8.0] WCU"
+          val expectedMsg = s"Deleted events from [$from] to [$to] for persistenceId [$pid], consumed [4.0] WCU"
           event.message == expectedMsg
         }
         .expect {
@@ -547,7 +547,7 @@ class EventSourcedCleanupSpec
           val to = Math.min(x, from + batchSize - 1)
           val expectedMessage =
             s"Updated expiry of events for persistenceId [$pid], for sequence numbers [$from] to [$to]," +
-            s" expiring at [$expiryTimestamp], consumed [8.0] WCU"
+            s" expiring at [$expiryTimestamp], consumed [4.0] WCU"
           event.message == expectedMessage
         }
         .expect {
@@ -686,7 +686,7 @@ class EventSourcedCleanupSpec
           val to = Math.min(n, from + batchSize - 1)
           val expectedMessage =
             s"Updated expiry of events for persistenceId [$pid], for sequence numbers [$from] to [$to]," +
-            s" expiring at [$expiryTimestamp], consumed [8.0] WCU"
+            s" expiring at [$expiryTimestamp], consumed [4.0] WCU"
           event.message == expectedMessage
         }
         .expect {
@@ -828,7 +828,7 @@ class EventSourcedCleanupSpec
           val to = Math.min(n, from + batchSize - 1)
           val expectedMessage =
             s"Updated expiry of events for persistenceId [$pid], for sequence numbers [$from] to [$to]," +
-            s" expiring at [$expiryTimestamp], consumed [8.0] WCU"
+            s" expiring at [$expiryTimestamp], consumed [4.0] WCU"
           event.message == expectedMessage
         }
         .expect {
