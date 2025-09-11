@@ -104,8 +104,8 @@ class EventSourcedCleanupSpec
           val from = (iteration * batchSize) + 1
           iteration = iteration + 1
           val to = Math.min(maxSeqNumber, from + batchSize - 1)
-          val expectedMsg = s"Deleted events from [$from] to [$to] for persistenceId [$pid], IGNORED WCU CONSUMPTION"
-          ConsumedWCU.replaceAllIn(event.message, "IGNORED WCU CONSUMPTION") == expectedMsg
+          val expectedMsg = s"Deleted events from [$from] to [$to] for persistenceId [$pid], consumed [8.0] WCU"
+          event.message == expectedMsg
         }
         .expect {
           cleanup.deleteAllEvents(pid, resetSequenceNumber = true).futureValue
@@ -170,8 +170,8 @@ class EventSourcedCleanupSpec
           val from = (iteration * batchSize) + 1
           iteration = iteration + 1
           val to = Math.min(maxSeqNumber, from + batchSize - 1)
-          val expectedMsg = s"Deleted events from [$from] to [$to] for persistenceId [$pid], IGNORED WCU CONSUMPTION"
-          ConsumedWCU.replaceAllIn(event.message, "IGNORED WCU CONSUMPTION") == expectedMsg
+          val expectedMsg = s"Deleted events from [$from] to [$to] for persistenceId [$pid], consumed [8.0] WCU"
+          event.message == expectedMsg
         }
         .expect {
           cleanup.deleteAllEvents(pid, resetSequenceNumber = false).futureValue
@@ -549,8 +549,8 @@ class EventSourcedCleanupSpec
           val to = Math.min(x, from + batchSize - 1)
           val expectedMessage =
             s"Updated expiry of events for persistenceId [$pid], for sequence numbers [$from] to [$to]," +
-            s" expiring at [$expiryTimestamp], IGNORED CONSUMED WCU"
-          ConsumedWCU.replaceAllIn(event.message, "IGNORED CONSUMED WCU") == expectedMessage
+            s" expiring at [$expiryTimestamp], consumed [8.0] WCU"
+          event.message == expectedMessage
         }
         .expect {
           cleanup.setExpiryForEvents(pid, toSequenceNr = x, expiryTimestamp).futureValue
@@ -688,8 +688,8 @@ class EventSourcedCleanupSpec
           val to = Math.min(n, from + batchSize - 1)
           val expectedMessage =
             s"Updated expiry of events for persistenceId [$pid], for sequence numbers [$from] to [$to]," +
-            s" expiring at [$expiryTimestamp], IGNORED WCU CONSUMPTION"
-          ConsumedWCU.replaceAllIn(event.message, "IGNORED WCU CONSUMPTION") == expectedMessage
+            s" expiring at [$expiryTimestamp], consumed [8.0] WCU"
+          event.message == expectedMessage
         }
         .expect {
           cleanup.setExpiryForAllEvents(pid, resetSequenceNumber = true, expiryTimestamp).futureValue
