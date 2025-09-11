@@ -49,8 +49,6 @@ class EventSourcedCleanupSpec
 
   override def typedSystem: ActorSystem[_] = system
 
-  val ConsumedWCU = """consumed \[\d+.0\] WCU$""".r
-
   "EventSourcedCleanup" must {
     "delete all events for one persistenceId" in {
       val ackProbe = createTestProbe[Done]()
@@ -830,8 +828,8 @@ class EventSourcedCleanupSpec
           val to = Math.min(n, from + batchSize - 1)
           val expectedMessage =
             s"Updated expiry of events for persistenceId [$pid], for sequence numbers [$from] to [$to]," +
-            s" expiring at [$expiryTimestamp], IGNORED_WCU_CONSUMPTION"
-          ConsumedWCU.replaceAllIn(event.message, "IGNORED_WCU_CONSUMPTION") == expectedMessage
+            s" expiring at [$expiryTimestamp], consumed [8.0] WCU"
+          event.message == expectedMessage
         }
         .expect {
           cleanup.setExpiryForAllEvents(pid, resetSequenceNumber = false, expiryTimestamp).futureValue
