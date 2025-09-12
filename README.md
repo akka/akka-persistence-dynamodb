@@ -5,8 +5,6 @@ The Akka family of projects is managed by teams at [Lightbend](https://lightbend
 [Akka Persistence](https://doc.akka.io/docs/akka/current/scala/persistence.html) journal and snapshot 
 store for DynamoDB. 
 
-For questions please use the [discuss.akka.io](https://discuss.akka.io). Tag any new questions with `akka-persistence` and `dynamodb`.
-
 The documentation can be found [here](https://doc.akka.io/docs/akka-persistence-dynamodb/current/index.html)
 
 ## Project status
