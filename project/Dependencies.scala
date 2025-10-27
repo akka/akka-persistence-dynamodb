@@ -22,8 +22,7 @@ object Dependencies {
   val MinioVersion = "8.5.17"
 
   // Java Platform version for JavaDoc creation
-  // sync with Java version in .github/workflows/publish.yml#documentation
-  val JavaDocLinkVersion = 17
+  lazy val JavaDocLinkVersion = scala.util.Properties.javaSpecVersion
 
   object Compile {
     val akkaActorTyped = "com.typesafe.akka" %% "akka-actor-typed" % AkkaVersion
