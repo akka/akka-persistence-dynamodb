@@ -1,3 +1,7 @@
+/*
+ * Copyright (C) 2024-2025 Lightbend Inc. <https://akka.io>
+ */
+
 package jdocs;
 
 // #cloudwatch-default

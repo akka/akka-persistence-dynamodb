@@ -10,6 +10,7 @@ inThisBuild(
   Seq(
     organization := "com.lightbend.akka",
     organizationName := "Lightbend Inc.",
+    organizationHomepage := Some(url("http://akka.io")),
     homepage := Some(url("https://doc.akka.io/libraries/akka-persistence-dynamodb/current")),
     scmInfo := Some(
       ScmInfo(
@@ -70,7 +71,7 @@ def common: Seq[Setting[_]] =
         Seq("-jdk-api-doc-base", s"https://docs.oracle.com/en/java/javase/${Dependencies.JavaDocLinkVersion}/docs/api")
     },
     Compile / doc / autoAPIMappings := true,
-    headerLicense := Some(HeaderLicense.Custom("""Copyright (C) 2024 Lightbend Inc. <https://www.lightbend.com>""")),
+    headerLicense := Some(HeaderLicense.Custom("""Copyright (C) 2024-2025 Lightbend Inc. <https://akka.io>""")),
     Test / logBuffered := false,
     Test / parallelExecution := false,
     // show full stack traces and test case durations
