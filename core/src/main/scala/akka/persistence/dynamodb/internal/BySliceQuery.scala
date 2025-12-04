@@ -109,7 +109,6 @@ import org.slf4j.Logger
     dao: BySliceQuery.Dao[Item],
     createEnvelope: (TimestampOffset, Item) => Envelope,
     extractOffset: Envelope => TimestampOffset,
-    createHeartbeat: Instant => Option[Envelope],
     clock: Clock,
     settings: DynamoDBSettings,
     log: Logger)(implicit val ec: ExecutionContext) {
@@ -401,22 +400,6 @@ import org.slf4j.Logger
           .via(deserializeAndAddOffset(newState.currentOffset)))
     }
 
-    def heartbeat(state: QueryState): Option[Envelope] = {
-      if (state.idleCountBeforeHeartbeat >= 2 && state.previousQueryWallClock != Instant.EPOCH) {
-        // use wall clock to measure duration since start, up to idle backtracking limit
-        val timestamp = state.startTimestamp.plus(
-          JDuration.between(state.startWallClock, state.previousQueryWallClock.minus(backtrackingBehindCurrentTime)))
-
-        val h = createHeartbeat(timestamp)
-        if (h.isDefined)
-          log.debug("{} heartbeat timestamp [{}]", logPrefix, timestamp)
-        h
-      } else None
-    }
-
-    val nextHeartbeat: QueryState => Option[Envelope] =
-      if (settings.journalPublishEvents) heartbeat else _ => None
-
     val currentTimestamp = InstantFactory.now() // Can we use DDB as a timestamp source?
     val currentWallClock = clock.instant()
 
@@ -426,8 +409,7 @@ import org.slf4j.Logger
       updateState = nextOffset,
       delayNextQuery = delayNextQuery,
       nextQuery = nextQuery,
-      beforeQuery = _ => None,
-      heartbeat = nextHeartbeat)
+      beforeQuery = _ => None)
   }
 
   private def deserializeAndAddOffset(timestampOffset: TimestampOffset): Flow[Item, Envelope, NotUsed] = {

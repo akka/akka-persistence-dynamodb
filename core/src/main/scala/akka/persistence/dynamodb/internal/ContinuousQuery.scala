@@ -30,10 +30,8 @@ private[dynamodb] object ContinuousQuery {
       updateState: (S, T) => S,
       delayNextQuery: S => Option[FiniteDuration],
       nextQuery: S => (S, Option[Source[T, NotUsed]]),
-      beforeQuery: S => Option[Future[S]] = (_: S) => None,
-      heartbeat: S => Option[T] = (_: S) => None): Source[T, NotUsed] =
-    Source.fromGraph(
-      new ContinuousQuery[S, T](initialState, updateState, delayNextQuery, nextQuery, beforeQuery, heartbeat))
+      beforeQuery: S => Option[Future[S]] = (_: S) => None): Source[T, NotUsed] =
+    Source.fromGraph(new ContinuousQuery[S, T](initialState, updateState, delayNextQuery, nextQuery, beforeQuery))
 
   private case object NextQuery
 
@@ -71,8 +69,7 @@ final private[dynamodb] class ContinuousQuery[S, T](
     updateState: (S, T) => S,
     delayNextQuery: S => Option[FiniteDuration],
     nextQuery: S => (S, Option[Source[T, NotUsed]]),
-    beforeQuery: S => Option[Future[S]],
-    heartbeat: S => Option[T])
+    beforeQuery: S => Option[Future[S]])
     extends GraphStage[SourceShape[T]] {
   import ContinuousQuery._
 
@@ -155,13 +152,8 @@ final private[dynamodb] class ContinuousQuery[S, T](
                 }
             })
 
-            val sourceWithHeartbeat = heartbeat(newState) match {
-              case None    => source
-              case Some(h) => Source.single(h).concat(source)
-            }
-
             val graph = Source
-              .fromGraph(sourceWithHeartbeat)
+              .fromGraph(source)
               .to(sinkIn.sink)
             interpreter.subFusingMaterializer.materialize(graph)
             sinkIn.pull()
