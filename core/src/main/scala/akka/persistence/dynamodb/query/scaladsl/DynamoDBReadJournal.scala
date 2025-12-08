@@ -8,10 +8,8 @@ import java.time.Clock
 import java.time.Instant
 import java.time.{ Duration => JDuration }
 import java.util.concurrent.ConcurrentHashMap
-
 import scala.collection.mutable
 import scala.concurrent.Future
-
 import akka.NotUsed
 import akka.actor.ExtendedActorSystem
 import akka.actor.typed.pubsub.Topic
@@ -22,6 +20,7 @@ import akka.persistence.Persistence
 import akka.persistence.SerializedEvent
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.internal.BySliceQuery
+import akka.persistence.dynamodb.internal.CorrelationId
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
 import akka.persistence.dynamodb.internal.PubSub
 import akka.persistence.dynamodb.internal.QueryDao
@@ -32,6 +31,7 @@ import akka.persistence.dynamodb.internal.StartingFromSnapshotStage
 import akka.persistence.dynamodb.util.ClientProvider
 import akka.persistence.query.NoOffset
 import akka.persistence.query.Offset
+import akka.persistence.query.QueryCorrelationId
 import akka.persistence.query.TimestampOffset
 import akka.persistence.query.TimestampOffsetBySlice
 import akka.persistence.query.scaladsl._
@@ -49,11 +49,10 @@ import akka.stream.scaladsl.Flow
 import akka.stream.scaladsl.Source
 import com.typesafe.config.Config
 import org.slf4j.LoggerFactory
+
 import scala.annotation.nowarn
 import java.util.UUID
-
 import scala.annotation.tailrec
-
 import akka.persistence.query.typed.scaladsl.CurrentEventsByPersistenceIdTypedQuery
 
 object DynamoDBReadJournal {
@@ -91,12 +90,12 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
   private val heartbeatUuid = UUID.randomUUID().toString
   log.debug("Using heartbeat UUID [{}]", heartbeatUuid)
 
-  private def heartbeatPersistenceId(entityType: String, slice: Int): String = {
+  private def heartbeatPersistenceId(entityType: String, slice: Int, correlationId: Option[String]): String = {
     val key = entityType -> slice
     heartbeatPersistenceIds.get(key) match {
       case null =>
         // just a cache, don't block other threads
-        val pid = generateHeartbeatPersistenceId(entityType, slice)
+        val pid = generateHeartbeatPersistenceId(entityType, slice, correlationId = correlationId)
         heartbeatPersistenceIds.put(key, pid)
         pid
 
@@ -104,7 +103,11 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     }
   }
 
-  @tailrec private def generateHeartbeatPersistenceId(entityType: String, slice: Int, n: Int = 1): String =
+  @tailrec private def generateHeartbeatPersistenceId(
+      entityType: String,
+      slice: Int,
+      n: Int = 1,
+      correlationId: Option[String]): String =
     // Inspired by Nakamoto, 2008...
     if (n < 1000000) { // a million attempts should be enough to find a match
       // UUID included to make sure not the same as any application persistence ID
@@ -112,21 +115,23 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       if (persistenceExt.sliceForPersistenceId(pid) == slice) {
         pid
       } else {
-        generateHeartbeatPersistenceId(entityType, slice, n + 1)
+        generateHeartbeatPersistenceId(entityType, slice, n + 1, correlationId)
       }
     } else
       throw new IllegalStateException(
-        s"Couldn't find a heartbeat persistence ID for [$entityType] with slice [$slice] and UUID [$heartbeatUuid]")
+        s"Couldn't find a heartbeat persistence ID for [$entityType] with slice [$slice] and UUID [$heartbeatUuid]${CorrelationId
+          .toLogText(correlationId)}")
 
   private val clock = Clock.systemUTC
 
   private def bySlice[Event](
       entityType: String,
-      slice: Int): BySliceQuery[SerializedJournalItem, EventEnvelope[Event]] = {
+      slice: Int,
+      correlationId: Option[String]): BySliceQuery[SerializedJournalItem, EventEnvelope[Event]] = {
     val createEnvelope: (TimestampOffset, SerializedJournalItem) => EventEnvelope[Event] = createEventEnvelope
     val extractOffset = (env: EventEnvelope[Event]) => env.offset.asInstanceOf[TimestampOffset]
     val createHeartbeat = (timestamp: Instant) =>
-      Some(createEventEnvelopeHeartbeat[Event](entityType, slice, timestamp))
+      Some(createEventEnvelopeHeartbeat[Event](entityType, slice, timestamp, correlationId))
 
     new BySliceQuery(queryDao, createEnvelope, extractOffset, createHeartbeat, clock, settings, log)
   }
@@ -134,13 +139,14 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
   private def snapshotsBySlice[Snapshot, Event](
       entityType: String,
       slice: Int,
-      transformSnapshot: Snapshot => Event): BySliceQuery[SerializedSnapshotItem, EventEnvelope[Event]] = {
+      transformSnapshot: Snapshot => Event,
+      correlationId: Option[String]): BySliceQuery[SerializedSnapshotItem, EventEnvelope[Event]] = {
     val createEnvelope: (TimestampOffset, SerializedSnapshotItem) => EventEnvelope[Event] =
       (offset, row) => createEnvelopeFromSnapshot(row, offset, transformSnapshot)
 
     val extractOffset: EventEnvelope[Event] => TimestampOffset = env => env.offset.asInstanceOf[TimestampOffset]
     val createHeartbeat = (timestamp: Instant) =>
-      Some(createEventEnvelopeHeartbeat[Event](entityType, slice, timestamp))
+      Some(createEventEnvelopeHeartbeat[Event](entityType, slice, timestamp, correlationId))
 
     new BySliceQuery(snapshotDao, createEnvelope, extractOffset, createHeartbeat, clock, settings, log)
   }
@@ -196,10 +202,14 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       tags = item.tags)
   }
 
-  def createEventEnvelopeHeartbeat[Event](entityType: String, slice: Int, timestamp: Instant): EventEnvelope[Event] =
+  def createEventEnvelopeHeartbeat[Event](
+      entityType: String,
+      slice: Int,
+      timestamp: Instant,
+      correlationId: Option[String]): EventEnvelope[Event] =
     new EventEnvelope(
       TimestampOffset(timestamp, Map.empty),
-      heartbeatPersistenceId(entityType, slice),
+      heartbeatPersistenceId(entityType, slice, correlationId),
       1L,
       eventOption = None,
       timestamp.toEpochMilli,
@@ -218,8 +228,14 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       fromSequenceNr: Long,
       toSequenceNr: Long,
       includeDeleted: Boolean): Source[SerializedJournalItem, NotUsed] = {
-
-    log.debug("[{}] eventsByPersistenceId from seqNr [{}] to [{}]", persistenceId, fromSequenceNr, toSequenceNr)
+    val correlationId = QueryCorrelationId.get()
+    val correlationIdText = CorrelationId.toLogText(correlationId)
+    log.debug(
+      "[{}] eventsByPersistenceId from seqNr [{}] to [{}]{}",
+      persistenceId,
+      fromSequenceNr,
+      toSequenceNr,
+      correlationIdText)
 
     queryDao.eventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted)
   }
@@ -244,13 +260,17 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       minSlice: Int,
       maxSlice: Int,
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
+    val correlationId = QueryCorrelationId.get()
+    val correlationIdText = CorrelationId.toLogText(correlationId)
+
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-      bySlice[Event](entityType, slice)
+      bySlice[Event](entityType, slice, correlationId)
         .currentBySlice(
-          s"[$entityType] currentEventsBySlice [$slice]: ",
+          s"[$entityType] currentEventsBySlice [$slice]$correlationIdText: ",
           entityType,
           slice,
-          sliceStartOffset(slice, offset))
+          sliceStartOffset(slice, offset),
+          correlationId)
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
 
@@ -289,20 +309,23 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       minSlice: Int,
       maxSlice: Int,
       offset: Offset): Source[EventEnvelope[Event], NotUsed] = {
+    val correlationId = QueryCorrelationId.get()
+    val correlationIdText = CorrelationId.toLogText(correlationId)
 
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
-      bySlice[Event](entityType, slice).liveBySlice(
-        s"[$entityType] eventsBySlice [$slice]: ",
+      bySlice[Event](entityType, slice, correlationId).liveBySlice(
+        s"[$entityType] eventsBySlice [$slice]$correlationIdText: ",
         entityType,
         slice,
-        sliceStartOffset(slice, offset))
+        sliceStartOffset(slice, offset),
+        correlationId)
     }
     require(bySliceQueries.nonEmpty, s"maxSlice [$maxSlice] must be >= minSlice [$minSlice]")
 
     val dbSource = bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
     if (settings.journalPublishEvents) {
       val pubSubSource = eventsBySlicesPubSubSource[Event](entityType, minSlice, maxSlice)
-      mergeDbAndPubSubSources(dbSource, pubSubSource)
+      mergeDbAndPubSubSources(dbSource, pubSubSource, correlationId)
     } else
       dbSource
   }
@@ -334,12 +357,19 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       offset: Offset,
       transformSnapshot: Snapshot => Event): Source[EventEnvelope[Event], NotUsed] = {
     checkStartFromSnapshotEnabled("currentEventsBySlicesStartingFromSnapshots")
+    val correlationId = QueryCorrelationId.get()
+    val correlationIdText = CorrelationId.toLogText(correlationId)
 
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
       val timestampOffset = TimestampOffset.toTimestampOffset(sliceStartOffset(slice, offset))
 
-      val snapshotSource = snapshotsBySlice[Snapshot, Event](entityType, slice, transformSnapshot)
-        .currentBySlice(s"[$entityType] currentSnapshotsBySlice [$slice]: ", entityType, slice, timestampOffset)
+      val snapshotSource = snapshotsBySlice[Snapshot, Event](entityType, slice, transformSnapshot, correlationId)
+        .currentBySlice(
+          s"[$entityType] currentSnapshotsBySlice [$slice]$correlationIdText: ",
+          entityType,
+          slice,
+          timestampOffset,
+          correlationId)
 
       Source.fromGraph(
         new StartingFromSnapshotStage[Event](
@@ -356,17 +386,20 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
                 offset
               }
 
-            log.debug(
-              "currentEventsBySlicesStartingFromSnapshots for slice [{}] and initOffset [{}] with [{}] snapshots",
-              slice,
-              initOffset,
-              snapshotOffsets.size)
+            if (log.isDebugEnabled)
+              log.debug(
+                "currentEventsBySlicesStartingFromSnapshots for slice [{}] and initOffset [{}] with [{}] snapshots{}",
+                slice,
+                initOffset,
+                snapshotOffsets.size,
+                correlationIdText)
 
-            bySlice[Event](entityType, slice).currentBySlice(
-              s"[$entityType] currentEventsBySlice [$slice]: ",
+            bySlice[Event](entityType, slice, correlationId).currentBySlice(
+              s"[$entityType] currentEventsBySlice [$slice]$correlationIdText: ",
               entityType,
               slice,
               initOffset,
+              correlationId,
               filterEventsBeforeSnapshots(snapshotOffsets, backtrackingEnabled = false))
           }))
     }
@@ -396,12 +429,19 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       offset: Offset,
       transformSnapshot: Snapshot => Event): Source[EventEnvelope[Event], NotUsed] = {
     checkStartFromSnapshotEnabled("eventsBySlicesStartingFromSnapshots")
+    val correlationId = QueryCorrelationId.get()
+    val correlationIdText = CorrelationId.toLogText(correlationId)
 
     val bySliceQueries = (minSlice to maxSlice).map { slice =>
       val timestampOffset = TimestampOffset.toTimestampOffset(sliceStartOffset(slice, offset))
 
-      val snapshotSource = snapshotsBySlice[Snapshot, Event](entityType, slice, transformSnapshot)
-        .currentBySlice(s"[$entityType] snapshotsBySlice [$slice]: ", entityType, slice, timestampOffset)
+      val snapshotSource = snapshotsBySlice[Snapshot, Event](entityType, slice, transformSnapshot, correlationId)
+        .currentBySlice(
+          s"[$entityType] snapshotsBySlice [$slice]$correlationIdText: ",
+          entityType,
+          slice,
+          timestampOffset,
+          correlationId)
 
       Source.fromGraph(
         new StartingFromSnapshotStage[Event](
@@ -418,17 +458,20 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
                 offset
               }
 
-            log.debug(
-              "eventsBySlicesStartingFromSnapshots for slice [{}] and initOffset [{}] with [{}] snapshots",
-              slice,
-              initOffset,
-              snapshotOffsets.size)
+            if (log.isDebugEnabled)
+              log.debug(
+                "eventsBySlicesStartingFromSnapshots for slice [{}] and initOffset [{}] with [{}] snapshots{}",
+                slice,
+                initOffset,
+                snapshotOffsets.size,
+                correlationIdText)
 
-            bySlice[Event](entityType, slice).liveBySlice(
-              s"[$entityType] eventsBySlice [$slice]: ",
+            bySlice[Event](entityType, slice, correlationId).liveBySlice(
+              s"[$entityType] eventsBySlice [$slice]$correlationIdText: ",
               entityType,
               slice,
               initOffset,
+              correlationId,
               filterEventsBeforeSnapshots(snapshotOffsets, settings.querySettings.backtrackingEnabled))
           }))
     }
@@ -438,7 +481,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     val dbSource = bySliceQueries.head.mergeAll(bySliceQueries.tail, eagerComplete = false)
     if (settings.journalPublishEvents) {
       val pubSubSource = eventsBySlicesPubSubSource[Event](entityType, minSlice, maxSlice)
-      mergeDbAndPubSubSources(dbSource, pubSubSource)
+      mergeDbAndPubSubSources(dbSource, pubSubSource, correlationId)
     } else
       dbSource
   }
@@ -510,13 +553,15 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   private def mergeDbAndPubSubSources[Event, Snapshot](
       dbSource: Source[EventEnvelope[Event], NotUsed],
-      pubSubSource: Source[EventEnvelope[Event], NotUsed]) = {
+      pubSubSource: Source[EventEnvelope[Event], NotUsed],
+      correlationId: Option[String]) = {
     dbSource
       .mergePrioritized(pubSubSource, leftPriority = 1, rightPriority = 10)
       .via(
         skipPubSubTooFarAhead(
           settings.querySettings.backtrackingEnabled,
-          JDuration.ofMillis(settings.querySettings.backtrackingWindow.toMillis)))
+          JDuration.ofMillis(settings.querySettings.backtrackingWindow.toMillis),
+          correlationId))
       .via(deduplicate(settings.querySettings.deduplicateCapacity))
   }
 
@@ -565,7 +610,9 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
    */
   @InternalApi private[akka] def skipPubSubTooFarAhead[Event](
       enabled: Boolean,
-      maxAheadOfBacktracking: JDuration): Flow[EventEnvelope[Event], EventEnvelope[Event], NotUsed] = {
+      maxAheadOfBacktracking: JDuration,
+      correlationId: Option[String]): Flow[EventEnvelope[Event], EventEnvelope[Event], NotUsed] = {
+    def correlationIdLogText = CorrelationId.toLogText(correlationId)
     if (!enabled)
       Flow[EventEnvelope[Event]]
     else
@@ -587,10 +634,11 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
                     if (l.isAfter(t.timestamp))
                       log.debug(
                         "event from query for persistenceId [{}] seqNr [{}] " +
-                        s"timestamp [{}] was before last event from backtracking or heartbeat [{}].",
+                        s"timestamp [{}]{} was before last event from backtracking or heartbeat [{}].",
                         env.persistenceId,
                         env.sequenceNr,
                         t.timestamp,
+                        correlationIdLogText,
                         l)
                   }
 
@@ -604,18 +652,20 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
                     Nil // always drop heartbeats
                   } else if (EnvelopeOrigin.fromPubSub(env) && latestBacktracking(slice) == Instant.EPOCH) {
                     log.trace(
-                      "Dropping pubsub event for persistenceId [{}] seqNr [{}] because no event from backtracking yet.",
+                      "Dropping pubsub event for persistenceId [{}] seqNr [{}]{} because no event from backtracking yet.",
                       env.persistenceId,
-                      env.sequenceNr)
+                      env.sequenceNr,
+                      correlationIdLogText)
                     Nil
                   } else if (EnvelopeOrigin.fromPubSub(env) && JDuration
                       .between(latestBacktracking(slice), t.timestamp)
                       .compareTo(maxAheadOfBacktracking) > 0) {
                     // drop from pubsub when too far ahead from backtracking
                     log.debug(
-                      "Dropping pubsub event for persistenceId [{}] seqNr [{}] because too far ahead of backtracking.",
+                      "Dropping pubsub event for persistenceId [{}] seqNr [{}]{} because too far ahead of backtracking.",
                       env.persistenceId,
-                      env.sequenceNr)
+                      env.sequenceNr,
+                      correlationIdLogText)
                     Nil
                   } else {
                     env :: Nil
@@ -630,10 +680,12 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   // EventTimestampQuery
   override def timestampOf(persistenceId: String, sequenceNr: Long): Future[Option[Instant]] = {
+    val correlationId = QueryCorrelationId.get()
     val result = queryDao.timestampOfEvent(persistenceId, sequenceNr)
     if (log.isDebugEnabled) {
+      val correlationIdText = CorrelationId.toLogText(correlationId)
       result.foreach { t =>
-        log.debug("[{}] timestampOf seqNr [{}] is [{}]", persistenceId, sequenceNr, t)
+        log.debug("[{}] timestampOf seqNr [{}]{} is [{}]", persistenceId, sequenceNr, correlationIdText, t)
       }
     }
     result
@@ -641,14 +693,16 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
 
   //LoadEventQuery
   override def loadEnvelope[Event](persistenceId: String, sequenceNr: Long): Future[EventEnvelope[Event]] = {
-    log.debug("[{}] loadEnvelope seqNr [{}]", persistenceId, sequenceNr)
+    val correlationId = QueryCorrelationId.get()
+    val correlationIdText = CorrelationId.toLogText(correlationId)
+    log.debug("[{}] loadEnvelope seqNr [{}]{}", persistenceId, sequenceNr, correlationIdText)
     queryDao
       .loadEvent(persistenceId, sequenceNr, includePayload = true)
       .map {
         case Some(item) => deserializeBySliceItem(item)
         case None =>
           throw new NoSuchElementException(
-            s"Event with persistenceId [$persistenceId] and sequenceNr [$sequenceNr] not found.")
+            s"Event with persistenceId [$persistenceId] and sequenceNr [$sequenceNr] not found$correlationIdText.")
       }
   }
 

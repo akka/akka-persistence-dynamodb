@@ -97,7 +97,8 @@ import org.slf4j.Logger
         slice: Int,
         fromTimestamp: Instant,
         toTimestamp: Instant,
-        backtracking: Boolean): Source[Item, NotUsed]
+        backtracking: Boolean,
+        correlationId: Option[String]): Source[Item, NotUsed]
   }
 }
 
@@ -126,6 +127,7 @@ import org.slf4j.Logger
       entityType: String,
       slice: Int,
       offset: Offset,
+      correlationId: Option[String],
       filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true): Source[Envelope, NotUsed] = {
     val initialOffset = toTimestampOffset(offset)
 
@@ -159,7 +161,13 @@ import org.slf4j.Logger
 
         newState -> Some(
           dao
-            .itemsBySlice(entityType, slice, state.latest.timestamp, toTimestamp, backtracking = false)
+            .itemsBySlice(
+              entityType,
+              slice,
+              state.latest.timestamp,
+              toTimestamp,
+              backtracking = false,
+              correlationId = correlationId)
             .filter { item =>
               filterEventsBeforeSnapshots(item.persistenceId, item.seqNr, item.source)
             }
@@ -194,6 +202,7 @@ import org.slf4j.Logger
       entityType: String,
       slice: Int,
       offset: Offset,
+      correlationId: Option[String],
       filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true): Source[Envelope, NotUsed] = {
     val initialOffset = toTimestampOffset(offset)
 
@@ -379,7 +388,13 @@ import org.slf4j.Logger
       newStateWithPrevious ->
       Some(
         dao
-          .itemsBySlice(entityType, slice, fromTimestamp, toTimestamp, backtracking = newState.backtracking)
+          .itemsBySlice(
+            entityType,
+            slice,
+            fromTimestamp,
+            toTimestamp,
+            backtracking = newState.backtracking,
+            correlationId = correlationId)
           .filter { item =>
             filterEventsBeforeSnapshots(item.persistenceId, item.seqNr, item.source)
           }

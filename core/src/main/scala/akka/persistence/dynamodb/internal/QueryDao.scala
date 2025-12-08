@@ -194,7 +194,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
       slice: Int,
       fromTimestamp: Instant,
       toTimestamp: Instant,
-      backtracking: Boolean): Source[SerializedJournalItem, NotUsed] = {
+      backtracking: Boolean,
+      correlationId: Option[String]): Source[SerializedJournalItem, NotUsed] = {
     import JournalAttributes._
 
     if (toTimestamp.isBefore(fromTimestamp)) {
@@ -256,7 +257,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
 
       val logName = s"[$entityType] itemsBySlice [$slice] [${if (backtracking) "backtracking" else "query"}]"
 
-      def logQueryResponse: QueryResponse => String = response => {
+      def logQueryResponse: QueryResponse => String = { response =>
+        val correlationIdText = CorrelationId.toLogText(correlationId)
         if (response.hasItems && !response.items.isEmpty) {
           val items = response.items
           val count = items.size
@@ -264,8 +266,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
           val last = getTimestamp(items.get(items.size - 1))
           val scanned = response.scannedCount
           val hasMore = response.hasLastEvaluatedKey && !response.lastEvaluatedKey.isEmpty
-          s"query response page with [$count] events between [$first - $last] (scanned [$scanned], has more [$hasMore])"
-        } else "empty query response page"
+          s"query response page with [$count] events between [$first - $last] (scanned [$scanned], has more [$hasMore])$correlationIdText"
+        } else s"empty query response page$correlationIdText"
       }
 
       Source
