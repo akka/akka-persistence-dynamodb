@@ -449,7 +449,8 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest
       slice: Int,
       fromTimestamp: Instant,
       toTimestamp: Instant,
-      backtracking: Boolean): Source[SerializedSnapshotItem, NotUsed] = {
+      backtracking: Boolean,
+      correlationId: Option[String]): Source[SerializedSnapshotItem, NotUsed] = {
     import SnapshotAttributes._
 
     val entityTypeSlice = s"$entityType-$slice"
