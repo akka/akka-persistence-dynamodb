@@ -13,7 +13,7 @@ object Dependencies {
   val AkkaVersionInDocs = VersionNumber(AkkaVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
 
   // only for docs
-  val AkkaProjectionVersion = "1.6.0"
+  val AkkaProjectionVersion = "1.6.17"
   val AkkaProjectionVersionInDocs = VersionNumber(AkkaProjectionVersion).numbers match {
     case Seq(major, minor, _*) => s"$major.$minor"
   }
