@@ -71,11 +71,8 @@ import org.slf4j.Logger
       else latest
 
     def nextQueryFromTimestamp(backtrackingWindow: JDuration): Instant =
-      if (backtracking) {
-        if (latest.timestamp.minus(backtrackingWindow).isAfter(latestBacktracking.timestamp))
-          latest.timestamp.minus(backtrackingWindow)
-        else latestBacktracking.timestamp
-      } else latest.timestamp
+      if (backtracking) latestBacktracking.timestamp
+      else latest.timestamp
 
     def nextQueryToTimestamp: Option[Instant] = {
       if (backtracking) Some(latest.timestamp)
