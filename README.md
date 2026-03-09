@@ -29,6 +29,13 @@ The current versions of all Akka libraries are listed on the [Akka Dependencies]
 
 This library is ready to be used in production, APIs are stable, and the Lightbend subscription covers support for this project.
 
+## Build Token
+
+To build locally, you need to fetch a token at https://account.akka.io/token that you have to place into `~/.sbt/1.0/akka-commercial.sbt` file like this:
+```
+ThisBuild / resolvers += "lightbend-akka".at("your token resolver here")
+```
+
 ## License
 
 Akka is licensed under the Business Source License 1.1, please see the [Akka License FAQ](https://www.lightbend.com/akka/license-faq).
