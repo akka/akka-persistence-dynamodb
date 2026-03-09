@@ -35,7 +35,6 @@ inThisBuild(
     description := "An Akka Persistence plugin backed by Amazon DynamoDB",
     // append -SNAPSHOT to version when isSnapshot
     dynverSonatypeSnapshots := true,
-    resolvers += "Akka library repository".at("https://repo.akka.io/maven/github_actions"),
     resolvers ++=
       (if (Dependencies.AkkaVersion.endsWith("-SNAPSHOT"))
          Seq("Akka library snapshot repository".at("https://repo.akka.io/snapshots/github_actions"))
