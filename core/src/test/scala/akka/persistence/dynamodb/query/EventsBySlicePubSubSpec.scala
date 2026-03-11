@@ -48,6 +48,7 @@ import akka.stream.typed.scaladsl.ActorFlow
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
 import org.scalatest.wordspec.AnyWordSpecLike
+import akka.persistence.query.Offset
 
 object EventsBySlicePubSubSpec {
   def config: Config = ConfigFactory
@@ -101,6 +102,18 @@ class EventsBySlicePubSubSpec
       filtered = false,
       source = EnvelopeOrigin.SourcePubSub)
   }
+
+  private def changeOffset(envelope: EventEnvelope[String], newOffset: Offset): EventEnvelope[String] =
+    EventEnvelope(
+      newOffset,
+      envelope.persistenceId,
+      envelope.sequenceNr,
+      envelope.event,
+      envelope.timestamp,
+      envelope.entityType,
+      envelope.slice,
+      envelope.filtered,
+      envelope.source)
 
   def backtrackingEnvelope(env: EventEnvelope[String]): EventEnvelope[String] =
     new EventEnvelope[String](
@@ -215,16 +228,17 @@ class EventsBySlicePubSubSpec
       envelope.eventOption should be(empty)
     }
 
-    "skipPubSubTooFarAhead" in {
+    "handlePubSubTooFarAhead" in {
       persistenceExt.sliceForPersistenceId(envA1.persistenceId) should not be persistenceExt.sliceForPersistenceId(
         envB1.persistenceId)
+
+      val backtrackWindowMillis = settings.querySettings.backtrackingWindow.toMillis
 
       val (in, out) =
         TestSource[EventEnvelope[String]]()
           .via(
-            query.skipPubSubTooFarAhead(
-              enabled = true,
-              maxAheadOfBacktracking = JDuration.ofMillis(settings.querySettings.backtrackingWindow.toMillis),
+            query.handlePubSubTooFarAhead(
+              backtrackingWindow = JDuration.ofMillis(backtrackWindowMillis),
               correlationId = None))
           .toMat(TestSink[EventEnvelope[String]]())(Keep.both)
           .run()
@@ -255,21 +269,21 @@ class EventsBySlicePubSubSpec
       val time1 = envA1.offset
         .asInstanceOf[TimestampOffset]
         .timestamp
-      val time2 = time1
-        .plusMillis(settings.querySettings.backtrackingWindow.toMillis)
+      val time2 = time1.plusMillis(backtrackWindowMillis)
       val envA3 = createEnvelope(pidA, 3L, "a3", time2.plusMillis(1))
       val envA4 = createEnvelope(pidA, 4L, "a4", time2.plusMillis(2))
       in.sendNext(envA3)
       in.sendNext(envA4)
-      // dropped because > backtrackingWindow
-      out.expectNoMessage()
+      // emitted with adjusted offset based on latest backtracking
+      out.expectNext(changeOffset(envA3, TimestampOffset(time2, time2.plusMillis(1), Map(pidA.id -> 3L))))
+      out.expectNext(changeOffset(envA4, TimestampOffset(time2, time2.plusMillis(2), Map(pidA.id -> 4L))))
 
       val pidCSameSlice =
         randomPersistenceIdForSlice(entityType, persistenceExt.sliceForPersistenceId(pidA.id))
       val envC1 = createEnvelope(pidCSameSlice, 1L, "c1", time2.plusMillis(1))
       in.sendNext(envC1)
-      // dropped because > backtrackingWindow
-      out.expectNoMessage()
+      // emitted with adjusted offset based on latest backtracking
+      out.expectNext(changeOffset(envC1, TimestampOffset(time2, time2.plusMillis(1), Map(pidCSameSlice.id -> 1L))))
 
       val pidDSameSlice =
         randomPersistenceIdForSlice(entityType, persistenceExt.sliceForPersistenceId(pidA.id))
