@@ -4,57 +4,106 @@
 
 package akka.persistence.dynamodb.query
 
+import scala.concurrent.duration._
+
 import akka.Done
 import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorSystem
+import akka.persistence.dynamodb.InstrumentationProvider
 import akka.persistence.dynamodb.TestActors
 import akka.persistence.dynamodb.TestActors.Persister
 import akka.persistence.dynamodb.TestActors.Persister.PersistWithAck
 import akka.persistence.dynamodb.TestConfig
 import akka.persistence.dynamodb.TestData
 import akka.persistence.dynamodb.TestDbLifecycle
+import akka.persistence.dynamodb.TestInstrumentation
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.query.PersistenceQuery
 import akka.persistence.typed.PersistenceId
 import akka.persistence.typed.internal.ReplicatedEventMetadata
 import akka.stream.scaladsl.Sink
 import com.typesafe.config.Config
+import com.typesafe.config.ConfigFactory
+import org.scalatest.BeforeAndAfterEach
 import org.scalatest.wordspec.AnyWordSpecLike
 
-object EventsByPersistenceIdSpec {
+object QueryInstrumentation {
+  val qiFcn = "akka.persistence.dynamodb.TestInstrumentation"
+  val config = s"""akka.persistence.dynamodb.instrumentation-class = "$qiFcn""""
+}
 
-  def config: Config = TestConfig.config
+object EventsByPersistenceIdSpec {
+  def config: Config = ConfigFactory.parseString(QueryInstrumentation.config).withFallback(TestConfig.config)
 }
 
 class EventsByPersistenceIdSpec
     extends ScalaTestWithActorTestKit(EventsByPersistenceIdSpec.config)
     with AnyWordSpecLike
+    with BeforeAndAfterEach
     with TestDbLifecycle
     with TestData
     with LogCapturing {
+  import akka.persistence.dynamodb.TestInstrumentationProtocol._
 
   override def typedSystem: ActorSystem[_] = system
 
+  private val instrumentation = InstrumentationProvider(system).instrumentation.asInstanceOf[TestInstrumentation]
+
   private val query =
     PersistenceQuery(testKit.system).readJournalFor[DynamoDBReadJournal](DynamoDBReadJournal.Identifier)
+
+  override def beforeEach(): Unit = {
+    instrumentation.resetProbe()
+    super.beforeEach()
+  }
 
   "CurrentEventsByPersistenceIdTypedQuery" should {
     "retrieve requested events" in {
       val entityType = nextEntityType()
       val pid = nextPersistenceId(entityType)
       val persister = testKit.spawn(Persister(pid))
-      val probe = testKit.createTestProbe[Done]()
-      val events = (1 to 20).map { i =>
-        val payload = s"e-$i"
-        persister ! PersistWithAck(payload, probe.ref)
-        probe.expectMessage(Done)
-        payload
-      }
+      var ebpic = instrumentation.probe.expectMessageType[EventsByPersistenceIdCalled]
+      ebpic.persistenceId shouldBe pid.id
+      ebpic.fromSequenceNumber shouldBe 1
+      ebpic.toSequenceNumber shouldBe Long.MaxValue
+      ebpic.probe.expectNoMessage(30.millis) // no events
+      instrumentation.probe.expectNoMessage(10.millis)
+
+      val events = (1 to 20)
+        .map { i =>
+          val payload = s"e-$i"
+          persister ! PersistWithAck(payload, system.ignoreRef)
+          i -> payload
+        }
+        .map { case (i, payload) =>
+          val wec = instrumentation.probe.expectMessageType[WriteEventsCalled]
+          wec.persistenceId shouldBe pid.id
+          wec.firstSequenceNr shouldBe i
+          wec.count shouldBe 1
+          // Discard the probe
+          payload
+        }
 
       val result1 =
         query.currentEventsByPersistenceIdTyped[String](pid.id, 0, Long.MaxValue).runWith(Sink.seq).futureValue
       result1.map(_.event) shouldBe events
+      ebpic = instrumentation.probe.expectMessageType[EventsByPersistenceIdCalled]
+      ebpic.persistenceId shouldBe pid.id
+      ebpic.fromSequenceNumber shouldBe 0
+      ebpic.toSequenceNumber shouldBe Long.MaxValue
+      val queryProbe = ebpic.probe
+      events.iterator.zipWithIndex.foreach { case (_, i) =>
+        val receiveEvent = queryProbe.expectMessageType[QueryReceivedEvent]
+        receiveEvent.persistenceId shouldBe pid.id
+        receiveEvent.sequenceNumber shouldBe (i + 1)
+        val eventProbe = receiveEvent.probe
+        eventProbe.expectMessage(BeforeDeserializeEvent)
+        eventProbe.expectMessage(AfterDeserializeEvent)
+        eventProbe.expectNoMessage(10.millis)
+      }
+      queryProbe.expectNoMessage(10.millis)
+      instrumentation.probe.expectNoMessage(10.millis)
 
       val result2 =
         query.currentEventsByPersistenceIdTyped[String](pid.id, 1, 5).runWith(Sink.seq).futureValue

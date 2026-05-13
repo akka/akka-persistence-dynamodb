@@ -19,6 +19,7 @@ import akka.persistence.query.TimestampOffset
 import akka.stream.scaladsl.Flow
 import akka.stream.scaladsl.Source
 import org.slf4j.Logger
+import akka.persistence.dynamodb.Instrumentation
 
 /**
  * INTERNAL API
@@ -100,6 +101,8 @@ import org.slf4j.Logger
         backtracking: Boolean,
         correlationId: Option[String]): Source[Item, NotUsed]
   }
+
+  type EnvelopeContext = AnyRef
 }
 
 /**
@@ -107,12 +110,13 @@ import org.slf4j.Logger
  */
 @InternalApi private[dynamodb] class BySliceQuery[Item <: BySliceQuery.SerializedItem, Envelope](
     dao: BySliceQuery.Dao[Item],
-    createEnvelope: (TimestampOffset, Item) => Envelope,
+    createEnvelope: (TimestampOffset, Item, BySliceQuery.EnvelopeContext) => Envelope,
     extractOffset: Envelope => TimestampOffset,
     createHeartbeat: Instant => Option[Envelope],
     clock: Clock,
     settings: DynamoDBSettings,
-    log: Logger)(implicit val ec: ExecutionContext) {
+    log: Logger,
+    val instrumentationAndContext: (Instrumentation, AnyRef))(implicit val ec: ExecutionContext) {
   import BySliceQuery._
   import TimestampOffset.toTimestampOffset
 
@@ -121,6 +125,7 @@ import org.slf4j.Logger
   private val backtrackingBehindCurrentTime =
     JDuration.ofMillis(settings.querySettings.backtrackingBehindCurrentTime.toMillis)
   private val firstBacktrackingQueryWindow = backtrackingWindow.plus(backtrackingBehindCurrentTime)
+  private val (instrumentation, queryContext) = instrumentationAndContext
 
   def currentBySlice(
       logPrefix: String,
@@ -128,15 +133,20 @@ import org.slf4j.Logger
       slice: Int,
       offset: Offset,
       correlationId: Option[String],
-      filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true): Source[Envelope, NotUsed] = {
+      filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true)
+      : Source[(Envelope, EnvelopeContext), NotUsed] = {
     val initialOffset = toTimestampOffset(offset)
 
-    def nextOffset(state: QueryState, envelope: Envelope): QueryState = {
+    def nextOffset(state: QueryState, envelopeWithContext: (Envelope, EnvelopeContext)): QueryState = {
+      val (envelope, _) = envelopeWithContext
+
       if (EnvelopeOrigin.isHeartbeatEvent(envelope)) state
       else state.copy(latest = extractOffset(envelope), itemCount = state.itemCount + 1)
     }
 
-    def nextQuery(state: QueryState, endTimestamp: Instant): (QueryState, Option[Source[Envelope, NotUsed]]) = {
+    def nextQuery(
+        state: QueryState,
+        endTimestamp: Instant): (QueryState, Option[Source[(Envelope, EnvelopeContext), NotUsed]]) = {
       // Note that we can't know how many events with the same timestamp that are filtered out
       // so continue until itemCount is 0. That means an extra query at the end to make sure there are no
       // more to fetch.
@@ -188,7 +198,7 @@ import org.slf4j.Logger
     if (log.isDebugEnabled())
       log.debug("{} query from time [{}] until now [{}].", logPrefix, initialOffset.timestamp, currentTimestamp)
 
-    ContinuousQuery[QueryState, Envelope](
+    ContinuousQuery[QueryState, (Envelope, EnvelopeContext)](
       initialState = QueryState.empty.copy(latest = initialOffset),
       updateState = nextOffset,
       delayNextQuery = _ => None,
@@ -203,13 +213,15 @@ import org.slf4j.Logger
       slice: Int,
       offset: Offset,
       correlationId: Option[String],
-      filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true): Source[Envelope, NotUsed] = {
+      filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true)
+      : Source[(Envelope, EnvelopeContext), NotUsed] = {
     val initialOffset = toTimestampOffset(offset)
 
     if (log.isDebugEnabled())
       log.debug("{} starting query from time [{}].", logPrefix, initialOffset.timestamp)
 
-    def nextOffset(state: QueryState, envelope: Envelope): QueryState = {
+    def nextOffset(state: QueryState, envelopeWithContext: (Envelope, EnvelopeContext)): QueryState = {
+      val (envelope, _) = envelopeWithContext
       if (EnvelopeOrigin.isHeartbeatEvent(envelope)) state
       else {
         val offset = extractOffset(envelope)
@@ -289,7 +301,7 @@ import org.slf4j.Logger
         .compareTo(halfBacktrackingWindow) > 0)
     }
 
-    def nextQuery(state: QueryState): (QueryState, Option[Source[Envelope, NotUsed]]) = {
+    def nextQuery(state: QueryState): (QueryState, Option[Source[(Envelope, EnvelopeContext), NotUsed]]) = {
       val newIdleCount = if (state.itemCount == 0) state.idleCount + 1 else 0
       val newIdleCountBeforeHeartbeat =
         if (state.backtracking) state.idleCountBeforeHeartbeat
@@ -401,7 +413,7 @@ import org.slf4j.Logger
           .via(deserializeAndAddOffset(newState.currentOffset)))
     }
 
-    def heartbeat(state: QueryState): Option[Envelope] = {
+    def heartbeat(state: QueryState): Option[(Envelope, EnvelopeContext)] = {
       if (state.idleCountBeforeHeartbeat >= 2 && state.previousQueryWallClock != Instant.EPOCH) {
         // use wall clock to measure duration since start, up to idle backtracking limit
         val timestamp = state.startTimestamp.plus(
@@ -410,17 +422,17 @@ import org.slf4j.Logger
         val h = createHeartbeat(timestamp)
         if (h.isDefined)
           log.debug("{} heartbeat timestamp [{}]", logPrefix, timestamp)
-        h
+        h.map(_ -> null)
       } else None
     }
 
-    val nextHeartbeat: QueryState => Option[Envelope] =
+    val nextHeartbeat: QueryState => Option[(Envelope, EnvelopeContext)] =
       if (settings.journalPublishEvents) heartbeat else _ => None
 
     val currentTimestamp = InstantFactory.now() // Can we use DDB as a timestamp source?
     val currentWallClock = clock.instant()
 
-    ContinuousQuery[QueryState, Envelope](
+    ContinuousQuery[QueryState, (Envelope, EnvelopeContext)](
       initialState = QueryState.empty
         .copy(latest = initialOffset, startTimestamp = currentTimestamp, startWallClock = currentWallClock),
       updateState = nextOffset,
@@ -430,7 +442,8 @@ import org.slf4j.Logger
       heartbeat = nextHeartbeat)
   }
 
-  private def deserializeAndAddOffset(timestampOffset: TimestampOffset): Flow[Item, Envelope, NotUsed] = {
+  private def deserializeAndAddOffset(
+      timestampOffset: TimestampOffset): Flow[Item, (Envelope, EnvelopeContext), NotUsed] = {
     Flow[Item].statefulMapConcat { () =>
       var currentTimestamp = timestampOffset.timestamp
       var currentSequenceNrs: Map[String, Long] = timestampOffset.seen
@@ -449,17 +462,19 @@ import org.slf4j.Logger
               currentSequenceNrs)
             Nil
           } else {
+            val envelopeContext = instrumentation.queryReceivedEvent(item.persistenceId, item.seqNr, queryContext)
             currentSequenceNrs = currentSequenceNrs.updated(item.persistenceId, item.seqNr)
             val offset =
               TimestampOffset(item.eventTimestamp, item.readTimestamp, currentSequenceNrs)
-            createEnvelope(offset, item) :: Nil
+            (createEnvelope(offset, item, envelopeContext) -> envelopeContext) :: Nil
           }
         } else {
           // ne timestamp, reset currentSequenceNrs
+          val envelopeContext = instrumentation.queryReceivedEvent(item.persistenceId, item.seqNr, queryContext)
           currentTimestamp = item.eventTimestamp
           currentSequenceNrs = Map(item.persistenceId -> item.seqNr)
           val offset = TimestampOffset(item.eventTimestamp, item.readTimestamp, currentSequenceNrs)
-          createEnvelope(offset, item) :: Nil
+          (createEnvelope(offset, item, envelopeContext) -> envelopeContext) :: Nil
         }
       }
     }

@@ -13,6 +13,7 @@ import scala.jdk.FutureConverters.CompletionStageOps
 import scala.util.Random
 
 import akka.actor.ActorRef
+import akka.actor.ClassicActorSystemProvider
 import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.testkit.typed.scaladsl.{ TestProbe => TypedTestProbe }
@@ -28,9 +29,12 @@ import akka.persistence.JournalProtocol.ReplayedMessage
 import akka.persistence.JournalProtocol.WriteMessages
 import akka.persistence.JournalProtocol.WriteMessagesSuccessful
 import akka.persistence.PersistentRepr
+import akka.persistence.dynamodb.InstrumentationProvider
 import akka.persistence.dynamodb.TestConfig
 import akka.persistence.dynamodb.TestData
 import akka.persistence.dynamodb.TestDbLifecycle
+import akka.persistence.dynamodb.TestInstrumentation
+import akka.persistence.dynamodb.TestInstrumentationProtocol
 import akka.persistence.dynamodb.internal.FallbackStoreProvider
 import akka.persistence.dynamodb.internal.InMemFallbackStore
 import akka.persistence.dynamodb.internal.InstantFactory
@@ -92,6 +96,7 @@ object DynamoDBJournalSpec {
       # allow java serialization when testing
       akka.actor.allow-java-serialization = on
       akka.actor.warn-about-java-serializer-usage = off
+      ${JournalInstrumentation.config}
       """)
       .withFallback(TestConfig.config)
   }
@@ -114,6 +119,23 @@ object DynamoDBJournalSpec {
     ConfigFactory
       .parseString("akka.persistence.dynamodb.journal.fallback-store.eager = on")
       .withFallback(configWithSmallFallback)
+
+  class JournalInstrumentation(system: ClassicActorSystemProvider) extends TestInstrumentation(system) {
+    override def bySliceQueryCalled(entityType: String, slice: Int, correlationId: String): AnyRef =
+      shouldNotBeCalled("By-slice query")
+
+    override def loadEventCalled(persistenceId: String, sequenceNumber: Long): AnyRef =
+      shouldNotBeCalled("Load event")
+
+    override def pubsubEventDropped(entityType: String, persistenceId: String, sequenceNumber: Long): Unit =
+      shouldNotBeCalled("Pubsub event dropped")
+  }
+
+  object JournalInstrumentation {
+    val jiFqcn = classOf[JournalInstrumentation].getName
+    val config =
+      s"""akka.persistence.dynamodb.instrumentation-class = "$jiFqcn""""
+  }
 }
 
 abstract class DynamoDBJournalBaseSpec(config: Config)
@@ -121,22 +143,75 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
     with TestDbLifecycle
     with Eventually {
 
+  import DynamoDBJournalSpec._
+
   override protected def supportsRejectingNonSerializableObjects: CapabilityFlag = CapabilityFlag.off()
+
+  override protected def beforeEach(): Unit = {
+    instrumentation.resetProbe()
+    super.beforeEach()
+  }
 
   override def typedSystem: ActorSystem[_] = system.toTyped
 
   // always eventually consistent reads with dynamodb-local, wait for writes to be seen
   override def writeMessages(fromSnr: Int, toSnr: Int, pid: String, sender: ActorRef, writerUuid: String): Unit = {
-    super.writeMessages(fromSnr, toSnr, pid, sender, writerUuid)
+    eventuallyConsistentWrite(fromSnr, toSnr, pid, sender, writerUuid)
     val probe = TestProbe()
     eventually(timeout(3.seconds), interval(100.millis)) {
       journal ! ReplayMessages(fromSnr, toSnr, max = 0, pid, probe.ref)
       probe.expectMsg(RecoverySuccess(toSnr))
     }
   }
+
+  def eventuallyConsistentWrite(fromSnr: Int, toSnr: Int, pid: String, sender: ActorRef, writerUuid: String): Unit =
+    super.writeMessages(fromSnr, toSnr, pid, sender, writerUuid)
+
+  def instrumentation: JournalInstrumentation =
+    InstrumentationProvider(typedSystem).instrumentation.asInstanceOf[JournalInstrumentation]
 }
 
-class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.config)
+class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.config) with TestData {
+  import TestInstrumentationProtocol._
+
+  "A journal" should {
+    "instrument writes" in {
+      instrumentation.resetProbe()
+      // not reading, so writeMessages would clutter things
+      eventuallyConsistentWrite(6, 8, pid, ActorRef.noSender, writerUuid)
+      val wec = instrumentation.probe.expectMessageType[WriteEventsCalled]
+      wec.persistenceId shouldBe pid
+      wec.firstSequenceNr shouldBe 6
+      wec.count shouldBe 3
+      (6 to 8).foreach { i =>
+        wec.probe.expectMessage(BeforeSerializeEvent(i))
+        wec.probe.expectMessage(AfterSerializeEvent(i))
+      }
+      wec.probe.expectNoMessage(30.millis)
+      instrumentation.probe.expectNoMessage(10.millis)
+    }
+
+    "instrument replay" in {
+      instrumentation.resetProbe()
+      val probe = TestProbe()
+      journal ! ReplayMessages(1, 5, max = 5, pid, probe.ref)
+      val ebpic = instrumentation.probe.expectMessageType[EventsByPersistenceIdCalled]
+      ebpic.persistenceId shouldBe pid
+      ebpic.correlationId shouldBe ""
+      ebpic.fromSequenceNumber shouldBe 1
+      ebpic.toSequenceNumber shouldBe 5
+      (1 to 5).foreach { i =>
+        val qre = ebpic.probe.expectMessageType[QueryReceivedEvent]
+        qre.persistenceId shouldBe pid
+        qre.sequenceNumber shouldBe i
+        qre.probe.expectMessage(BeforeDeserializeEvent)
+        qre.probe.expectMessage(AfterDeserializeEvent)
+      }
+      ebpic.probe.expectNoMessage(30.millis)
+      instrumentation.probe.expectNoMessage(10.millis)
+    }
+  }
+}
 
 class DynamoDBJournalWithMetaSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.configWithMeta) {
   protected override def supportsMetadata: CapabilityFlag = CapabilityFlag.on()
