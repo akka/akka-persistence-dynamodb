@@ -133,20 +133,14 @@ import akka.persistence.dynamodb.Instrumentation
       slice: Int,
       offset: Offset,
       correlationId: Option[String],
-      filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true)
-      : Source[(Envelope, EnvelopeContext), NotUsed] = {
+      filterEventsBeforeSnapshots: (String, Long, String) => Boolean = (_, _, _) => true): Source[Envelope, NotUsed] = {
     val initialOffset = toTimestampOffset(offset)
 
-    def nextOffset(state: QueryState, envelopeWithContext: (Envelope, EnvelopeContext)): QueryState = {
-      val (envelope, _) = envelopeWithContext
-
+    def nextOffset(state: QueryState, envelope: Envelope): QueryState =
       if (EnvelopeOrigin.isHeartbeatEvent(envelope)) state
       else state.copy(latest = extractOffset(envelope), itemCount = state.itemCount + 1)
-    }
 
-    def nextQuery(
-        state: QueryState,
-        endTimestamp: Instant): (QueryState, Option[Source[(Envelope, EnvelopeContext), NotUsed]]) = {
+    def nextQuery(state: QueryState, endTimestamp: Instant): (QueryState, Option[Source[Envelope, NotUsed]]) = {
       // Note that we can't know how many events with the same timestamp that are filtered out
       // so continue until itemCount is 0. That means an extra query at the end to make sure there are no
       // more to fetch.
@@ -181,7 +175,8 @@ import akka.persistence.dynamodb.Instrumentation
             .filter { item =>
               filterEventsBeforeSnapshots(item.persistenceId, item.seqNr, item.source)
             }
-            .via(deserializeAndAddOffset(state.latest)))
+            .via(deserializeAndAddOffset(state.latest))
+            .map(_._1))
       } else {
         if (log.isDebugEnabled)
           log.debug(
@@ -198,7 +193,7 @@ import akka.persistence.dynamodb.Instrumentation
     if (log.isDebugEnabled())
       log.debug("{} query from time [{}] until now [{}].", logPrefix, initialOffset.timestamp, currentTimestamp)
 
-    ContinuousQuery[QueryState, (Envelope, EnvelopeContext)](
+    ContinuousQuery[QueryState, Envelope](
       initialState = QueryState.empty.copy(latest = initialOffset),
       updateState = nextOffset,
       delayNextQuery = _ => None,
