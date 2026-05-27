@@ -12,6 +12,7 @@ import scala.collection.mutable
 import scala.concurrent.Future
 import akka.NotUsed
 import akka.actor.ExtendedActorSystem
+import akka.actor.Terminated
 import akka.actor.typed.pubsub.Topic
 import akka.actor.typed.scaladsl.adapter._
 import akka.annotation.InternalApi
@@ -105,10 +106,15 @@ object DynamoDBReadJournal {
                 }
               } // else ignore: not for us
 
+            case (_, Terminated(topicActor)) =>
+              stageActor.unwatch(topicActor)
+              failStage(new RuntimeException("Pubsub topic actor terminated"))
+
             case (_, _) => ()
           }
           eventTopics.foreach { topic =>
             topic ! Topic.Subscribe(stageActor.ref.toTyped[EventEnvelope[Event]])
+            stageActor.watch(topic.toClassic)
           }
         }
 
@@ -392,7 +398,6 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
     // FIXME: can we replace mergeAll with a stage that does more to stagger demand?
     bySliceQueries.head
       .mergeAll(bySliceQueries.tail, eagerComplete = false)
-      .map(_._1)
   }
 
   /**
@@ -487,7 +492,6 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
           slice,
           timestampOffset,
           correlationId)
-        .map(_._1)
 
       Source.fromGraph(
         new StartingFromSnapshotStage[Event](
@@ -520,7 +524,6 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
                 initOffset,
                 correlationId,
                 filterEventsBeforeSnapshots(snapshotOffsets, backtrackingEnabled = false))
-              .map(_._1)
           }))
     }
 
@@ -562,7 +565,6 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
           slice,
           timestampOffset,
           correlationId)
-        .map(_._1)
 
       Source.fromGraph(
         new StartingFromSnapshotStage[Event](
@@ -660,9 +662,8 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
       dbSource: Source[EventEnvelope[Event], NotUsed],
       pubSubSource: Source[EventEnvelope[Event], NotUsed],
       correlationId: Option[String]) = {
-    val leftPriority = if (settings.querySettings.backtrackingEnabled) 2 else 1
     dbSource
-      .mergePrioritized(pubSubSource, leftPriority = leftPriority, rightPriority = 2)
+      .mergePrioritized(pubSubSource, leftPriority = 1, rightPriority = 10)
       .via(
         skipPubSubTooFarAhead(
           settings.querySettings.backtrackingEnabled,
@@ -757,21 +758,27 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
                     latestBacktrackingPerSlice = latestBacktrackingPerSlice.updated(slice, t.timestamp)
                     Nil // always drop heartbeats
                   } else if (EnvelopeOrigin.fromPubSub(env) && latestBacktracking(slice) == Instant.EPOCH) {
+                    val pid = env.persistenceId
+                    val seqNr = env.sequenceNr
                     log.trace(
                       "Dropping pubsub event for persistenceId [{}] seqNr [{}]{} because no event from backtracking yet.",
-                      env.persistenceId,
-                      env.sequenceNr,
+                      pid,
+                      seqNr,
                       correlationIdLogText)
+                    instrumentation.pubsubEventDropped(env.entityType, pid, seqNr)
                     Nil
                   } else if (EnvelopeOrigin.fromPubSub(env) && JDuration
                       .between(latestBacktracking(slice), t.timestamp)
                       .compareTo(maxAheadOfBacktracking) > 0) {
+                    val pid = env.persistenceId
+                    val seqNr = env.sequenceNr
                     // drop from pubsub when too far ahead from backtracking
                     log.debug(
                       "Dropping pubsub event for persistenceId [{}] seqNr [{}]{} because too far ahead of backtracking.",
-                      env.persistenceId,
-                      env.sequenceNr,
+                      pid,
+                      seqNr,
                       correlationIdLogText)
+                    instrumentation.pubsubEventDropped(env.entityType, pid, seqNr)
                     Nil
                   } else {
                     env :: Nil

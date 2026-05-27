@@ -8,7 +8,6 @@ import akka.annotation.InternalApi
 import akka.actor.typed.Extension
 import akka.actor.typed.ExtensionId
 import akka.actor.typed.ActorSystem
-import akka.actor.ExtendedActorSystem
 import akka.actor.ClassicActorSystemProvider
 import scala.util.Success
 import org.slf4j.LoggerFactory
@@ -23,8 +22,7 @@ import scala.util.Failure
  * Implementations must have a constructor which takes a [[akka.actor.ClassicActorSystemProvider]] as its only
  * parameter. At most one instance of this class will be constructed per actor system.
  */
-abstract class Instrumentation {
-  final def emptyContext: AnyRef = null
+trait Instrumentation {
 
   /**
    * Called when a query by-slice stream is run (which might not be when a request is made against DDB)
@@ -38,7 +36,7 @@ abstract class Instrumentation {
    * @return
    *   a context object, or [[emptyContext]] (null) if no context object is needed
    */
-  def bySliceQueryCalled(entityType: String, slice: Int, correlationId: String): AnyRef = emptyContext
+  def bySliceQueryCalled(entityType: String, slice: Int, correlationId: String): AnyRef
 
   /**
    * Called when a LoadEventQuery is performed, to load a specific event from the journal
@@ -48,7 +46,7 @@ abstract class Instrumentation {
    * @return
    *   a context object, or [[emptyContext]] (null) if no context object is needed
    */
-  def loadEventCalled(persistenceId: String, sequenceNumber: Long): AnyRef = emptyContext
+  def loadEventCalled(persistenceId: String, sequenceNumber: Long): AnyRef
 
   /**
    * Called when persisting events.
@@ -59,7 +57,7 @@ abstract class Instrumentation {
    * @return
    *   a context object, or [[emptyContext]] (null) if no context object is needed
    */
-  def writeEventsCalled(persistenceId: String, firstSequenceNr: Long, count: Int): AnyRef = emptyContext
+  def writeEventsCalled(persistenceId: String, firstSequenceNr: Long, count: Int): AnyRef
 
   /**
    * Called when CurrentEventsByPersistenceIdTypedQuery is performed (either to load a persistent actor for processing
@@ -79,8 +77,7 @@ abstract class Instrumentation {
       persistenceId: String,
       fromSequenceNumber: Long,
       toSequenceNumber: Long,
-      correlationId: String): AnyRef =
-    emptyContext
+      correlationId: String): AnyRef
 
   /**
    * Called when a query stream receives an event from DynamoDB, before deserializing the payload.
@@ -96,7 +93,7 @@ abstract class Instrumentation {
    * @return
    *   a context object, or [[emptyContext]] (null) if no context object is needed
    */
-  def queryReceivedEvent(persistenceId: String, sequenceNumber: Long, queryContext: AnyRef): AnyRef = emptyContext
+  def queryReceivedEvent(persistenceId: String, sequenceNumber: Long, queryContext: AnyRef): AnyRef
 
   /**
    * Called before an event is deserialized
@@ -104,7 +101,7 @@ abstract class Instrumentation {
    * @param eventContext
    *   the potentially null context object returned by a call to queryReceivedEvent
    */
-  def beforeDeserializeEvent(eventContext: AnyRef): Unit = ()
+  def beforeDeserializeEvent(eventContext: AnyRef): Unit
 
   /**
    * Called after an event is deserialized
@@ -112,10 +109,10 @@ abstract class Instrumentation {
    * @param eventContext
    *   the potentially null context object returned by a call to queryReceivedEvent
    */
-  def afterDeserializeEvent(eventContext: AnyRef): Unit = ()
+  def afterDeserializeEvent(eventContext: AnyRef): Unit
 
   /** Called when an event is dropped from the pubsub buffer */
-  def pubsubEventDropped(entityType: String, persistenceId: String, sequenceNumber: Long): Unit = ()
+  def pubsubEventDropped(entityType: String, persistenceId: String, sequenceNumber: Long): Unit
 
   /**
    * Called before an event is serialized in the journal
@@ -123,7 +120,7 @@ abstract class Instrumentation {
    * @param eventContext
    *   the potentially null context object returned by a call to writeEventsCalled
    */
-  def beforeSerializeEvent(sequenceNumber: Long, context: AnyRef): Unit = ()
+  def beforeSerializeEvent(sequenceNumber: Long, context: AnyRef): Unit
 
   /**
    * Called after an event is serialized in the journal
@@ -131,7 +128,7 @@ abstract class Instrumentation {
    * @param eventContext
    *   the potentially null context object returned by a call to writeEventsCalled
    */
-  def afterSerializeEvent(sequenceNumber: Long, context: AnyRef): Unit = ()
+  def afterSerializeEvent(sequenceNumber: Long, context: AnyRef): Unit
 }
 
 /** INTERNAL API: Not for user instantiation */
@@ -141,7 +138,26 @@ abstract class Instrumentation {
   // No Java API: not meant to be called from Java
   private val ConfigPath = "akka.persistence.dynamodb.instrumentation-class"
   private lazy val log = LoggerFactory.getLogger(classOf[InstrumentationProvider])
-  private lazy val NoOpInstrumentation = new Instrumentation {}
+  private object NoOpInstrumentation extends Instrumentation {
+    def emptyContext: AnyRef = null
+
+    def afterDeserializeEvent(eventContext: AnyRef): Unit = {}
+    def afterSerializeEvent(sequenceNumber: Long, context: AnyRef): Unit = {}
+    def beforeDeserializeEvent(eventContext: AnyRef): Unit = {}
+    def beforeSerializeEvent(sequenceNumber: Long, context: AnyRef): Unit = {}
+    def bySliceQueryCalled(entityType: String, slice: Int, correlationId: String): AnyRef = emptyContext
+
+    def eventsByPersistenceIdCalled(
+        persistenceId: String,
+        fromSequenceNumber: Long,
+        toSequenceNumber: Long,
+        correlationId: String): AnyRef = emptyContext
+
+    def loadEventCalled(persistenceId: String, sequenceNumber: Long): AnyRef = emptyContext
+    def pubsubEventDropped(entityType: String, persistenceId: String, sequenceNumber: Long): Unit = {}
+    def queryReceivedEvent(persistenceId: String, sequenceNumber: Long, queryContext: AnyRef): AnyRef = emptyContext
+    def writeEventsCalled(persistenceId: String, firstSequenceNr: Long, count: Int): AnyRef = emptyContext
+  }
 }
 
 /**
@@ -159,9 +175,7 @@ abstract class Instrumentation {
 
       if (fqcn.isEmpty) NoOpInstrumentation
       else {
-        val maybeInstrumentation = system.classicSystem
-          .asInstanceOf[ExtendedActorSystem]
-          .dynamicAccess
+        val maybeInstrumentation = system.dynamicAccess
           .createInstanceFor[Instrumentation](fqcn, List(classOf[ClassicActorSystemProvider] -> system))
 
         maybeInstrumentation match {
