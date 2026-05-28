@@ -67,7 +67,7 @@ object EventsBySliceSpec {
       # for this extreme scenario it will add delay between each query for the live case
       refresh-interval = 20 millis
     }
-    akka.persistence.dynamodb.instrumentation-class = "akka.persistence.dynamodb.TestInstrumentation"
+    akka.persistence.dynamodb.instrumentation-class = "${classOf[akka.persistence.dynamodb.TestInstrumentation].getName}"
     """))
       .withFallback(TestConfig.config)
       .resolve()

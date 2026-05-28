@@ -13,6 +13,7 @@ import scala.concurrent.Future
 import akka.NotUsed
 import akka.actor.ExtendedActorSystem
 import akka.actor.Terminated
+import akka.actor.typed.ActorRef
 import akka.actor.typed.pubsub.Topic
 import akka.actor.typed.scaladsl.adapter._
 import akka.annotation.InternalApi
@@ -21,6 +22,7 @@ import akka.persistence.Persistence
 import akka.persistence.SerializedEvent
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.dynamodb.InstrumentationProvider
+import akka.persistence.dynamodb.Instrumentation
 import akka.persistence.dynamodb.internal.BySliceQuery
 import akka.persistence.dynamodb.internal.CorrelationId
 import akka.persistence.dynamodb.internal.EnvelopeOrigin
@@ -65,20 +67,19 @@ import java.util.UUID
 object DynamoDBReadJournal {
   val Identifier = "akka.persistence.dynamodb.query"
 
-  class PubSubSourceStage[Event](
+  /** INTERNAL API */
+  @InternalApi
+  private[akka] class PubSubSourceStage[Event](
       entityType: String,
       minSlice: Int,
       maxSlice: Int,
       bufferLimit: Int,
       deserializeEvent: SerializedEvent => Event,
-      onDrop: EventEnvelope[Event] => Unit,
-      system: ExtendedActorSystem)
+      eventTopics: Set[ActorRef[Topic.Command[EventEnvelope[Event]]]],
+      instrumentation: Instrumentation)
       extends GraphStage[SourceShape[EventEnvelope[Event]]] {
     val out: Outlet[EventEnvelope[Event]] = Outlet("PubSubSource")
     override val shape: SourceShape[EventEnvelope[Event]] = SourceShape(out)
-
-    val eventTopics = PubSub(system.toTyped).eventTopics[Event](entityType, minSlice, maxSlice)
-    val sliceForPersistenceId: String => Int = Persistence(system).sliceForPersistenceId _
 
     override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
       new GraphStageLogic(shape) with OutHandler {
@@ -86,14 +87,14 @@ object DynamoDBReadJournal {
 
         override def preStart(): Unit = {
           getStageActor {
+            // NB: sender doesn't matter, since sender is typed
             case (_, envelope: EventEnvelope[Event @unchecked]) =>
-              val pid = envelope.persistenceId
-              val slice = sliceForPersistenceId(pid)
+              val slice = envelope.slice // always populated correctly by publishing to the topic
               if (minSlice <= slice && slice <= maxSlice) {
                 // for now, duplicating the previous dropNew strategy
                 // there may be a smarter dropping strategy now that the buffer is surfaced
                 if (buffer.isFull) {
-                  onDrop(envelope)
+                  instrumentation.pubsubEventDropped(envelope.entityType, envelope.persistenceId, envelope.sequenceNr)
                 } else {
                   val toEnqueue = envelope.eventOption match {
                     case Some(se: SerializedEvent) =>
@@ -153,6 +154,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
   private val serialization = SerializationExtension(system)
   private val persistenceExt = Persistence(system)
   private val instrumentation = InstrumentationProvider(typedSystem).instrumentation
+  private val pubsubExt = PubSub(system.toTyped)
 
   private val client = ClientProvider(typedSystem).clientFor(sharedConfigPath + ".client")
   private val queryDao = new QueryDao(typedSystem, settings, client)
@@ -652,8 +654,8 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
         maxSlice,
         settings.querySettings.bufferSize,
         deserializeEvent[Event],
-        env => { instrumentation.pubsubEventDropped(env.entityType, env.persistenceId, env.sequenceNr) },
-        system))
+        pubsubExt.eventTopics(entityType, minSlice, maxSlice),
+        instrumentation))
 
   private def deserializeEvent[Event](se: SerializedEvent): Event =
     serialization.deserialize(se.bytes, se.serializerId, se.serializerManifest).get.asInstanceOf[Event]
@@ -732,6 +734,7 @@ final class DynamoDBReadJournal(system: ExtendedActorSystem, config: Config, cfg
             case None          => Instant.EPOCH
           }
           env => {
+            // FIXME: the slice should already be in the envelope, do we really need to recompute here?
             val slice = persistenceExt.sliceForPersistenceId(env.persistenceId)
             env.offset match {
               case t: TimestampOffset =>
