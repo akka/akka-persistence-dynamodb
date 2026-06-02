@@ -7,6 +7,7 @@ package akka.persistence.dynamodb.query
 import java.time.temporal.ChronoUnit
 
 import scala.concurrent.Await
+import scala.concurrent.duration._
 
 import akka.Done
 import akka.NotUsed
@@ -14,11 +15,14 @@ import akka.actor.testkit.typed.scaladsl.LogCapturing
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.actor.typed.ActorSystem
 import akka.persistence.FilteredPayload
+import akka.persistence.dynamodb.InstrumentationProvider
 import akka.persistence.dynamodb.TestActors
 import akka.persistence.dynamodb.TestActors.Persister
 import akka.persistence.dynamodb.TestConfig
 import akka.persistence.dynamodb.TestData
 import akka.persistence.dynamodb.TestDbLifecycle
+import akka.persistence.dynamodb.TestInstrumentation
+import akka.persistence.dynamodb.TestInstrumentationProtocol
 import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
 import akka.persistence.query.NoOffset
@@ -36,6 +40,7 @@ import akka.stream.testkit.TestSubscriber
 import akka.stream.testkit.scaladsl.TestSink
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigFactory
+import org.scalatest.BeforeAndAfterEach
 import org.scalatest.wordspec.AnyWordSpecLike
 
 object EventsBySliceSpec {
@@ -62,6 +67,7 @@ object EventsBySliceSpec {
       # for this extreme scenario it will add delay between each query for the live case
       refresh-interval = 20 millis
     }
+    akka.persistence.dynamodb.instrumentation-class = "${classOf[akka.persistence.dynamodb.TestInstrumentation].getName}"
     """))
       .withFallback(TestConfig.config)
       .resolve()
@@ -70,22 +76,31 @@ object EventsBySliceSpec {
 class EventsBySliceSpec
     extends ScalaTestWithActorTestKit(EventsBySliceSpec.config)
     with AnyWordSpecLike
+    with BeforeAndAfterEach
     with TestDbLifecycle
     with TestData
     with LogCapturing {
   import EventsBySliceSpec._
   import Persister._
+  import TestInstrumentationProtocol._
 
   override def typedSystem: ActorSystem[_] = system
 
+  val instrumentation = InstrumentationProvider(system).instrumentation.asInstanceOf[TestInstrumentation]
+
   private val query =
     PersistenceQuery(testKit.system).readJournalFor[DynamoDBReadJournal](DynamoDBReadJournal.Identifier)
+
+  override def beforeEach(): Unit = {
+    instrumentation.resetProbe()
+  }
 
   private class Setup {
     val entityType = nextEntityType()
     val persistenceId = nextPersistenceId(entityType)
     val slice = query.sliceForPersistenceId(persistenceId.id)
     val persister = spawn(Persister(persistenceId))
+    instrumentation.probe.expectMessageType[EventsByPersistenceIdCalled] // by spawning the persister
     val probe = createTestProbe[Done]()
     val sinkProbe = TestSink[EventEnvelope[String]]()(system.classicSystem)
   }
@@ -116,23 +131,38 @@ class EventsBySliceSpec
     s"$queryType eventsBySlices" should {
       "return all events for NoOffset" in new Setup {
         for (i <- 1 to 20) {
-          persister ! PersistWithAck(s"e-$i", probe.ref)
-          probe.expectMessage(Done)
+          persister ! Persist(s"e-$i")
+          instrumentation.probe.expectMessageType[WriteEventsCalled]
         }
         val result: TestSubscriber.Probe[EventEnvelope[String]] =
           doQuery(entityType, slice, slice, NoOffset)
             .runWith(sinkProbe)
             .request(21)
+
+        val bySliceQuery = instrumentation.probe.expectMessageType[BySliceQueryCalled]
+        bySliceQuery.entityType shouldBe entityType
+        bySliceQuery.slice shouldBe slice
+        val queryProbe = bySliceQuery.probe
         for (i <- 1 to 20) {
+          val receivedEvent = queryProbe.expectMessageType[QueryReceivedEvent]
+          receivedEvent.persistenceId shouldBe persistenceId.id
+          receivedEvent.sequenceNumber shouldBe i
+          val eventProbe = receivedEvent.probe
+          eventProbe.expectMessage(BeforeDeserializeEvent)
+          eventProbe.expectMessage(AfterDeserializeEvent)
           result.expectNext().event shouldBe s"e-$i"
+          eventProbe.expectNoMessage(10.millis)
         }
+        queryProbe.expectNoMessage(10.millis)
+
+        for (i <- 1 to 20) {}
         assertFinished(result)
       }
 
       "only return events after an offset" in new Setup {
         for (i <- 1 to 20) {
-          persister ! PersistWithAck(s"e-$i", probe.ref)
-          probe.expectMessage(Done)
+          persister ! Persist(s"e-$i")
+          instrumentation.probe.expectMessageType[WriteEventsCalled]
         }
 
         val result: TestSubscriber.Probe[EventEnvelope[String]] =
@@ -140,18 +170,32 @@ class EventsBySliceSpec
             .runWith(sinkProbe)
             .request(21)
 
+        Option(instrumentation.probe.expectMessageType[BySliceQueryCalled]).foreach { bySliceQuery =>
+          bySliceQuery.entityType shouldBe entityType
+          bySliceQuery.slice shouldBe slice
+        }
         result.expectNextN(9)
-
         val offset = result.expectNext().offset
         result.cancel()
 
         val withOffset =
           doQuery(entityType, slice, slice, offset)
             .runWith(TestSink[EventEnvelope[String]]())
+        val bySliceQuery = instrumentation.probe.expectMessageType[BySliceQueryCalled]
+        bySliceQuery.entityType shouldBe entityType
+        bySliceQuery.slice shouldBe slice
         withOffset.request(12)
         for (i <- 11 to 20) {
+          val receivedEvent = bySliceQuery.probe.expectMessageType[QueryReceivedEvent]
+          receivedEvent.persistenceId shouldBe persistenceId.id
+          receivedEvent.sequenceNumber shouldBe i
+          (receivedEvent.probe.receiveMessages(2) should contain)
+            .theSameElementsInOrderAs(Seq(BeforeDeserializeEvent, AfterDeserializeEvent))
           withOffset.expectNext().event shouldBe s"e-$i"
+          receivedEvent.probe.expectNoMessage(10.millis)
         }
+        bySliceQuery.probe.expectNoMessage(10.millis)
+        instrumentation.probe.expectNoMessage(10.millis)
         assertFinished(withOffset)
       }
 
@@ -160,14 +204,19 @@ class EventsBySliceSpec
           .readJournalFor[DynamoDBReadJournal]("akka.persistence.dynamodb-small-buffer.query")
         for (i <- 1 to 10; n <- 1 to 10 by 2) {
           persister ! PersistAll(List(s"e-$i-$n", s"e-$i-${n + 1}"))
+          instrumentation.probe.expectMessageType[WriteEventsCalled]
         }
-        persister ! Ping(probe.ref)
-        probe.expectMessage(Done)
         val result: TestSubscriber.Probe[EventEnvelope[String]] =
           doQuery(entityType, slice, slice, NoOffset, queryWithSmallBuffer)
             .runWith(sinkProbe)
             .request(101)
+        val bySliceQuery = instrumentation.probe.expectMessageType[BySliceQueryCalled]
         for (i <- 1 to 10; n <- 1 to 10) {
+          val receivedEvent = bySliceQuery.probe.expectMessageType[QueryReceivedEvent]
+          receivedEvent.persistenceId shouldBe persistenceId.id
+          receivedEvent.sequenceNumber shouldBe ((i - 1) * 10 + n)
+          (receivedEvent.probe.receiveMessages(2) should contain)
+            .theSameElementsInOrderAs(Seq(BeforeDeserializeEvent, AfterDeserializeEvent))
           result.expectNext().event shouldBe s"e-$i-$n"
         }
         assertFinished(result)
@@ -220,15 +269,30 @@ class EventsBySliceSpec
 
       "support LoadEventQuery" in new Setup {
         for (i <- 1 to 3) {
-          persister ! PersistWithAck(s"e-$i", probe.ref)
-          probe.expectMessage(Done)
+          persister ! Persist(s"e-$i")
+          instrumentation.probe.expectMessageType[WriteEventsCalled]
         }
 
         query.isInstanceOf[LoadEventQuery] shouldBe true
         query.loadEnvelope[String](persistenceId.id, 2L).futureValue.event shouldBe "e-2"
+        var loadCall = instrumentation.probe.expectMessageType[LoadEventCalled]
+        loadCall.persistenceId shouldBe persistenceId.id
+        loadCall.sequenceNumber shouldBe 2L
+        (loadCall.probe.expectMessageType[QueryReceivedEvent].probe.receiveMessages(2) should contain)
+          .theSameElementsInOrderAs(Seq(BeforeDeserializeEvent, AfterDeserializeEvent))
         query.loadEnvelope[String](persistenceId.id, 1L).futureValue.event shouldBe "e-1"
+        loadCall = instrumentation.probe.expectMessageType[LoadEventCalled]
+        loadCall.persistenceId shouldBe persistenceId.id
+        loadCall.sequenceNumber shouldBe 1L
+        (loadCall.probe.expectMessageType[QueryReceivedEvent].probe.receiveMessages(2) should contain)
+          .theSameElementsInOrderAs(Seq(BeforeDeserializeEvent, AfterDeserializeEvent))
         intercept[NoSuchElementException] {
-          Await.result(query.loadEnvelope[String](persistenceId.id, 4L), patience.timeout)
+          val loadFut = query.loadEnvelope[String](persistenceId.id, 4L)
+          loadCall = instrumentation.probe.expectMessageType[LoadEventCalled]
+          loadCall.persistenceId shouldBe persistenceId.id
+          loadCall.sequenceNumber shouldBe 4L
+          loadCall.probe.expectNoMessage(30.millis)
+          Await.result(loadFut, (patience.timeout - 30.millis).max(10.millis))
         }
       }
 

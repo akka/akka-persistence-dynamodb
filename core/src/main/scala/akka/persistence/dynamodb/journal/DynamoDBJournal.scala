@@ -41,6 +41,7 @@ import akka.serialization.Serializers
 import akka.stream.scaladsl.Sink
 import com.typesafe.config.Config
 import software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughputExceededException
+import akka.persistence.dynamodb.InstrumentationProvider
 
 /**
  * INTERNAL API
@@ -92,6 +93,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
   private val serialization: Serialization = SerializationExtension(context.system)
   private val settings = DynamoDBSettings(context.system.settings.config.getConfig(sharedConfigPath))
   log.debug("DynamoDB journal starting up")
+  private val instrumentation = InstrumentationProvider(system).instrumentation
 
   private val client = ClientProvider(system).clientFor(sharedConfigPath + ".client")
   private val journalDao = new JournalDao(system, settings, client)
@@ -111,7 +113,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
   }
 
   override def asyncWriteMessages(messages: Seq[AtomicWrite]): Future[Seq[Try[Unit]]] = {
-    def atomicWrite(atomicWrite: AtomicWrite): Future[Seq[Try[Unit]]] = {
+    def atomicWrite(atomicWrite: AtomicWrite, instrumentationContext: AnyRef): Future[Seq[Try[Unit]]] = {
       val serialized: Try[Seq[SerializedJournalItem]] = Try {
         atomicWrite.payload.map { pr =>
           val (event, tags) = pr.payload match {
@@ -124,9 +126,11 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
           val serializedEvent = event match {
             case s: SerializedEvent => s // already serialized
             case _ =>
+              instrumentation.beforeSerializeEvent(pr.sequenceNr, instrumentationContext)
               val bytes = serialization.serialize(event).get
               val serializer = serialization.findSerializerFor(event)
               val manifest = Serializers.manifestFor(serializer, event)
+              instrumentation.afterSerializeEvent(pr.sequenceNr, instrumentationContext)
               new SerializedEvent(bytes, serializer.identifier, manifest)
           }
 
@@ -183,14 +187,19 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
     }
 
     val persistenceId = messages.head.persistenceId
+    val numEvents =
+      if (messages.size == 1) messages.head.size
+      else messages.iterator.map(_.size).sum
+
+    val context = instrumentation.writeEventsCalled(persistenceId, messages.head.lowestSequenceNr, numEvents)
     val writeResult: Future[Seq[Try[Unit]]] =
-      if (messages.size == 1)
-        atomicWrite(messages.head)
+      if (numEvents == 1 || messages.size == 1)
+        atomicWrite(messages.head, context)
       else {
         // persistAsync case
         // easiest to just group all into a single AtomicWrite
         val batch = AtomicWrite(messages.flatMap(_.payload))
-        atomicWrite(batch)
+        atomicWrite(batch, context)
       }
 
     writesInProgress.put(persistenceId, writeResult)
@@ -233,10 +242,12 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
         // this is the normal case, highest sequence number from last event
         query
           .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = true)
-          .runWith(Sink.fold((0L, Instant.EPOCH)) { (_, item) =>
+          .runWith(Sink.fold((0L, Instant.EPOCH)) { case (_, (item, context)) =>
             // payload is empty for deleted item
             if (item.payload.isDefined) {
+              instrumentation.beforeDeserializeEvent(context)
               val repr = deserializeItem(serialization, item)
+              instrumentation.afterDeserializeEvent(context)
               recoveryCallback(repr)
             }
             (item.seqNr, item.writeTimestamp)
@@ -260,8 +271,10 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
             effectiveToSequenceNr,
             includeDeleted = false)
           .runWith(Sink
-            .foreach { item =>
+            .foreach { case (item, instrumentationContext) =>
+              instrumentation.beforeDeserializeEvent(instrumentationContext)
               val repr = deserializeItem(serialization, item)
+              instrumentation.afterDeserializeEvent(instrumentationContext)
               recoveryCallback(repr)
             })
           .flatMap(_ => highestSeqNrAndTimestamp)
