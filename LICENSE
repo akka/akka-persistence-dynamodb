@@ -8,7 +8,8 @@ Licensed Work:        Akka Persistence DynamoDB 2.0.12
                       UNLESS another license file is present in a sub
                       directory, then that other license applies to all files
                       in its directory and sub directories.
-                      The Licensed Work is (c) 2025 Lightbend Inc.
+in its directory and sub directories.
+The Licensed Work is (c) 2026 Lightbend Inc.
 Additional Use Grant:
     If you develop an application using a version of Play Framework that
     utilizes binary versions of akka-streams and its dependencies, you may
