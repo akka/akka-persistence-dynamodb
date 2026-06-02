@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024-2025 Lightbend Inc. <https://akka.io>
+ * Copyright (C) 2024-2026 Lightbend Inc. <https://akka.io>
  */
 
 package akka.persistence.dynamodb.cleanup.scaladsl
