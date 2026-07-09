@@ -38,7 +38,7 @@
         <repository>
             <id>akka-repository</id>
             <name>Akka library repository</name>
-            <url>https://repo.akka.io/maven</url>
+            <url>REPLACE_WITH_REPO_URL_FROM_https://account.akka.io/token</url>
         </repository>
         <repository>
             <id>akka-snapshot-repository</id>
@@ -50,7 +50,7 @@
         <pluginRepository>
             <id>akka-repository</id>
             <name>Akka library repository</name>
-            <url>https://repo.akka.io/maven</url>
+            <url>REPLACE_WITH_REPO_URL_FROM_https://account.akka.io/token</url>
         </pluginRepository>
     </pluginRepositories>
 
