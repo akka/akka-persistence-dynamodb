@@ -33,6 +33,7 @@ inThisBuild(
       Seq(("BUSL-1.1", url(s"https://github.com/akka/akka-persistence-dynamodb/blob/${tagOrBranch}/LICENSE")))
     },
     description := "An Akka Persistence plugin backed by Amazon DynamoDB",
+    makeBomIncludeDependencies := true,
     // append -SNAPSHOT to version when isSnapshot
     dynverSonatypeSnapshots := true,
     resolvers ++=
@@ -120,6 +121,7 @@ lazy val core = (project in file("core"))
   .settings(common)
   .settings(name := "akka-persistence-dynamodb", libraryDependencies ++= Dependencies.core)
   .enablePlugins(AutomateHeaderPlugin)
+  .enablePlugins(ArtifactBomPlugin)
   .disablePlugins(CiReleasePlugin)
 
 lazy val s3Fallback = (project in file("s3-fallback-store"))
@@ -128,6 +130,7 @@ lazy val s3Fallback = (project in file("s3-fallback-store"))
   .settings(libraryDependencies ++= Dependencies.s3Fallback)
   .dependsOn(core % "compile->compile;test->test")
   .enablePlugins(AutomateHeaderPlugin)
+  .enablePlugins(ArtifactBomPlugin)
   .disablePlugins(CiReleasePlugin)
 
 lazy val docs = project

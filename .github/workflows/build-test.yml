@@ -86,6 +86,9 @@ jobs:
           cp .jvmopts-ci .jvmopts
           sbt test
 
+      - name: Artifact BOM validation
+        uses: akka/github-actions-scripts/artifact_bom_validation@main
+
   test-docs:
     name: Docs
     runs-on: Akka-Default
