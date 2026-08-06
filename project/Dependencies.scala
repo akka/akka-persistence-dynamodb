@@ -19,7 +19,7 @@ object Dependencies {
   }
 
   val AwsSdkVersion = "2.46.10"
-  val MinioVersion = "8.5.17"
+  val MinioVersion = "8.6.0"
 
   // Java Platform version for JavaDoc creation
   lazy val JavaDocLinkVersion = scala.util.Properties.javaSpecVersion
