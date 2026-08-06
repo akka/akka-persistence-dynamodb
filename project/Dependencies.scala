@@ -44,7 +44,7 @@ object Dependencies {
     val akkaJackson = "com.typesafe.akka" %% "akka-serialization-jackson" % AkkaVersion % Test
 
     val logback = "ch.qos.logback" % "logback-classic" % "1.5.18" % Test // EPL 1.0 / LGPL 2.1
-    val scalaTest = "org.scalatest" %% "scalatest" % "3.2.19" % Test // ApacheV2
+    val scalaTest = "org.scalatest" %% "scalatest" % "3.2.20" % Test // ApacheV2
     val junit = "junit" % "junit" % "4.12" % Test // Eclipse Public License 1.0
     val junitInterface = "com.novocode" % "junit-interface" % "0.11" % Test // "BSD 2-Clause"
     val minioSdk = "io.minio" % "minio" % MinioVersion % Test // ApacheV2
