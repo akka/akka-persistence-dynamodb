@@ -18,7 +18,7 @@ object Dependencies {
     case Seq(major, minor, _*) => s"$major.$minor"
   }
 
-  val AwsSdkVersion = "2.46.10"
+  val AwsSdkVersion = "2.46.21"
   val MinioVersion = "8.6.0"
 
   // Java Platform version for JavaDoc creation
