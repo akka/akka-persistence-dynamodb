@@ -323,17 +323,19 @@ import akka.actor.ClassicActorSystemProvider
         fut: Future[TransactWriteItemsResponse]): Future[TransactWriteItemsResponse] = {
       implicit val sys: ClassicActorSystemProvider = system
 
-      val now = System.nanoTime()
-      val elapsed = now - startNanos
-      if (elapsed < remainingNanos) {
+      if (remainingNanos > 0) {
+        val now = System.nanoTime()
+        val elapsed = now - startNanos
         val minusElapsed = remainingNanos - elapsed
         // don't delay for the full 5 seconds, since the transaction might succeed
         // in this case the 10-minute idempotency period for the token
-        val delayNanos = minusElapsed / 4
-        val nextRemaining = minusElapsed - delayNanos
-        after(delayNanos.nanos) {
-          attempt(nextRemaining, System.nanoTime())
-        }
+        val delayNanos = (minusElapsed / 4).max(0)
+        val nextRemaining = (minusElapsed - delayNanos).max(0)
+        if (delayNanos > 0)
+          after(delayNanos.nanos) {
+            attempt(nextRemaining, System.nanoTime())
+          }
+        else attempt(nextRemaining, System.nanoTime())
       } else fut // give up
     }
 
