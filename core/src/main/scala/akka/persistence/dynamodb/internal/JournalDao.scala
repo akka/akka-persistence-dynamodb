@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicLong
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.duration.Duration
+import scala.concurrent.duration.DurationLong
 import scala.jdk.CollectionConverters._
 import scala.jdk.FutureConverters._
 import scala.util.control.NonFatal
@@ -24,6 +25,7 @@ import scala.util.control.NonFatal
 import akka.Done
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
+import akka.pattern.after
 import akka.persistence.Persistence
 import akka.persistence.dynamodb.DynamoDBSettings
 import akka.persistence.typed.PersistenceId
@@ -43,6 +45,9 @@ import software.amazon.awssdk.services.dynamodb.model.ReturnConsumedCapacity
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
 import software.amazon.awssdk.services.dynamodb.model.Update
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse
+import software.amazon.awssdk.services.dynamodb.model.TransactionInProgressException
+import akka.actor.ClassicActorSystemProvider
 
 /**
  * INTERNAL API
@@ -257,7 +262,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
         .build
 
-      val result = client.transactWriteItems(req).asScala
+      val result = retryTransactionWriteItems(req)
 
       if (log.isDebugEnabled) {
         result.foreach { response =>
@@ -282,6 +287,57 @@ import software.amazon.awssdk.services.dynamodb.model.Update
           Future.failed(c.getCause)
         }(ExecutionContext.parasitic)
     }
+  }
+
+  def retryTransactionWriteItems(req: TransactWriteItemsRequest): Future[TransactWriteItemsResponse] = {
+    // A TransactWriteItems failing with a TransactionInProgressException indicates that another transaction
+    // with the same ID is currently running, which can happen in the case of retries.  If a transaction is running
+    // for 5 seconds on the server side, the server can perform "inline recovery".
+    //
+    // This can manifest if the initial transactional write times out due to an aggressive (sub-5s) timeout.
+    // The retry (if attempted within 5s of the initial transaction) will fail and all retries might fail with this
+    // causing the overall request.
+    //
+    // AWS normally recommends lengthening the client API call timeouts so that at least one retry is not attempted until
+    // after the 5 seconds have passed, but users of this plugin might prefer to have a short timeout for typical
+    // non-transactional writes or to not have an overly long backoff.
+    //
+    // Solution here is to retry the transactional writes at our level and delay them by enough to give the transaction
+    // a chance to succeed.
+    def attempt(remainingNanos: Long, startNanos: Long): Future[TransactWriteItemsResponse] = {
+      implicit val ec: ExecutionContext = system.executionContext
+
+      val fut = client.transactWriteItems(req).asScala
+      fut.recoverWith {
+        case e if e.getCause().isInstanceOf[TransactionInProgressException] =>
+          delayOnTIPE(remainingNanos, startNanos, fut)
+
+        case _: TransactionInProgressException =>
+          delayOnTIPE(remainingNanos, startNanos, fut)
+      }
+    }
+
+    def delayOnTIPE(
+        remainingNanos: Long,
+        startNanos: Long,
+        fut: Future[TransactWriteItemsResponse]): Future[TransactWriteItemsResponse] = {
+      implicit val sys: ClassicActorSystemProvider = system
+
+      val now = System.nanoTime()
+      val elapsed = now - startNanos
+      if (elapsed < remainingNanos) {
+        val minusElapsed = remainingNanos - elapsed
+        // don't delay for the full 5 seconds, since the transaction might succeed
+        // in this case the 10-minute idempotency period for the token
+        val delayNanos = minusElapsed / 4
+        val nextRemaining = minusElapsed - delayNanos
+        after(delayNanos.nanos) {
+          attempt(nextRemaining, System.nanoTime())
+        }
+      } else fut // give up
+    }
+
+    attempt(5L * 1024 * 1024 * 1024, System.nanoTime())
   }
 
   def readHighestSequenceNr(persistenceId: String): Future[Long] = {
@@ -409,7 +465,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
           .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
           .build()
 
-        client.transactWriteItems(req).asScala
+        retryTransactionWriteItems(req)
       }
 
       if (log.isDebugEnabled()) {
@@ -500,7 +556,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
           .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
           .build()
 
-        client.transactWriteItems(request).asScala
+        retryTransactionWriteItems(request)
       }
 
       if (log.isDebugEnabled()) {
