@@ -328,7 +328,7 @@ import akka.actor.ClassicActorSystemProvider
         val elapsed = now - startNanos
         val minusElapsed = remainingNanos - elapsed
         // don't delay for the full 5 seconds, since the transaction might succeed
-        // in this case the 10-minute idempotency period for the token
+        // in this case the 10-minute idempotency period for the token applies
         val delayNanos = (minusElapsed / 4).max(0)
         val nextRemaining = (minusElapsed - delayNanos).max(0)
         if (delayNanos > 0)
