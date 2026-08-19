@@ -9,6 +9,7 @@ import java.util.UUID
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters.ListHasAsScala
 import scala.jdk.FutureConverters.CompletionStageOps
 import scala.util.Random
 
@@ -58,7 +59,10 @@ import org.scalatest.concurrent.Eventually
 import org.scalatest.wordspec.AnyWordSpecLike
 import software.amazon.awssdk.core.SdkBytes
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException
+import software.amazon.awssdk.services.dynamodb.model.IdempotentParameterMismatchException
 
 object DynamoDBJournalSpec {
   val config = DynamoDBJournalSpec.testConfig()
@@ -146,9 +150,13 @@ object DynamoDBJournalSpec {
 abstract class DynamoDBJournalBaseSpec(config: Config)
     extends JournalSpec(config)
     with TestDbLifecycle
+    with TestData
     with Eventually {
 
   import DynamoDBJournalSpec._
+  import akka.persistence.JournalProtocol._
+
+  val entityType = nextEntityType()
 
   override protected def supportsRejectingNonSerializableObjects: CapabilityFlag = CapabilityFlag.off()
 
@@ -164,16 +172,209 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
     eventuallyConsistentWrite(fromSnr, toSnr, pid, sender, writerUuid)
     val probe = TestProbe()
     eventually(timeout(3.seconds), interval(100.millis)) {
-      journal ! ReplayMessages(fromSnr, toSnr, max = 0, pid, probe.ref)
+      journal ! ReplayMessages(fromSnr, toSnr, (1 + toSnr - fromSnr), pid, probe.ref)
+      (fromSnr to toSnr).foreach { expectedSeqNr =>
+        try probe.expectMsgPF() { case ReplayedMessage(persistent) =>
+          persistent.payload shouldBe s"a-$expectedSeqNr"
+          persistent.sequenceNr shouldBe expectedSeqNr
+          persistent.persistenceId shouldBe pid
+          persistent.writerUuid shouldBe writerUuid
+        } catch {
+          case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
+            fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
+        }
+      }
       probe.expectMsg(RecoverySuccess(toSnr))
     }
   }
 
-  def eventuallyConsistentWrite(fromSnr: Int, toSnr: Int, pid: String, sender: ActorRef, writerUuid: String): Unit =
-    super.writeMessages(fromSnr, toSnr, pid, sender, writerUuid)
+  def eventuallyConsistentWrite(fromSnr: Int, toSnr: Int, pid: String, sender: ActorRef, writerUuid: String): Unit = {
+    if (toSnr >= fromSnr) {
+      val probe = TestProbe()
+      tryWriteMessages(fromSnr, toSnr, pid, sender, writerUuid, probe.ref)
+
+      probe.expectMsg(WriteMessagesSuccessful)
+      (fromSnr to toSnr).foreach { expectedSeqNr =>
+        try probe.expectMsgPF() { case WriteMessageSuccess(persistent, _) =>
+          persistent.payload shouldBe s"a-$expectedSeqNr"
+          persistent.sequenceNr shouldBe expectedSeqNr
+          persistent.persistenceId shouldBe pid
+          persistent.sender shouldBe sender
+          persistent.writerUuid shouldBe writerUuid
+        } catch {
+          case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
+            fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
+        }
+      }
+    }
+  }
+
+  def tryWriteMessages(
+      fromSeqNr: Int,
+      toSeqNr: Int,
+      pid: String,
+      sender: ActorRef,
+      writerUuid: String,
+      probeRef: ActorRef): Unit = {
+    def repr(seqNr: Long) = PersistentRepr(
+      payload = s"a-$seqNr",
+      sequenceNr = seqNr,
+      persistenceId = pid,
+      sender = sender,
+      writerUuid = writerUuid)
+
+    // unlike the 2.10.13 persistence TCK, only one atomic write (matching the behavior of persistAll)
+    val write = {
+      assume(supportsAtomicPersistAllOfSeveralEvents)
+      AtomicWrite((fromSeqNr to toSeqNr).map { i => repr(i) })
+    }
+
+    journal ! WriteMessages(Seq(write), probeRef, actorInstanceId)
+  }
 
   def instrumentation: JournalInstrumentation =
     InstrumentationProvider(typedSystem).instrumentation.asInstanceOf[JournalInstrumentation]
+
+  "A journal" should {
+    "fail conflicting writes (single-single)" in {
+      // ignore the writes done in beforeEach by using a new pid
+      val pid = nextPersistenceId(entityType).id
+      writeMessages(1, 1, pid, ActorRef.noSender, writerUuid)
+
+      var otherUuid = writerUuid
+      while (otherUuid == writerUuid) {
+        // retry of possibly-successful write is not a conflict
+        writeMessages(1, 1, pid, ActorRef.noSender, writerUuid)
+        otherUuid = UUID.randomUUID().toString
+      }
+
+      val probe = TestProbe()
+      tryWriteMessages(1, 1, pid, ActorRef.noSender, otherUuid, probe.ref)
+
+      probe.expectMsgPF() { case WriteMessagesFailed(cause, _) =>
+        cause shouldBe a[ConditionalCheckFailedException]
+      }
+      probe.expectMsgPF() { case WriteMessageFailure(repr, cause, `actorInstanceId`) =>
+        repr.sequenceNr shouldBe 1
+        repr.persistenceId shouldBe pid
+        cause shouldBe a[ConditionalCheckFailedException]
+      }
+    }
+
+    "fail conflicting writes (single-multi)" in {
+      // ignore writes from beforeEach by using a new pid
+      val pid = nextPersistenceId(entityType).id
+      writeMessages(1, 1, pid, ActorRef.noSender, writerUuid)
+
+      var otherUuid = writerUuid
+      while (otherUuid == writerUuid) {
+        otherUuid = UUID.randomUUID().toString
+      }
+
+      val probe = TestProbe()
+      tryWriteMessages(1, 5, pid, ActorRef.noSender, otherUuid, probe.ref)
+
+      probe.expectMsgPF() {
+        case WriteMessagesFailed(cause: TransactionCanceledException, _) =>
+          cause.cancellationReasons().asScala.map(_.code) should contain("ConditionalCheckFailed")
+
+        case WriteMessagesFailed(cause, _) =>
+          cause shouldBe a[TransactionCanceledException]
+      }
+
+      (1 to 5).foreach { expectedSeqNr =>
+        try probe.expectMsgPF() {
+          case WriteMessageFailure(repr, cause: TransactionCanceledException, `actorInstanceId`) =>
+            repr.sequenceNr shouldBe expectedSeqNr
+            repr.persistenceId shouldBe pid
+            cause.cancellationReasons().asScala.map(_.code) should contain("ConditionalCheckFailed")
+
+          case WriteMessageFailure(repr, cause, `actorInstanceId`) =>
+            repr.sequenceNr shouldBe expectedSeqNr
+            repr.persistenceId shouldBe pid
+            cause shouldBe a[TransactionCanceledException]
+        } catch {
+          case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
+            fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
+        }
+      }
+    }
+
+    "fail conflicting writes (multi-single)" in {
+      // ignore writes from beforeEach by using a new pid
+      // also use a new uuid since that+seqNr is used for the request token
+      val pid = nextPersistenceId(entityType).id
+      val writerUuid = UUID.randomUUID().toString
+      writeMessages(1, 5, pid, ActorRef.noSender, writerUuid)
+
+      var otherUuid = writerUuid
+      while (otherUuid == writerUuid) {
+        val probe = TestProbe()
+        tryWriteMessages(1, 5, pid, ActorRef.noSender, writerUuid, probe.ref)
+
+        // same UUID & same starting seqNr: same client request, but timestamp
+        // change means DDB rejects
+        probe.expectMsgPF() { case WriteMessagesFailed(cause, _) =>
+          cause shouldBe an[IdempotentParameterMismatchException]
+        }
+
+        otherUuid = UUID.randomUUID().toString
+      }
+
+      val probe = TestProbe()
+      tryWriteMessages(1, 1, pid, ActorRef.noSender, otherUuid, probe.ref)
+
+      probe.expectMsgPF() { case WriteMessagesFailed(cause, _) =>
+        cause shouldBe a[ConditionalCheckFailedException]
+      }
+      probe.expectMsgPF() { case WriteMessageFailure(repr, cause, `actorInstanceId`) =>
+        repr.sequenceNr shouldBe 1
+        repr.persistenceId shouldBe pid
+        cause shouldBe a[ConditionalCheckFailedException]
+      }
+    }
+
+    "fail conflicting writes (multi-multi)" in {
+      // ignore writes from beforeEach by using a new pid
+      // also use a new uuid since that+seqNr is used for the request token
+      val pid = nextPersistenceId(entityType).id
+      val writerUuid = UUID.randomUUID().toString
+      writeMessages(1, 5, pid, ActorRef.noSender, writerUuid)
+
+      var otherUuid = writerUuid
+      while (otherUuid == writerUuid) {
+        otherUuid = UUID.randomUUID().toString
+      }
+
+      val probe = TestProbe()
+      tryWriteMessages(1, 5, pid, ActorRef.noSender, otherUuid, probe.ref)
+
+      probe.expectMsgPF() {
+        case WriteMessagesFailed(cause: TransactionCanceledException, _) =>
+          cause.cancellationReasons().asScala.map(_.code) should contain("ConditionalCheckFailed")
+
+        case WriteMessagesFailed(cause, _) =>
+          cause shouldBe a[TransactionCanceledException]
+      }
+
+      (1 to 5).foreach { expectedSeqNr =>
+        try probe.expectMsgPF() {
+          case WriteMessageFailure(repr, cause: TransactionCanceledException, `actorInstanceId`) =>
+            repr.sequenceNr shouldBe expectedSeqNr
+            repr.persistenceId shouldBe pid
+            cause.cancellationReasons().asScala.map(_.code) should contain("ConditionalCheckFailed")
+
+          case WriteMessageFailure(repr, cause, `actorInstanceId`) =>
+            repr.sequenceNr shouldBe expectedSeqNr
+            repr.persistenceId shouldBe pid
+            cause shouldBe a[TransactionCanceledException]
+        } catch {
+          case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
+            fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
+        }
+      }
+    }
+  }
 }
 
 class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.config) with TestData {

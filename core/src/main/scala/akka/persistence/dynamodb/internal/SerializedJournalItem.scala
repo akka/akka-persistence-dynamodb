@@ -154,6 +154,10 @@ final case class JournalItemWithBreadcrumb(
   // The lengths of the fields that get always get written
   private[internal] val itemFields =
     Pid.length + SeqNr.length + EntityTypeSlice.length + Timestamp.length + Writer.length
+
+  val ColonWriter = s":$Writer"
+  // allow if same writer, to account for retries (e.g. after timeout)
+  val UniqueEventCondition = s"attribute_not_exists($Pid) OR $Writer = $ColonWriter"
 }
 
 object DynamoDBSizeCalculations {

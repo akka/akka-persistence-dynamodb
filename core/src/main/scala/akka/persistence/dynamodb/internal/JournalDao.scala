@@ -11,6 +11,7 @@ import java.util.concurrent.CompletionException
 import java.util.Base64
 import java.util.Locale
 import java.util.{ HashMap => JHashMap }
+import java.util.{ Map => JMap }
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
@@ -207,6 +208,10 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         putItemBuilder
           .tableName(settings.journalTable)
           .item(putItemAttributes(item))
+          .expressionAttributeValues(JMap.of(JournalAttributes.ColonWriter, AttributeValue.fromS(item.writerUuid)))
+          .conditionExpression(
+            JournalAttributes.UniqueEventCondition
+          ) // enforces uniqueness of (Pid, SeqNr), allowing retries
           .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
       }.asScala
 
@@ -235,7 +240,12 @@ import software.amazon.awssdk.services.dynamodb.model.Update
         TransactWriteItem
           .builder()
           .put { putBuilder =>
-            putBuilder.tableName(settings.journalTable).item(putItemAttributes(item)).build
+            putBuilder
+              .tableName(settings.journalTable)
+              .item(putItemAttributes(item))
+              .expressionAttributeValues(JMap.of(JournalAttributes.ColonWriter, AttributeValue.fromS(item.writerUuid)))
+              .conditionExpression(JournalAttributes.UniqueEventCondition)
+              .build
           }
           .build
       }.asJava
