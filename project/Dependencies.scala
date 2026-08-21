@@ -21,7 +21,7 @@ object Dependencies {
   val AwsSdkVersion = "2.46.21"
   val MinioVersion = "8.6.0"
   val OkHttpJvmVersion = "5.5.0"
-  val JacksonVersion = "2.19.1"  // to match what's pulled in by minio for tests
+  val JacksonVersion = "2.19.1" // to match what's pulled in by minio for tests
 
   // Java Platform version for JavaDoc creation
   lazy val JavaDocLinkVersion = scala.util.Properties.javaSpecVersion
