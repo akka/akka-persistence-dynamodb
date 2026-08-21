@@ -23,6 +23,7 @@ import scala.jdk.FutureConverters._
 import scala.util.control.NonFatal
 
 import akka.Done
+import akka.actor.ClassicActorSystemProvider
 import akka.actor.typed.ActorSystem
 import akka.annotation.InternalApi
 import akka.pattern.after
@@ -47,7 +48,6 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
 import software.amazon.awssdk.services.dynamodb.model.Update
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse
 import software.amazon.awssdk.services.dynamodb.model.TransactionInProgressException
-import akka.actor.ClassicActorSystemProvider
 
 /**
  * INTERNAL API
@@ -463,6 +463,7 @@ import akka.actor.ClassicActorSystemProvider
 
         val req = TransactWriteItemsRequest
           .builder()
+          .clientRequestToken(batchTransactionToken(from, to, persistenceId))
           .transactItems(writeItems.asJava)
           .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
           .build()
@@ -487,14 +488,11 @@ import akka.actor.ClassicActorSystemProvider
         }(ExecutionContext.parasitic)
     }
 
-    // TransactWriteItems has a limit of 100
-    val batchSize = 100
-
     def deleteInBatches(from: Long, maxTo: Long): Future[Unit] = {
-      if (from + batchSize > maxTo) {
+      if (from + TransactionBatchSize > maxTo) {
         deleteBatch(from, maxTo, lastBatch = true)
       } else {
-        val to = from + batchSize - 1
+        val to = from + TransactionBatchSize - 1
         deleteBatch(from, to, lastBatch = false).flatMap(_ => deleteInBatches(to + 1, maxTo))
       }
     }
@@ -554,6 +552,7 @@ import akka.actor.ClassicActorSystemProvider
 
         val request = TransactWriteItemsRequest
           .builder()
+          .clientRequestToken(batchTransactionToken(fromSeqNr, toSeqNr, persistenceId))
           .transactItems(expireItems.asJava)
           .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
           .build()
@@ -579,14 +578,11 @@ import akka.actor.ClassicActorSystemProvider
         }(ExecutionContext.parasitic)
     }
 
-    // TransactWriteItems has a limit of 100
-    val batchSize = 100
-
     def updateInBatches(from: Long, maxTo: Long): Future[Unit] = {
-      if (from + batchSize > maxTo) {
+      if (from + TransactionBatchSize > maxTo) {
         updateBatch(from, maxTo, lastBatch = true)
       } else {
-        val to = from + batchSize - 1
+        val to = from + TransactionBatchSize - 1
         updateBatch(from, to, lastBatch = false).flatMap(_ => updateInBatches(to + 1, maxTo))
       }
     }
@@ -607,6 +603,54 @@ import akka.actor.ClassicActorSystemProvider
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
       }(ExecutionContext.parasitic)
+  }
+
+  // TransactWriteItems has a limit of 100
+  val TransactionBatchSize = 100
+
+  // generate a "likely to be unique within the past 10 minutes" token to pass to a transactional update; intended for
+  // use from deleteEventsTo and updateEventExpiry (writeEvents uses a different, stronger token based on writer uuid,
+  // which isn't present here)
+  def batchTransactionToken(from: Long, to: Long, persistenceId: String): String = {
+    val diff = (to - from).max(0)
+    require(diff <= TransactionBatchSize, "cannot operate on more than 100 events in a transaction")
+
+    // A token is (base64 encoded) 4 bytes (big-endian) taken from the high-resolution clock, the little-endian
+    // bytes of from (1 to 8 bytes, most-significant zero bytes omitted), zero or one byte encoding the difference
+    // (which must be no greater than 100 by DDB limitation on transaction batch size) between from and to (with
+    // a difference of 100 encoding absent), with the remainder of the 24 bytes filled with the suffix of the persistenceId
+    //
+    // "typically", from will be less than 2^16, to will be from + 100, and the persistence ID will be 1-byte characters in
+    // utf-8.  In this case, the token will be derived from: 4 bytes clock, 2 bytes from, and 18 characters from pid suffix.
+    // In the worst case, from is at least 2^56, to is less than 100 greater than from, and the persistence ID suffix has multi-byte
+    // characters; in this case, the token is 4 bytes clock, 8 bytes from, 1 byte batch size/difference, and 11 bytes (<11 characters)
+    // from the pid suffix.
+    val bb = ByteBuffer.allocate(24)
+    // using best effort to prevent token reuse within 10 minutes (600 billion nanoseconds).  Reasoning:
+    // 2^40 > 600 billion > 2^39, thus the low order 32 bits of (nanoTime >> 8) will take longer than
+    // 10 minutes to rollover.  Token reuse would require using same-ish parameters (same from, to, and suffix of persistenceId)
+    // within the greater of 256ns or the high-resolution clock's update period (might be tens of microseconds on Windows with a
+    // poorly configured hypervisor).  A reused token will result in the operation not being performed.
+    val nanos = System.nanoTime()
+    bb.putInt((nanos >> 8).toInt)
+
+    {
+      var remaining = from.max(0L)
+      while (remaining > 0) {
+        val b = (remaining & 0xff).toByte
+        bb.put(b)
+        remaining = remaining >> 8
+      }
+    }
+
+    if (diff != TransactionBatchSize) {
+      bb.put((diff & 0xff).toByte)
+    }
+
+    val pidBytesSuffix = persistenceId.getBytes.takeRight(bb.remaining)
+    bb.put(pidBytesSuffix)
+
+    new String(base64Encoder.encode(bb.array))
   }
 
   if (settings.journalFallbackSettings.isEnabled && settings.journalFallbackSettings.eager) {
