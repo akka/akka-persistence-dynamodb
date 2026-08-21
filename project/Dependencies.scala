@@ -45,7 +45,7 @@ object Dependencies {
     val akkaStreamTestkit = "com.typesafe.akka" %% "akka-stream-testkit" % AkkaVersion % Test
     val akkaJackson = "com.typesafe.akka" %% "akka-serialization-jackson" % AkkaVersion % Test
     val jacksonScala = "com.fasterxml.jackson.module" %% "jackson-module-scala" % JacksonVersion % Test
-    val jacksonParamNames = "com.fasterxml.jackson.module" %% "jackson-module-scala" % JacksonVersion % Test
+    val jacksonParamNames = "com.fasterxml.jackson.module" %% "jackson-module-parameter-names" % JacksonVersion % Test
 
     val logback = "ch.qos.logback" % "logback-classic" % "1.5.18" % Test // EPL 1.0 / LGPL 2.1
     val scalaTest = "org.scalatest" %% "scalatest" % "3.2.19" % Test // ApacheV2
