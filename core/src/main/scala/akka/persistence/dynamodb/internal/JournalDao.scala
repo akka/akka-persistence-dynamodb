@@ -213,7 +213,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             JMap.of(
               JournalAttributes.ColonWriter,
               AttributeValue.fromS(item.writerUuid),
-              JournalAttributes.ColonNow,
+              ":now",
               AttributeValue.fromN(timestampSeconds)))
           .conditionExpression(
             JournalAttributes.UniqueEventWithExpiry
@@ -254,7 +254,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
                 JMap.of(
                   JournalAttributes.ColonWriter,
                   AttributeValue.fromS(item.writerUuid),
-                  JournalAttributes.ColonNow,
+                  ":now",
                   AttributeValue.fromN(timestampSeconds)))
               .conditionExpression(JournalAttributes.UniqueEventWithExpiry)
               .build
