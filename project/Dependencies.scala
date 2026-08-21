@@ -21,6 +21,7 @@ object Dependencies {
   val AwsSdkVersion = "2.46.21"
   val MinioVersion = "8.6.0"
   val OkHttpJvmVersion = "5.5.0"
+  val JacksonVersion = "2.19.1"  // to match what's pulled in by minio for tests
 
   // Java Platform version for JavaDoc creation
   lazy val JavaDocLinkVersion = scala.util.Properties.javaSpecVersion
@@ -43,6 +44,8 @@ object Dependencies {
     val akkaTestkit = "com.typesafe.akka" %% "akka-actor-testkit-typed" % AkkaVersion % Test
     val akkaStreamTestkit = "com.typesafe.akka" %% "akka-stream-testkit" % AkkaVersion % Test
     val akkaJackson = "com.typesafe.akka" %% "akka-serialization-jackson" % AkkaVersion % Test
+    val jacksonScala = "com.fasterxml.jackson.module" %% "jackson-module-scala" % JacksonVersion % Test
+    val jacksonParamNames = "com.fasterxml.jackson.module" %% "jackson-module-scala" % JacksonVersion % Test
 
     val logback = "ch.qos.logback" % "logback-classic" % "1.5.18" % Test // EPL 1.0 / LGPL 2.1
     val scalaTest = "org.scalatest" %% "scalatest" % "3.2.19" % Test // ApacheV2
@@ -78,6 +81,8 @@ object Dependencies {
     TestDeps.logback,
     TestDeps.minioSdk,
     TestDeps.okhttp3,
+    TestDeps.jacksonScala,
+    TestDeps.jacksonParamNames,
     TestDeps.scalaTest)
 
   val docs = Seq(
