@@ -614,6 +614,13 @@ class EventSourcedCleanupSpec
       stateProbe.expectMessage("") // all events have expired
       persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
       seqNrProbe.expectMessage(0L) // no expiry marker (resetSequenceNumber = true)
+
+      // We should be able to persist new events after the expiry has passed
+      ackProbe.expectNoMessage(30.millis)
+      persister2 ! Persister.PersistWithAck(1, ackProbe.ref)
+      ackProbe.expectMessage(Done)
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(1L)
     }
 
     "set expiry with time-to-live duration for all events for single persistence id" in {
@@ -652,6 +659,13 @@ class EventSourcedCleanupSpec
       stateProbe.expectMessage((1 to n).mkString("|")) // no events have expired yet (1 minute TTL)
       persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
       seqNrProbe.expectMessage(n.toLong)
+
+      // We should be able to persist new events after the expiry has passed
+      ackProbe.expectNoMessage(30.millis)
+      persister2 ! Persister.PersistWithAck(1, ackProbe.ref)
+      ackProbe.expectMessage(Done)
+      persister2 ! Persister.GetSeqNr(seqNrProbe.ref)
+      seqNrProbe.expectMessage(1L + n)
     }
 
     "set expiry for all events for single persistence id in batches" in {

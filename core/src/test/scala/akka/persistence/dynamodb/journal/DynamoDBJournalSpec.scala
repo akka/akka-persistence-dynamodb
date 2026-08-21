@@ -167,11 +167,12 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
 
   override def typedSystem: ActorSystem[_] = system.toTyped
 
-  // always eventually consistent reads with dynamodb-local, wait for writes to be seen
+  // always eventually consistent reads with dynamodb-local, wait for writes to be seen (this does assume
+  // reads are at least monotonic)
   override def writeMessages(fromSnr: Int, toSnr: Int, pid: String, sender: ActorRef, writerUuid: String): Unit = {
     eventuallyConsistentWrite(fromSnr, toSnr, pid, sender, writerUuid)
-    val probe = TestProbe()
     eventually(timeout(3.seconds), interval(100.millis)) {
+      val probe = TestProbe()
       journal ! ReplayMessages(fromSnr, toSnr, (1 + toSnr - fromSnr), pid, probe.ref)
       (fromSnr to toSnr).foreach { expectedSeqNr =>
         try probe.expectMsgPF() { case ReplayedMessage(persistent) =>
@@ -202,7 +203,7 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
           persistent.sender shouldBe sender
           persistent.writerUuid shouldBe writerUuid
         } catch {
-          case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
+          case ex @ (_: Exception | _: AssertionError) =>
             fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
         }
       }
@@ -241,12 +242,9 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
       val pid = nextPersistenceId(entityType).id
       writeMessages(1, 1, pid, ActorRef.noSender, writerUuid)
 
-      var otherUuid = writerUuid
-      while (otherUuid == writerUuid) {
-        // retry of possibly-successful write is not a conflict
-        writeMessages(1, 1, pid, ActorRef.noSender, writerUuid)
-        otherUuid = UUID.randomUUID().toString
-      }
+      // retry of possibly-successful write is not a conflict
+      writeMessages(1, 1, pid, ActorRef.noSender, writerUuid)
+      val otherUuid = UUID.randomUUID().toString
 
       val probe = TestProbe()
       tryWriteMessages(1, 1, pid, ActorRef.noSender, otherUuid, probe.ref)
@@ -266,10 +264,7 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
       val pid = nextPersistenceId(entityType).id
       writeMessages(1, 1, pid, ActorRef.noSender, writerUuid)
 
-      var otherUuid = writerUuid
-      while (otherUuid == writerUuid) {
-        otherUuid = UUID.randomUUID().toString
-      }
+      val otherUuid = UUID.randomUUID().toString
 
       val probe = TestProbe()
       tryWriteMessages(1, 5, pid, ActorRef.noSender, otherUuid, probe.ref)
@@ -294,7 +289,7 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
             repr.persistenceId shouldBe pid
             cause shouldBe a[TransactionCanceledException]
         } catch {
-          case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
+          case ex @ (_: Exception | _: AssertionError) =>
             fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
         }
       }
@@ -307,19 +302,18 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
       val writerUuid = UUID.randomUUID().toString
       writeMessages(1, 5, pid, ActorRef.noSender, writerUuid)
 
-      var otherUuid = writerUuid
-      while (otherUuid == writerUuid) {
+      {
         val probe = TestProbe()
-        tryWriteMessages(1, 5, pid, ActorRef.noSender, writerUuid, probe.ref)
-
         // same UUID & same starting seqNr: same client request, but timestamp
         // change means DDB rejects
+        tryWriteMessages(1, 5, pid, ActorRef.noSender, writerUuid, probe.ref)
+
         probe.expectMsgPF() { case WriteMessagesFailed(cause, _) =>
           cause shouldBe an[IdempotentParameterMismatchException]
         }
-
-        otherUuid = UUID.randomUUID().toString
       }
+
+      val otherUuid = UUID.randomUUID().toString
 
       val probe = TestProbe()
       tryWriteMessages(1, 1, pid, ActorRef.noSender, otherUuid, probe.ref)
@@ -341,10 +335,7 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
       val writerUuid = UUID.randomUUID().toString
       writeMessages(1, 5, pid, ActorRef.noSender, writerUuid)
 
-      var otherUuid = writerUuid
-      while (otherUuid == writerUuid) {
-        otherUuid = UUID.randomUUID().toString
-      }
+      val otherUuid = UUID.randomUUID().toString
 
       val probe = TestProbe()
       tryWriteMessages(1, 5, pid, ActorRef.noSender, otherUuid, probe.ref)
@@ -369,7 +360,7 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
             repr.persistenceId shouldBe pid
             cause shouldBe a[TransactionCanceledException]
         } catch {
-          case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
+          case ex @ (_: Exception | _: AssertionError) =>
             fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
         }
       }

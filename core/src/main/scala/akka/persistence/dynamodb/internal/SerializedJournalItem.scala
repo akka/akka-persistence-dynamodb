@@ -156,8 +156,10 @@ final case class JournalItemWithBreadcrumb(
     Pid.length + SeqNr.length + EntityTypeSlice.length + Timestamp.length + Writer.length
 
   val ColonWriter = s":$Writer"
+  val ColonNow = s":now"
   // allow if same writer, to account for retries (e.g. after timeout)
   val UniqueEventCondition = s"attribute_not_exists($Pid) OR $Writer = $ColonWriter"
+  val UniqueEventWithExpiry = s"$UniqueEventCondition OR $Expiry <= $ColonNow"
 }
 
 object DynamoDBSizeCalculations {

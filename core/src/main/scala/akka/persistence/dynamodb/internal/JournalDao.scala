@@ -204,13 +204,19 @@ import software.amazon.awssdk.services.dynamodb.model.Update
 
     if (totalItems == 1) {
       val item = items.head
+      val timestampSeconds = item.writeTimestamp.getEpochSecond.toString
       val result = client.putItem { putItemBuilder =>
         putItemBuilder
           .tableName(settings.journalTable)
           .item(putItemAttributes(item))
-          .expressionAttributeValues(JMap.of(JournalAttributes.ColonWriter, AttributeValue.fromS(item.writerUuid)))
+          .expressionAttributeValues(
+            JMap.of(
+              JournalAttributes.ColonWriter,
+              AttributeValue.fromS(item.writerUuid),
+              JournalAttributes.ColonNow,
+              AttributeValue.fromN(timestampSeconds)))
           .conditionExpression(
-            JournalAttributes.UniqueEventCondition
+            JournalAttributes.UniqueEventWithExpiry
           ) // enforces uniqueness of (Pid, SeqNr), allowing retries
           .returnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
       }.asScala
@@ -236,6 +242,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update
           Future.failed(c.getCause)
         }(ExecutionContext.parasitic)
     } else {
+      val timestampSeconds = items.head.writeTimestamp.getEpochSecond.toString
       val writeItems = items.map { item =>
         TransactWriteItem
           .builder()
@@ -243,8 +250,13 @@ import software.amazon.awssdk.services.dynamodb.model.Update
             putBuilder
               .tableName(settings.journalTable)
               .item(putItemAttributes(item))
-              .expressionAttributeValues(JMap.of(JournalAttributes.ColonWriter, AttributeValue.fromS(item.writerUuid)))
-              .conditionExpression(JournalAttributes.UniqueEventCondition)
+              .expressionAttributeValues(
+                JMap.of(
+                  JournalAttributes.ColonWriter,
+                  AttributeValue.fromS(item.writerUuid),
+                  JournalAttributes.ColonNow,
+                  AttributeValue.fromN(timestampSeconds)))
+              .conditionExpression(JournalAttributes.UniqueEventWithExpiry)
               .build
           }
           .build
