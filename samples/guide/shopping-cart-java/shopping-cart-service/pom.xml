@@ -43,7 +43,7 @@
         <repository>
             <id>akka-snapshot-repository</id>
             <name>Akka library snapshot repository</name>
-            <url>https://repo.akka.io/snapshots</url>
+            <url>https://repo.akka.io/TOKEN/secure/snapshots</url>
         </repository>
     </repositories>
     <pluginRepositories>
