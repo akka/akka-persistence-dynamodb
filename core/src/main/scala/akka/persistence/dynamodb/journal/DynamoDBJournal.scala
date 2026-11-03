@@ -271,12 +271,26 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
     pendingWrite.flatMap { _ =>
       val highestSeqNrAndTimestamp = if (fromSequenceNr >= 0 && toSequenceNr == Long.MaxValue && max == Long.MaxValue) {
         // this is the normal case, highest sequence number from last event
-        query
-          .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = true)
+        // note that in the case where the last event persisted saved a snapshot (thus recovery will be from 1 + that event's
+        // sequenceNr), we actually do need to read from that event but not send it, otherwise we would report a highSeqNr of 0
+        // event 0 does not normally ever get persisted, so we treat fromSequenceNr = 0 as if it were 1.
+        val effectiveFrom = (fromSequenceNr - 1).max(1)
+        val fromStream = query
+          .internalCurrentEventsByPersistenceId(persistenceId, effectiveFrom, toSequenceNr, includeDeleted = true)
           .runWith(Sink.fold((0L, Instant.EPOCH)) { case (_, (item, context)) =>
-            perItem(item, context)
+            if (item.seqNr >= fromSequenceNr) { perItem(item, context) }
             (item.seqNr, item.writeTimestamp)
           })
+
+        if (fromSequenceNr == 1) fromStream
+        else
+          fromStream.flatMap {
+            case (0L, _) =>
+              // nothing replayed, but we could be starting from ahead of what we deleted to
+              journalDao.readHighestSequenceNrAndTimestamp(persistenceId)
+
+            case _ => fromStream
+          }(ExecutionContext.parasitic)
       } else if (toSequenceNr <= 0 || max == 0) {
         // no replay
         journalDao.readHighestSequenceNrAndTimestamp(persistenceId)
