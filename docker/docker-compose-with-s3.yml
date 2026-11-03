@@ -9,7 +9,7 @@ services:
     working_dir: /home/dynamodblocal
   minio:
     command: "server /data --console-address ':9001'"
-    image: "quay.io/minio/minio:latest"
+    image: "cgr.dev/chainguard/minio:latest"
     container_name: s3
     ports:
       - "9000:9000"
