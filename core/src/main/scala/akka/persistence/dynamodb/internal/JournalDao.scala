@@ -49,6 +49,8 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest
 import software.amazon.awssdk.services.dynamodb.model.Update
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse
 import software.amazon.awssdk.services.dynamodb.model.TransactionInProgressException
+import software.amazon.awssdk.services.dynamodb.model.QueryResponse
+import scala.concurrent.ExecutionException
 
 /**
  * INTERNAL API
@@ -365,41 +367,16 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionInProgressExcep
   }
 
   def readHighestSequenceNr(persistenceId: String): Future[Long] = {
-    readHighestSequenceNrAndTimestamp(persistenceId).map(_._1)(ExecutionContext.parasitic)
+    // optimisation: don't retrieve the timestamp if we don't need it
+    // confounder: previous behavior would log the sequenceNr and timestamp, which might actually be useful
+    // thus: only apply this optimisation if debug isn't enabled
+    if (log.isDebugEnabled) {
+      readHighestSequenceNrAndTimestamp(persistenceId).map(_._1)(ExecutionContext.parasitic)
+    } else processEventWithHighestSequenceNr(persistenceId, ReadHighestSeqNr)
   }
 
   def readHighestSequenceNrAndTimestamp(persistenceId: String): Future[(Long, Instant)] = {
-    import JournalAttributes._
-
-    val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId))
-
-    val entityType = PersistenceId.extractEntityType(persistenceId)
-    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
-
-    val (filterExpression, filterAttributeValues) =
-      if (timeToLiveSettings.checkExpiry) {
-        val now = System.currentTimeMillis / 1000
-        val expression = s"attribute_not_exists($Expiry) OR $Expiry > :now"
-        val attributes = Map(":now" -> AttributeValue.fromN(now.toString))
-        (Some(expression), attributes)
-      } else (None, Map.empty[String, AttributeValue])
-
-    val requestBuilder = QueryRequest.builder
-      .tableName(settings.journalTable)
-      .consistentRead(true)
-      .keyConditionExpression(s"$Pid = :pid")
-      .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
-      .projectionExpression(s"$SeqNr, $Timestamp")
-      .scanIndexForward(false) // get last item (highest sequence nr)
-      .limit(1)
-
-    filterExpression.foreach(requestBuilder.filterExpression)
-
-    val result = client.query(requestBuilder.build()).asScala.map { response =>
-      response.items().asScala.headOption.fold((0L, Instant.EPOCH)) { item =>
-        (item.get(SeqNr).n().toLong, InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong))
-      }
-    }
+    val result = processEventWithHighestSequenceNr(persistenceId, ReadHighestSeqNrAndTimestampProjectionAndProcess)
 
     if (log.isDebugEnabled)
       result.foreach { case (seqNr, timestamp) =>
@@ -407,8 +384,155 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionInProgressExcep
       }
 
     result
+  }
+
+  def loadEventWithHighestSeqNr(persistenceId: String, queryDao: QueryDao): Future[Option[SerializedJournalItem]] = {
+    val result = processEventWithHighestSequenceNr(persistenceId, GetEventWithHighestSeqNr)
+
+    if (log.isDebugEnabled)
+      result.foreach(_.foreach { (item: ItemInJournal) =>
+        log.debug(
+          "Highest sequence nr for persistenceId [{}]: [{}] (written at [{}])",
+          persistenceId,
+          item.seqNr,
+          item.writeTimestamp)
+      })
+
+    result
+      .flatMap(_.fold(Future.successful(Option.empty[SerializedJournalItem])) { item =>
+        queryDao.followBreadcrumb(item).map(Some.apply)(ExecutionContext.parasitic)
+      })
       .recoverWith { case c: CompletionException =>
         Future.failed(c.getCause)
+      }
+  }
+
+  private val NoFilter = Option.empty[String] -> Map.empty[String, AttributeValue]
+  private val PidKeyConditionExpression = s"${JournalAttributes.Pid} = :pid"
+
+  private val ReadHighestSeqNrAndTimestampProjectionAndProcess = {
+    import JournalAttributes._
+    Some(s"$SeqNr, $Timestamp") -> { (response: QueryResponse) =>
+      response.items().asScala.headOption.fold(0L -> Instant.EPOCH) { item =>
+        item.get(SeqNr).n.toLong -> InstantFactory.fromEpochMicros(item.get(Timestamp).n().toLong)
+      }
+    }
+  }
+
+  private val ReadHighestSeqNr = {
+    import JournalAttributes._
+    Some(s"$SeqNr") -> { (response: QueryResponse) =>
+      response.items().asScala.headOption.fold(0L) { item =>
+        item.get(SeqNr).n.toLong
+      }
+    }
+  }
+
+  private val GetEventWithHighestSeqNr = {
+    import JournalAttributes._
+
+    None -> { (response: QueryResponse) =>
+      // NB: Deleted items are included (mirroring internalCurrentEventsByPersistenceId(... includeDeleted = true)
+      // expiry is filtered out by processEventWithHighestSequenceNr
+      response.items().asScala.headOption.map { item =>
+        val pid = item.get(Pid).s
+        val seqNr = item.get(SeqNr).n.toLong
+        val writeTimestamp = InstantFactory.fromEpochMicros(item.get(Timestamp).n.toLong)
+
+        if (item.containsKey(Deleted)) {
+          SerializedJournalItem(
+            persistenceId = pid,
+            seqNr = seqNr,
+            writeTimestamp = writeTimestamp,
+            readTimestamp = InstantFactory.EmptyTimestamp,
+            payload = None,
+            serId = 0,
+            serManifest = "",
+            writerUuid = "",
+            tags = Set.empty,
+            metadata = None)
+        } else {
+          val metadata = Option(item.get(MetaPayload)).map { metaPayload =>
+            SerializedEventMetadata(
+              serId = item.get(MetaSerId).n.toInt,
+              serManifest = item.get(MetaSerManifest).s,
+              payload = metaPayload.b().asByteArray())
+          }
+          val writerUuid = item.get(Writer).s
+          val tags: Set[String] = if (item.containsKey(Tags)) item.get(Tags).ss.asScala.toSet else Set.empty
+
+          if (item.containsKey(EventPayload)) {
+            SerializedJournalItem(
+              persistenceId = pid,
+              seqNr = seqNr,
+              writeTimestamp = writeTimestamp,
+              readTimestamp = InstantFactory.EmptyTimestamp,
+              payload = Some(item.get(EventPayload).b.asByteArray),
+              serId = item.get(EventSerId).n.toInt,
+              serManifest = item.get(EventSerManifest).s,
+              writerUuid = writerUuid,
+              tags = tags,
+              metadata = metadata)
+          } else if (item.containsKey(BreadcrumbPayload)) {
+            JournalItemWithBreadcrumb(
+              persistenceId = pid,
+              seqNr = seqNr,
+              writeTimestamp = writeTimestamp,
+              readTimestamp = InstantFactory.EmptyTimestamp,
+              writerUuid = writerUuid,
+              tags = tags,
+              metadata = metadata,
+              breadcrumbSerId = item.get(BreadcrumbSerId).n.toInt,
+              breadcrumbSerManifest = item.get(BreadcrumbSerManifest).s,
+              breadcrumbPayload = Some(item.get(BreadcrumbPayload).b.asByteArray))
+          } else {
+            val msg =
+              s"Event in journal for persistenceId [$pid] seqNr [$seqNr] is missing both event payload and breadcrumb"
+            log.error(msg)
+            throw new IllegalStateException(msg)
+          }
+        }
+      }
+    }
+  }
+
+  private def processEventWithHighestSequenceNr[T](
+      persistenceId: String,
+      projectionAndProcess: (Option[String], QueryResponse => T)): Future[T] = {
+    import JournalAttributes._
+
+    val attributeValues = Map(":pid" -> AttributeValue.fromS(persistenceId))
+    val (projectionExpressionOpt, processResponse) = projectionAndProcess
+
+    val entityType = PersistenceId.extractEntityType(persistenceId)
+    val timeToLiveSettings = settings.timeToLiveSettings.eventSourcedEntities.get(entityType)
+
+    val (filterExpression, filterAttributeValues) =
+      if (timeToLiveSettings.checkExpiry) {
+        val nowSeconds = System.currentTimeMillis() / 1000
+        val expression = s"attribute_not_exists($Expiry) OR $Expiry > :now"
+        val attributes = Map(":now" -> AttributeValue.fromN(nowSeconds.toString))
+        Some(expression) -> attributes
+      } else NoFilter
+
+    val requestBuilder = QueryRequest.builder
+      .tableName(settings.journalTable)
+      .consistentRead(true)
+      .keyConditionExpression(PidKeyConditionExpression)
+      .expressionAttributeValues((attributeValues ++ filterAttributeValues).asJava)
+      .scanIndexForward(false) // get last item
+      .limit(1)
+
+    filterExpression.foreach(requestBuilder.filterExpression)
+    projectionExpressionOpt.foreach(requestBuilder.projectionExpression)
+
+    client
+      .query(requestBuilder.build())
+      .asScala
+      .map(processResponse)
+      .recoverWith {
+        case c: CompletionException => Future.failed(c.getCause)
+        case e: ExecutionException  => Future.failed(e.getCause)
       }(ExecutionContext.parasitic)
   }
 
