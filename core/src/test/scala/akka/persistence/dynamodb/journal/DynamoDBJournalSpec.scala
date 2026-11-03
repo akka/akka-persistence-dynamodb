@@ -527,6 +527,15 @@ class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.co
       ebpic.probe.expectNoMessage(20.millis)
       instrumentation.probe.expectNoMessage(10.millis)
     }
+
+    "not advance highestSeqNr when deleting" in {
+      val probe = TestProbe()
+      // ask to delete ahead of highest persisted seqNr
+      journal ! DeleteMessagesTo(pid, 10, probe.ref)
+      probe.expectMsg(DeleteMessagesSuccess(10))
+      journal ! ReplayMessages(6, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      probe.expectMsg(RecoverySuccess(5))
+    }
   }
 }
 
@@ -651,6 +660,14 @@ class DynamoDBJournalWithTTLForDeletesSpec
       receiverProbe.expectMsg(RecoverySuccess(highestSequenceNr = 5L))
     }
 
+    "not advance highestSeqNr when deleting" in {
+      val probe = TestProbe()
+      // ask to delete ahead of highest persisted seqNr
+      journal ! DeleteMessagesTo(pid, 10, probe.ref)
+      probe.expectMsg(DeleteMessagesSuccess(10))
+      journal ! ReplayMessages(6, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      probe.expectMsg(RecoverySuccess(5))
+    }
   }
 }
 

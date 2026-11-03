@@ -646,7 +646,7 @@ import scala.concurrent.ExecutionException
     val lowestSequenceNrForDelete = readLowestSequenceNr(persistenceId)
     val highestSeqNrForDelete =
       if (toSequenceNr == Long.MaxValue) readHighestSequenceNr(persistenceId)
-      else Future.successful(toSequenceNr)
+      else readHighestSequenceNr(persistenceId).map(_.min(toSequenceNr))
 
     val result =
       for {
@@ -736,7 +736,7 @@ import scala.concurrent.ExecutionException
     val lowestSequenceNr = readLowestSequenceNr(persistenceId)
     val highestSeqNr =
       if (toSequenceNr == Long.MaxValue) readHighestSequenceNr(persistenceId)
-      else Future.successful(toSequenceNr)
+      else readHighestSequenceNr(persistenceId).map(_.min(toSequenceNr))
 
     val result =
       for {
