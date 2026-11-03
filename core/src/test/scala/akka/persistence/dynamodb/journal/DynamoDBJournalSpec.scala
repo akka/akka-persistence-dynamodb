@@ -507,6 +507,26 @@ class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.co
       }
       probe.expectMsg(RecoverySuccess(3))
     }
+
+    "replay no events and report correct highSequenceNr when replaying from snapshot" in {
+      // 5 events persisted already for pid, imagine that we snapshotted
+      instrumentation.resetProbe()
+      val probe = TestProbe()
+      journal ! ReplayMessages(6, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      probe.expectMsg(RecoverySuccess(5))
+      val ebpic = instrumentation.probe.expectMessageType[EventsByPersistenceIdCalled]
+      ebpic.persistenceId shouldBe pid
+      ebpic.correlationId shouldBe ""
+      ebpic.fromSequenceNumber shouldBe 5 // trying to pick up event which triggered snapshot
+      ebpic.toSequenceNumber shouldBe Long.MaxValue
+      val qre = ebpic.probe.expectMessageType[QueryReceivedEvent]
+      qre.persistenceId shouldBe pid
+      qre.sequenceNumber shouldBe 5
+      // but no deserialization happens because we're just checking for event existence
+      qre.probe.expectNoMessage(30.millis)
+      ebpic.probe.expectNoMessage(20.millis)
+      instrumentation.probe.expectNoMessage(10.millis)
+    }
   }
 }
 
