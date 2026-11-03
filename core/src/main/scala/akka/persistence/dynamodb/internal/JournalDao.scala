@@ -390,7 +390,7 @@ import scala.concurrent.ExecutionException
     val result = processEventWithHighestSequenceNr(persistenceId, GetEventWithHighestSeqNr)
 
     if (log.isDebugEnabled)
-      result.foreach(_.foreach { item: ItemInJournal =>
+      result.foreach(_.foreach { (item: ItemInJournal) =>
         log.debug(
           "Highest sequence nr for persistenceId [{}]: [{}] (written at [{}])",
           persistenceId,
