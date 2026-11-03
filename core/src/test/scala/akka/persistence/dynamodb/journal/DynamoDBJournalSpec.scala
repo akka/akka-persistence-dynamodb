@@ -150,6 +150,7 @@ object DynamoDBJournalSpec {
 
 abstract class DynamoDBJournalBaseSpec(config: Config)
     extends JournalSpec(config)
+    with LogCapturing
     with TestDbLifecycle
     with TestData
     with Eventually {
@@ -160,6 +161,7 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
   val entityType = nextEntityType()
 
   override protected def supportsRejectingNonSerializableObjects: CapabilityFlag = CapabilityFlag.off()
+  override protected def supportsReplayOnlyLast: CapabilityFlag = CapabilityFlag.on()
 
   override protected def beforeEach(): Unit = {
     instrumentation.resetProbe()
@@ -176,11 +178,20 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
       val probe = TestProbe()
       journal ! ReplayMessages(fromSnr, toSnr, (1 + toSnr - fromSnr), pid, probe.ref)
       (fromSnr to toSnr).foreach { expectedSeqNr =>
-        try probe.expectMsgPF() { case ReplayedMessage(persistent) =>
-          persistent.payload shouldBe s"a-$expectedSeqNr"
-          persistent.sequenceNr shouldBe expectedSeqNr
-          persistent.persistenceId shouldBe pid
-          persistent.writerUuid shouldBe writerUuid
+        try probe.expectMsgPF() {
+          case ReplayedMessage(persistent) =>
+            persistent.payload shouldBe s"a-$expectedSeqNr"
+            persistent.sequenceNr shouldBe expectedSeqNr
+            persistent.persistenceId shouldBe pid
+            persistent.writerUuid shouldBe writerUuid
+
+          case ReplayMessagesFailure(cause) =>
+            val unwrappedCause = cause match {
+              case ee: java.util.concurrent.ExecutionException => ee.getCause
+              case _                                           => cause
+            }
+            fail(s"replay failed: ${cause.getMessage}", unwrappedCause)
+
         } catch {
           case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
             fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
@@ -409,15 +420,31 @@ class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.co
       instrumentation.probe.expectNoMessage(10.millis)
     }
 
-    "replay only the latest event when fromSequenceNr is -1" in {
-      val pid = nextPersistenceId(entityType).id
-      val writerUuid = UUID.randomUUID().toString
-      writeMessages(1, 5, pid, ActorRef.noSender, writerUuid)
-
+    "instrument replay-only-last" in {
+      instrumentation.resetProbe()
       val probe = TestProbe()
-      journal ! ReplayMessages(-1, Long.MaxValue, 1, pid, probe.ref)
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      val ebpic = instrumentation.probe.expectMessageType[EventsByPersistenceIdCalled]
+      ebpic.persistenceId shouldBe pid
+      ebpic.correlationId shouldBe ""
+      // effectively running a stream from the last sequeqnceNr written
+      ebpic.fromSequenceNumber shouldBe 5
+      ebpic.toSequenceNumber shouldBe 5
+      val qre = ebpic.probe.expectMessageType[QueryReceivedEvent]
+      qre.persistenceId shouldBe pid
+      qre.sequenceNumber shouldBe 5
+      qre.probe.expectMessage(BeforeDeserializeEvent)
+      qre.probe.expectMessage(AfterDeserializeEvent)
+      ebpic.probe.expectNoMessage(30.millis)
+      instrumentation.probe.expectNoMessage(10.millis)
+    }
+
+    "replay-last with a partial-delete" in {
+      val probe = TestProbe()
+      journal ! DeleteMessagesTo(pid, 3, probe.ref)
+      probe.expectMsg(DeleteMessagesSuccess(3))
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, probe.ref)
       probe.expectMsgPF() { case ReplayedMessage(persistent) =>
-        persistent.payload shouldBe "a-5"
         persistent.sequenceNr shouldBe 5
       }
       probe.expectMsg(RecoverySuccess(5))
@@ -435,21 +462,19 @@ class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.co
       writeProbe.expectMsg(WriteMessagesSuccessful)
       writeProbe.expectMsgType[WriteMessageSuccess]
 
-      eventually(timeout(3.seconds), interval(100.millis)) {
-        val probe = TestProbe()
-        journal ! ReplayMessages(-1, Long.MaxValue, 1, pid, probe.ref)
-        probe.expectMsgPF() { case ReplayedMessage(persistent) =>
-          persistent.sequenceNr shouldBe 3
-          persistent.metadata shouldBe Some("meta-3")
-        }
-        probe.expectMsg(RecoverySuccess(3))
+      val replayProbe = TestProbe()
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, replayProbe.ref)
+      replayProbe.expectMsgPF() { case ReplayedMessage(persistent) =>
+        persistent.sequenceNr shouldBe 3
+        persistent.metadata shouldBe Some("meta-3")
       }
+      replayProbe.expectMsg(RecoverySuccess(3))
     }
 
     "replay nothing when fromSequenceNr is -1 and there are no events" in {
       val pid = nextPersistenceId(entityType).id
       val probe = TestProbe()
-      journal ! ReplayMessages(-1, Long.MaxValue, 1, pid, probe.ref)
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, probe.ref)
       probe.expectMsg(RecoverySuccess(0))
     }
 
@@ -462,12 +487,10 @@ class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.co
       journal ! DeleteMessagesTo(pid, 3, deleteProbe.ref)
       deleteProbe.expectMsgType[DeleteMessagesSuccess]
 
-      eventually(timeout(3.seconds), interval(100.millis)) {
-        val probe = TestProbe()
-        journal ! ReplayMessages(-1, Long.MaxValue, 1, pid, probe.ref)
-        // the tombstone keeps the highest seqNr, but has no payload (or metadata)
-        probe.expectMsg(RecoverySuccess(3))
-      }
+      val replayProbe = TestProbe()
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, replayProbe.ref)
+      // the tombstone keeps the highest seqNr, but has no payload (or metadata)
+      replayProbe.expectMsg(RecoverySuccess(3))
     }
 
     "replay all events when fromSequenceNr is 0" in {
