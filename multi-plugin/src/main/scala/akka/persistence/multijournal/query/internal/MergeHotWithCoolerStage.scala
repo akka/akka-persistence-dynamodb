@@ -26,7 +26,7 @@ import akka.stream.stage.TimerGraphStageLogic
 
 /** INTERNAL API */
 @InternalApi
-private[query] class MergeHotWithCoolerStage[Event](
+private[query] final class MergeHotWithCoolerStage[Event](
     hotSource: Source[EventEnvelope[Event], NotUsed],
     coolerSource: Option[TimestampOffset] => Source[EventEnvelope[Event], NotUsed],
     initialCoolerOffset: Option[TimestampOffset],
@@ -226,18 +226,21 @@ private[query] class MergeHotWithCoolerStage[Event](
 
       private def ensureCoolerProgress(): Unit =
         if (!coolerActive && coolerPending.isEmpty && !(hotFinished && hotPending.isEmpty)) {
-          val effectiveHighWatermark =
-            Ordering[Instant].max(emittedOrPendingHighWatermark, Instant.now().minusMillis(consistencyDelay.toMillis))
-          val proactiveRefreshAt =
-            if (effectiveHighWatermark
+          val eventDrivenRefreshAt =
+            if (emittedOrPendingHighWatermark
                 .isAfter(coolerWatermark.plusMillis(proactiveRefreshThresholdMillis)))
               Some(
-                effectiveHighWatermark
+                emittedOrPendingHighWatermark
                   .minusMillis(proactiveRefreshThresholdMillis)
                   .plusMillis(consistencyDelay.toMillis))
             else None
 
-          (refreshAfterProgressAt.toSeq ++ proactiveRefreshAt).minOption.foreach { refreshAt =>
+          val wallClockRefreshAt = coolerWatermark
+            .plusMillis(proactiveRefreshThresholdMillis)
+            .plusMillis(consistencyDelay.toMillis)
+
+          val refreshCandidates = refreshAfterProgressAt.toSeq ++ eventDrivenRefreshAt.toSeq :+ wallClockRefreshAt
+          refreshCandidates.minOption.foreach { refreshAt =>
             val now = Instant.now()
             val delay = JDuration.between(now, refreshAt)
             if (delay.isNegative || delay.isZero) materializeCooler()

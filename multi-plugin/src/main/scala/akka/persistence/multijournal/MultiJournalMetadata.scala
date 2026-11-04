@@ -261,7 +261,7 @@ private[multijournal] final class MultiJournalMetadata private[multijournal] (_b
 @InternalApi
 private[multijournal] object MultiJournalMetadata {
 
-  class Serializer(val system: ExtendedActorSystem) extends SerializerWithStringManifest with BaseSerializer {
+  final class Serializer(val system: ExtendedActorSystem) extends SerializerWithStringManifest with BaseSerializer {
     val Manifest = "MultiJournalMetadata"
 
     def manifest(o: AnyRef): String =

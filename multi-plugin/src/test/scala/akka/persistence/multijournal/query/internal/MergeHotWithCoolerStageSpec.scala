@@ -62,7 +62,7 @@ class MergeHotWithCoolerStageSpec extends ScalaTestWithActorTestKit with AnyWord
             offset =>
               if (coolerQueries.incrementAndGet() == 1) Source.single(coolerEvent)
               else {
-                repeatedFrom.set(offset)
+                repeatedFrom.compareAndSet(None, offset)
                 Source.empty
               },
             None,

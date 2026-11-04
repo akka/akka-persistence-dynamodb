@@ -27,6 +27,10 @@ import akka.persistence.query.typed.javadsl.EventsBySliceQuery
 import akka.persistence.query.typed.javadsl.LoadEventQuery
 import akka.stream.javadsl.Source
 
+object MultiJournalReadJournal {
+  val Identifier = akka.persistence.multijournal.query.scaladsl.MultiJournalReadJournal.Identifier
+}
+
 final class MultiJournalReadJournal(delegate: scaladsl.MultiJournalReadJournal)
     extends ReadJournal
     with CurrentEventsBySliceQuery

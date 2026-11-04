@@ -981,7 +981,7 @@ class ThreeJournalReplaySpec
 
       lukewarmJournalProbe.expectMessageType[TestProbeJournal.ReadHighestSeqNr].promise.success(10)
       lukewarmJournalProbe.asserting[TestProbeJournal.ReplayMessages] { rm =>
-        rm.fromSequenceNr shouldBe 1
+        rm.fromSequenceNr shouldBe 6
         rm.toSequenceNr shouldBe 10
         rm.max shouldBe Long.MaxValue
         rm.promise.success((6 to 10).map(event(_, Instant.now(), Some(MultiJournalMetadata(Map(0 -> 5))))))
@@ -1018,11 +1018,11 @@ class ThreeJournalReplaySpec
       }
 
       lukewarmJournalProbe.asserting[TestProbeJournal.ReadHighestSeqNr] { rhsn =>
-        rhsn.fromSequenceNr shouldBe 3
+        rhsn.fromSequenceNr shouldBe 5
         rhsn.promise.success(10)
       }
       lukewarmJournalProbe.asserting[TestProbeJournal.ReplayMessages] { rm =>
-        rm.fromSequenceNr shouldBe 4
+        rm.fromSequenceNr shouldBe 6
         rm.toSequenceNr shouldBe 10
         rm.max shouldBe Long.MaxValue
         rm.promise.success((6 to 10).map(event(_, Instant.now(), Some(MultiJournalMetadata(Map(0 -> 5))))))
@@ -1040,6 +1040,42 @@ class ThreeJournalReplaySpec
       }
 
       (4 to 15).foreach { seqNr =>
+        actorProbe.asserting[JournalProtocol.ReplayedMessage] { replayed =>
+          replayed.persistent.sequenceNr shouldBe seqNr
+          replayed.persistent.metadata shouldBe empty
+        }
+      }
+      actorProbe.expectMsgType[JournalProtocol.RecoverySuccess].highestSequenceNr shouldBe 15
+      getMetadata(pid).futureValue shouldBe Map(0 -> 5L, 1 -> 10L)
+    }
+
+    "use metadata to replay only from the relevant cooler journal" in new Setup(this) {
+      journal ! replayMessagesReq(7, 9, Long.MaxValue)
+      hotJournalProbe.expectMessageType[TestProbeJournal.ReadHighestSeqNr].promise.success(15)
+      hotJournalProbe.asserting[TestProbeJournal.ReplayMessages] { rm =>
+        rm.fromSequenceNr shouldBe 7
+        rm.toSequenceNr shouldBe 9
+        rm.promise.success(Nil)
+      }
+      hotJournalProbe.expectMessageType[TestProbeJournal.ReadHighestSeqNr].promise.success(15)
+      hotJournalProbe.asserting[TestProbeJournal.ReplayMessages] { rm =>
+        rm.fromSequenceNr shouldBe -1
+        rm.toSequenceNr shouldBe 15
+        rm.max shouldBe 1
+        rm.promise.success(Seq(event(15, Instant.now(), Some(MultiJournalMetadata(Map(0 -> 5, 1 -> 10))))))
+      }
+
+      lukewarmJournalProbe.asserting[TestProbeJournal.ReadHighestSeqNr] { rhsn =>
+        rhsn.fromSequenceNr shouldBe 6
+        rhsn.promise.success(10)
+      }
+      lukewarmJournalProbe.asserting[TestProbeJournal.ReplayMessages] { rm =>
+        rm.fromSequenceNr shouldBe 7
+        rm.toSequenceNr shouldBe 9
+        rm.promise.success((7 to 9).map(event(_, Instant.now(), Some(MultiJournalMetadata(Map(0 -> 5))))))
+      }
+
+      (7 to 9).foreach { seqNr =>
         actorProbe.asserting[JournalProtocol.ReplayedMessage] { replayed =>
           replayed.persistent.sequenceNr shouldBe seqNr
           replayed.persistent.metadata shouldBe empty
@@ -1068,7 +1104,7 @@ class ThreeJournalReplaySpec
 
       lukewarmJournalProbe.expectMessageType[TestProbeJournal.ReadHighestSeqNr].promise.success(10)
       lukewarmJournalProbe.asserting[TestProbeJournal.ReplayMessages] { rm =>
-        rm.fromSequenceNr shouldBe 3
+        rm.fromSequenceNr shouldBe 6
         rm.toSequenceNr shouldBe 10
         rm.max shouldBe 11
         rm.promise.success((6 to 10).map(event(_, Instant.now(), Some(MultiJournalMetadata(Map(0 -> 5))))))
@@ -1127,8 +1163,6 @@ class ThreeJournalReplaySpec
         rm.promise.success((6 to 10).map(event(_, Instant.now(), Some(MultiJournalMetadata(Map(0 -> 5, 1 -> 5))))))
       }
 
-      lukewarmJournalProbe.expectMessageType[TestProbeJournal.ReadHighestSeqNr].promise.success(0)
-
       // cold journal reports events beyond the buffered hot events (e.g. events 6 and 7 were copied there):
       // the replay must still stop before the earliest buffered event
       coldJournalProbe.expectMessageType[TestProbeJournal.ReadHighestSeqNr].promise.success(7)
@@ -1175,7 +1209,7 @@ class ThreeJournalReplaySpec
 
         lukewarmJournalProbe.expectMessageType[TestProbeJournal.ReadHighestSeqNr].promise.success(10)
         lukewarmJournalProbe.asserting[TestProbeJournal.ReplayMessages] { rm =>
-          rm.fromSequenceNr shouldBe 3
+          rm.fromSequenceNr shouldBe 6
           rm.toSequenceNr shouldBe 10
           rm.max shouldBe max
           rm.promise.success(

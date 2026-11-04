@@ -42,6 +42,10 @@ import akka.stream.scaladsl.Source
 import com.typesafe.config.Config
 import org.slf4j.LoggerFactory
 
+object MultiJournalReadJournal {
+  val Identifier = "akka.persistence.multi-journal.query"
+}
+
 final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config, cfgPath: String)
     extends ReadJournal
     with CurrentEventsBySliceQuery
@@ -90,7 +94,7 @@ final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config,
     try { getReadJournals() }
     catch { case NonFatal(ex) => log.error("Could not start read journal for multi-journal plugin"); throw ex }
 
-  val JournalRange = {
+  val journalRange = {
     val (min, max) = readJournals.keys.foldLeft(Int.MaxValue -> -1) { case ((min, max), id) =>
       (min.min(id), max.max(id))
     }
@@ -119,7 +123,7 @@ final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config,
       toSequenceNr: Long): Source[EventEnvelope[Event], NotUsed] =
     CurrentEventsByPersistenceIdQueries match {
       case Right(queries) =>
-        Source(JournalRange)
+        Source(journalRange)
           .map(queries)
           .flatMapConcat {
             _.currentEventsByPersistenceIdTyped[Event](persistenceId, fromSequenceNr, toSequenceNr)
@@ -172,7 +176,7 @@ final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config,
       slice: Int,
       offset: Offset,
       queries: Map[Int, CurrentEventsBySliceQuery]): Source[EventEnvelope[Event], NotUsed] =
-    unsafeCurrentEventsForSingleSlice(entityType, slice, offset, JournalRange.min, JournalRange.max, queries)
+    unsafeCurrentEventsForSingleSlice(entityType, slice, offset, journalRange.min, journalRange.max, queries)
 
   private def unsafeCurrentEventsForSingleSlice[Event](
       entityType: String,
@@ -216,7 +220,7 @@ final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config,
         require(maxSlice >= minSlice, "maxSlice must be at least minSlice")
         requireTimestampOffset(offset)
 
-        val hotJournal = JournalRange.max
+        val hotJournal = journalRange.max
         val numSlices = 1 + maxSlice - minSlice
         Source
           .fromGraph(GraphDSL.create() { implicit builder: GraphDSL.Builder[NotUsed] =>
@@ -229,14 +233,14 @@ final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config,
                 .eventsBySlices[Event](entityType, slice, slice, sliceOffset)
 
               val source =
-                if (JournalRange.size == 1) hotSource
+                if (journalRange.size == 1) hotSource
                 else {
                   val coolerSource = (nextOffset: Option[TimestampOffset]) =>
                     unsafeCurrentEventsForSingleSlice[Event](
                       entityType,
                       slice,
                       nextOffset.getOrElse(sliceOffset),
-                      JournalRange.min,
+                      journalRange.min,
                       hotJournal - 1,
                       currentEventsBySliceQueries)
 
@@ -273,7 +277,7 @@ final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config,
   override def timestampOf(persistenceId: String, sequenceNr: Long): Future[Option[Instant]] =
     EventTimestampQueries match {
       case Right(queries) =>
-        JournalRange.foldLeft(Future.successful(Option.empty[Instant])) { (acc, journalId) =>
+        journalRange.foldLeft(Future.successful(Option.empty[Instant])) { (acc, journalId) =>
           val query = queries(journalId).timestampOf(persistenceId, sequenceNr)
           val flatMapped = acc.flatMap { prevResult =>
             query.map { newResult =>
@@ -307,7 +311,7 @@ final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config,
   override def loadEnvelope[Event](persistenceId: String, sequenceNr: Long): Future[EventEnvelope[Event]] =
     LoadEventQueries match {
       case Right(queries) =>
-        JournalRange.reverse.foldLeft(Future.failed[EventEnvelope[Event]](new NoSuchElementException)) {
+        journalRange.reverse.foldLeft(Future.failed[EventEnvelope[Event]](new NoSuchElementException)) {
           (acc, journalId) =>
             val query =
               queries(journalId)
@@ -315,7 +319,7 @@ final class MultiJournalReadJournal(system: ExtendedActorSystem, config: Config,
 
             acc
               .recoverWith { case nse: NoSuchElementException =>
-                // not finiding an event is somewhat expected, but pass other failures through
+                // not finding an event is somewhat expected, but pass other failures through
                 query
               }(ExecutionContext.parasitic)
               .map(_.removeMetadata[MultiJournalMetadata])(ExecutionContext.parasitic)
