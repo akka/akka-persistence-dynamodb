@@ -30,6 +30,7 @@ import akka.persistence.JournalProtocol.RecoverySuccess
 import akka.persistence.JournalProtocol.ReplayMessages
 import akka.persistence.JournalProtocol.ReplayedMessage
 import akka.persistence.JournalProtocol.WriteMessages
+import akka.persistence.JournalProtocol.WriteMessageSuccess
 import akka.persistence.JournalProtocol.WriteMessagesSuccessful
 import akka.persistence.PersistentRepr
 import akka.persistence.dynamodb.InstrumentationProvider
@@ -149,6 +150,7 @@ object DynamoDBJournalSpec {
 
 abstract class DynamoDBJournalBaseSpec(config: Config)
     extends JournalSpec(config)
+    with LogCapturing
     with TestDbLifecycle
     with TestData
     with Eventually {
@@ -159,6 +161,7 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
   val entityType = nextEntityType()
 
   override protected def supportsRejectingNonSerializableObjects: CapabilityFlag = CapabilityFlag.off()
+  override protected def supportsReplayOnlyLast: CapabilityFlag = CapabilityFlag.on()
 
   override protected def beforeEach(): Unit = {
     instrumentation.resetProbe()
@@ -175,11 +178,20 @@ abstract class DynamoDBJournalBaseSpec(config: Config)
       val probe = TestProbe()
       journal ! ReplayMessages(fromSnr, toSnr, (1 + toSnr - fromSnr), pid, probe.ref)
       (fromSnr to toSnr).foreach { expectedSeqNr =>
-        try probe.expectMsgPF() { case ReplayedMessage(persistent) =>
-          persistent.payload shouldBe s"a-$expectedSeqNr"
-          persistent.sequenceNr shouldBe expectedSeqNr
-          persistent.persistenceId shouldBe pid
-          persistent.writerUuid shouldBe writerUuid
+        try probe.expectMsgPF() {
+          case ReplayedMessage(persistent) =>
+            persistent.payload shouldBe s"a-$expectedSeqNr"
+            persistent.sequenceNr shouldBe expectedSeqNr
+            persistent.persistenceId shouldBe pid
+            persistent.writerUuid shouldBe writerUuid
+
+          case ReplayMessagesFailure(cause) =>
+            val unwrappedCause = cause match {
+              case ee: java.util.concurrent.ExecutionException => ee.getCause
+              case _                                           => cause
+            }
+            fail(s"replay failed: ${cause.getMessage}", unwrappedCause)
+
         } catch {
           case ex: Throwable if ex.isInstanceOf[Exception] || ex.isInstanceOf[AssertionError] =>
             fail(s"expectedSeqNr: ${expectedSeqNr} failed validation", ex)
@@ -407,6 +419,123 @@ class DynamoDBJournalSpec extends DynamoDBJournalBaseSpec(DynamoDBJournalSpec.co
       ebpic.probe.expectNoMessage(30.millis)
       instrumentation.probe.expectNoMessage(10.millis)
     }
+
+    "instrument replay-only-last" in {
+      instrumentation.resetProbe()
+      val probe = TestProbe()
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      val ebpic = instrumentation.probe.expectMessageType[EventsByPersistenceIdCalled]
+      ebpic.persistenceId shouldBe pid
+      ebpic.correlationId shouldBe ""
+      // effectively running a stream from the last sequeqnceNr written
+      ebpic.fromSequenceNumber shouldBe 5
+      ebpic.toSequenceNumber shouldBe 5
+      val qre = ebpic.probe.expectMessageType[QueryReceivedEvent]
+      qre.persistenceId shouldBe pid
+      qre.sequenceNumber shouldBe 5
+      qre.probe.expectMessage(BeforeDeserializeEvent)
+      qre.probe.expectMessage(AfterDeserializeEvent)
+      ebpic.probe.expectNoMessage(30.millis)
+      instrumentation.probe.expectNoMessage(10.millis)
+    }
+
+    "replay-last with a partial-delete" in {
+      val probe = TestProbe()
+      journal ! DeleteMessagesTo(pid, 3, probe.ref)
+      probe.expectMsg(DeleteMessagesSuccess(3))
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      probe.expectMsgPF() { case ReplayedMessage(persistent) =>
+        persistent.sequenceNr shouldBe 5
+      }
+      probe.expectMsg(RecoverySuccess(5))
+    }
+
+    "include metadata when replaying only the latest event" in {
+      val pid = nextPersistenceId(entityType).id
+      val writerUuid = UUID.randomUUID().toString
+      writeMessages(1, 2, pid, ActorRef.noSender, writerUuid)
+
+      val writeProbe = TestProbe()
+      val repr = PersistentRepr(payload = "a-3", sequenceNr = 3, persistenceId = pid, writerUuid = writerUuid)
+        .withMetadata("meta-3")
+      journal ! WriteMessages(Seq(AtomicWrite(repr)), writeProbe.ref, actorInstanceId)
+      writeProbe.expectMsg(WriteMessagesSuccessful)
+      writeProbe.expectMsgType[WriteMessageSuccess]
+
+      val replayProbe = TestProbe()
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, replayProbe.ref)
+      replayProbe.expectMsgPF() { case ReplayedMessage(persistent) =>
+        persistent.sequenceNr shouldBe 3
+        persistent.metadata shouldBe Some("meta-3")
+      }
+      replayProbe.expectMsg(RecoverySuccess(3))
+    }
+
+    "replay nothing when fromSequenceNr is -1 and there are no events" in {
+      val pid = nextPersistenceId(entityType).id
+      val probe = TestProbe()
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      probe.expectMsg(RecoverySuccess(0))
+    }
+
+    "replay nothing but report the highest seqNr when fromSequenceNr is -1 and the latest event is deleted" in {
+      val pid = nextPersistenceId(entityType).id
+      val writerUuid = UUID.randomUUID().toString
+      writeMessages(1, 3, pid, ActorRef.noSender, writerUuid)
+
+      val deleteProbe = TestProbe()
+      journal ! DeleteMessagesTo(pid, 3, deleteProbe.ref)
+      deleteProbe.expectMsgType[DeleteMessagesSuccess]
+
+      val replayProbe = TestProbe()
+      journal ! ReplayMessages(-1, Long.MaxValue, Long.MaxValue, pid, replayProbe.ref)
+      // the tombstone keeps the highest seqNr, but has no payload (or metadata)
+      replayProbe.expectMsg(RecoverySuccess(3))
+    }
+
+    "replay all events when fromSequenceNr is 0" in {
+      val pid = nextPersistenceId(entityType).id
+      val writerUuid = UUID.randomUUID().toString
+      writeMessages(1, 3, pid, ActorRef.noSender, writerUuid)
+
+      val probe = TestProbe()
+      journal ! ReplayMessages(0, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      (1 to 3).foreach { expectedSeqNr =>
+        probe.expectMsgPF() { case ReplayedMessage(persistent) =>
+          persistent.sequenceNr shouldBe expectedSeqNr
+        }
+      }
+      probe.expectMsg(RecoverySuccess(3))
+    }
+
+    "replay no events and report correct highSequenceNr when replaying from snapshot" in {
+      // 5 events persisted already for pid, imagine that we snapshotted
+      instrumentation.resetProbe()
+      val probe = TestProbe()
+      journal ! ReplayMessages(6, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      probe.expectMsg(RecoverySuccess(5))
+      val ebpic = instrumentation.probe.expectMessageType[EventsByPersistenceIdCalled]
+      ebpic.persistenceId shouldBe pid
+      ebpic.correlationId shouldBe ""
+      ebpic.fromSequenceNumber shouldBe 5 // trying to pick up event which triggered snapshot
+      ebpic.toSequenceNumber shouldBe Long.MaxValue
+      val qre = ebpic.probe.expectMessageType[QueryReceivedEvent]
+      qre.persistenceId shouldBe pid
+      qre.sequenceNumber shouldBe 5
+      // but no deserialization happens because we're just checking for event existence
+      qre.probe.expectNoMessage(30.millis)
+      ebpic.probe.expectNoMessage(20.millis)
+      instrumentation.probe.expectNoMessage(10.millis)
+    }
+
+    "not advance highestSeqNr when deleting" in {
+      val probe = TestProbe()
+      // ask to delete ahead of highest persisted seqNr
+      journal ! DeleteMessagesTo(pid, 10, probe.ref)
+      probe.expectMsg(DeleteMessagesSuccess(10))
+      journal ! ReplayMessages(6, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      probe.expectMsg(RecoverySuccess(5))
+    }
   }
 }
 
@@ -531,6 +660,14 @@ class DynamoDBJournalWithTTLForDeletesSpec
       receiverProbe.expectMsg(RecoverySuccess(highestSequenceNr = 5L))
     }
 
+    "not advance highestSeqNr when deleting" in {
+      val probe = TestProbe()
+      // ask to delete ahead of highest persisted seqNr
+      journal ! DeleteMessagesTo(pid, 10, probe.ref)
+      probe.expectMsg(DeleteMessagesSuccess(10))
+      journal ! ReplayMessages(6, Long.MaxValue, Long.MaxValue, pid, probe.ref)
+      probe.expectMsg(RecoverySuccess(5))
+    }
   }
 }
 
