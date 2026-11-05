@@ -92,4 +92,7 @@ object Dependencies {
     TestDeps.akkaJackson,
     TestDeps.akkaTestkit,
     TestDeps.scalaTest)
+
+  val multiPlugin =
+    Seq(akkaPersistence, akkaPersistenceQuery, TestDeps.akkaTestkit, TestDeps.logback, TestDeps.scalaTest)
 }

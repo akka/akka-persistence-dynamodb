@@ -6,6 +6,7 @@ package akka.persistence.dynamodb.journal
 
 import java.time.Instant
 import java.util.concurrent.CompletionException
+import scala.concurrent.ExecutionException
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
@@ -28,6 +29,7 @@ import akka.persistence.dynamodb.InstrumentationProvider
 import akka.persistence.dynamodb.internal.InstantFactory
 import akka.persistence.dynamodb.internal.JournalDao
 import akka.persistence.dynamodb.internal.PubSub
+import akka.persistence.dynamodb.internal.QueryDao
 import akka.persistence.dynamodb.internal.SerializedEventMetadata
 import akka.persistence.dynamodb.internal.SerializedJournalItem
 import akka.persistence.dynamodb.query.scaladsl.DynamoDBReadJournal
@@ -70,6 +72,7 @@ private[dynamodb] object DynamoDBJournal {
       case Some(meta) =>
         repr.withMetadata(serialization.deserialize(meta.payload, meta.serId, meta.serManifest).get)
     }
+
     reprWithMeta
   }
 
@@ -98,6 +101,7 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
 
   private val client = ClientProvider(system).clientFor(sharedConfigPath + ".client")
   private val journalDao = new JournalDao(system, settings, client)
+  private val queryDao = new QueryDao(system, settings, client)
 
   private val query = PersistenceQuery(system).readJournalFor[DynamoDBReadJournal](sharedConfigPath + ".query")
 
@@ -243,7 +247,19 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
 
   override def replayMessages(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long, max: Long)(
       recoveryCallback: PersistentRepr => Unit): Future[Long] = {
-    log.debug("replayMessages [{}] [{}]", persistenceId, fromSequenceNr)
+    if (log.isDebugEnabled) {
+      log.debug(s"replayMessages [$persistenceId] [${if (fromSequenceNr == -1) "last" else fromSequenceNr}]")
+    }
+
+    val perItem = { (item: SerializedJournalItem, context: AnyRef) =>
+      if (item.payload.isDefined) {
+        instrumentation.beforeDeserializeEvent(context)
+        val repr = deserializeItem(serialization, item)
+        instrumentation.afterDeserializeEvent(context)
+        recoveryCallback(repr)
+      }
+    }
+
     val pendingWrite = Option(writesInProgress.get(persistenceId)) match {
       case Some(f) =>
         log.debug("Write in progress for [{}], deferring replayMessages until write completed", persistenceId)
@@ -251,27 +267,47 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
         f.recover { case _ => Done }(ExecutionContext.parasitic)
       case None => FutureDone
     }
+
     pendingWrite.flatMap { _ =>
-      val highestSeqNrAndTimestamp = if (toSequenceNr == Long.MaxValue && max == Long.MaxValue) {
+      val highestSeqNrAndTimestamp = if (fromSequenceNr >= 0 && toSequenceNr == Long.MaxValue && max == Long.MaxValue) {
         // this is the normal case, highest sequence number from last event
-        query
-          .internalCurrentEventsByPersistenceId(persistenceId, fromSequenceNr, toSequenceNr, includeDeleted = true)
+        // note that in the case where the last event persisted saved a snapshot (thus recovery will be from 1 + that event's
+        // sequenceNr), we actually do need to read from that event but not send it, otherwise we would report a highSeqNr of 0
+        // event 0 does not normally ever get persisted, so we treat fromSequenceNr = 0 as if it were 1.
+        val effectiveFrom = (fromSequenceNr - 1).max(1)
+        val fromStream = query
+          .internalCurrentEventsByPersistenceId(persistenceId, effectiveFrom, toSequenceNr, includeDeleted = true)
           .runWith(Sink.fold((0L, Instant.EPOCH)) { case (_, (item, context)) =>
-            // payload is empty for deleted item
-            if (item.payload.isDefined) {
-              instrumentation.beforeDeserializeEvent(context)
-              val repr = deserializeItem(serialization, item)
-              instrumentation.afterDeserializeEvent(context)
-              recoveryCallback(repr)
-            }
+            if (item.seqNr >= fromSequenceNr) { perItem(item, context) }
             (item.seqNr, item.writeTimestamp)
           })
-      } else if (toSequenceNr <= 0) {
+
+        if (fromSequenceNr == 1) fromStream
+        else
+          fromStream.flatMap {
+            case (0L, _) =>
+              // nothing replayed, but we could be starting from ahead of what we deleted to
+              journalDao.readHighestSequenceNrAndTimestamp(persistenceId)
+
+            case _ => fromStream
+          }(ExecutionContext.parasitic)
+      } else if (toSequenceNr <= 0 || max == 0) {
         // no replay
         journalDao.readHighestSequenceNrAndTimestamp(persistenceId)
+      } else if (fromSequenceNr == -1) {
+        // replay only latest event
+        journalDao
+          .loadEventWithHighestSeqNr(persistenceId, queryDao)
+          .map {
+            case None => 0L -> Instant.EPOCH
+            case Some(item) =>
+              val context = instrumentation.eventsByPersistenceIdCalled(persistenceId, item.seqNr, item.seqNr, "")
+              perItem(item, instrumentation.queryReceivedEvent(persistenceId, item.seqNr, context))
+              item.seqNr -> item.writeTimestamp
+          }
+          .recoverWith { case ee: ExecutionException => Future.failed(ee.getCause) }
       } else {
         // replay to custom sequence number
-
         val highestSeqNrAndTimestamp = journalDao.readHighestSequenceNrAndTimestamp(persistenceId)
 
         val effectiveToSequenceNr =
@@ -285,14 +321,10 @@ private[dynamodb] final class DynamoDBJournal(config: Config, cfgPath: String)
             effectiveToSequenceNr,
             includeDeleted = false)
           .runWith(Sink
-            .foreach { case (item, instrumentationContext) =>
-              instrumentation.beforeDeserializeEvent(instrumentationContext)
-              val repr = deserializeItem(serialization, item)
-              instrumentation.afterDeserializeEvent(instrumentationContext)
-              recoveryCallback(repr)
-            })
+            .foreach { case (item, context) => perItem(item, context) })
           .flatMap(_ => highestSeqNrAndTimestamp)
       }
+
       highestSeqNrAndTimestamp.map { case (highestSeqNr, timestamp) =>
         val now = Instant.now()
         if (now.isBefore(timestamp)) {
