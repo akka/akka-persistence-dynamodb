@@ -18,7 +18,7 @@ object Dependencies {
     case Seq(major, minor, _*) => s"$major.$minor"
   }
 
-  val AwsSdkVersion = "2.46.21"
+  val AwsSdkVersion = "2.57.12"
   val MinioVersion = "8.6.0"
   val OkHttpJvmVersion = "5.5.0"
   val JacksonVersion = "2.19.1" // to match what's pulled in by minio for tests
