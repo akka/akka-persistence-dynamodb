@@ -17,4 +17,4 @@ addSbtPlugin("com.github.sbt" % "sbt-site-paradox" % "1.7.0")
 
 addSbtPlugin("com.typesafe" % "sbt-mima-plugin" % "1.1.6")
 // create pom.xml for scanning tools
-addSbtPlugin("io.akka.sbt" % "sbt-artifact-bom" % "0.2.0")
+addSbtPlugin("io.akka.sbt" % "sbt-artifact-bom" % "0.4.0")
