@@ -5,15 +5,15 @@
 import sbt._
 
 object Dependencies {
-  val Scala213 = "2.13.17"
-  val Scala3 = "3.3.7"
+  val Scala213 = "2.13.18"
+  val Scala3 = "3.3.8"
   val Scala2Versions = Seq(Scala213)
   val ScalaVersions = Dependencies.Scala2Versions :+ Dependencies.Scala3
-  val AkkaVersion = System.getProperty("override.akka.version", "2.10.13")
+  val AkkaVersion = System.getProperty("override.akka.version", "2.11.0")
   val AkkaVersionInDocs = VersionNumber(AkkaVersion).numbers match { case Seq(major, minor, _*) => s"$major.$minor" }
 
   // only for docs
-  val AkkaProjectionVersion = "1.6.17"
+  val AkkaProjectionVersion = "1.7.0"
   val AkkaProjectionVersionInDocs = VersionNumber(AkkaProjectionVersion).numbers match {
     case Seq(major, minor, _*) => s"$major.$minor"
   }
