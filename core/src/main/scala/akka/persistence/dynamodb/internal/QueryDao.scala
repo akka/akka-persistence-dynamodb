@@ -149,7 +149,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
                   payload = Some(item.get(EventPayload).b().asByteArray()),
                   serId = item.get(EventSerId).n().toInt,
                   serManifest = item.get(EventSerManifest).s(),
-                  writerUuid = item.get(Writer).s(),
+                  writerUuid = writerUuid,
                   tags = tags,
                   metadata = metadata)
               } else if (item.containsKey(BreadcrumbPayload)) {
@@ -463,7 +463,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse
       }(ExecutionContext.parasitic)
   }
 
-  private def followBreadcrumb(item: ItemInJournal): Future[SerializedJournalItem] =
+  private[internal] def followBreadcrumb(item: ItemInJournal): Future[SerializedJournalItem] =
     item match {
       case sji: SerializedJournalItem => Future.successful(sji)
 

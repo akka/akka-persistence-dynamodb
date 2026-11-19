@@ -452,7 +452,9 @@ class DynamoDBPoisonSnapshotSpec
       snapshot.snapshot shouldNot be(empty)
       snapshot.snapshot.get.snapshot shouldBe UnluckyString("hi|heyo|stop|sealed")
 
-      journal.tell(ReplayMessages(snapshot.toSequenceNr + 1, 10, 5, persistenceId.id, classicProbeRef), classicProbeRef)
+      val snapshotFromSequenceNr = snapshot.snapshot.get.metadata.sequenceNr + 1
+
+      journal.tell(ReplayMessages(snapshotFromSequenceNr, 10, 5, persistenceId.id, classicProbeRef), classicProbeRef)
       probe.expectMessage(RecoverySuccess(4))
     }
   }
